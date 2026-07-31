@@ -2,14 +2,18 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/bachelor-project/edgeproxy/internal/accesslog"
 	"github.com/bachelor-project/edgeproxy/internal/cache"
 	"github.com/bachelor-project/edgeproxy/internal/config"
 	"github.com/bachelor-project/edgeproxy/internal/metrics"
@@ -27,14 +31,22 @@ type Handler struct {
 	logger  *slog.Logger
 	router  *router.Router
 	metrics *metrics.Registry
+	logs    *accesslog.Store
 	routes  map[string]*routeRuntime
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 }
 
-func NewHandler(cfg config.Config, logger *slog.Logger, registry *metrics.Registry) (*Handler, error) {
+func NewHandler(cfg config.Config, logger *slog.Logger, registry *metrics.Registry, logStore *accesslog.Store) (*Handler, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &Handler{logger: logger, router: router.New(cfg.Routes), metrics: registry, routes: make(map[string]*routeRuntime), cancel: cancel}
+	h := &Handler{
+		logger:  logger,
+		router:  router.New(cfg.Routes),
+		metrics: registry,
+		logs:    logStore,
+		routes:  make(map[string]*routeRuntime),
+		cancel:  cancel,
+	}
 	for i := range cfg.Routes {
 		route := &cfg.Routes[i]
 		pool, err := newUpstreamPool(*route)
@@ -49,7 +61,12 @@ func NewHandler(cfg config.Config, logger *slog.Logger, registry *metrics.Regist
 		h.routes[route.Name] = runtime
 		if route.HealthCheck.Enabled {
 			h.wg.Add(1)
-			go func(rt *routeRuntime) { defer h.wg.Done(); rt.pool.runHealthChecks(ctx, rt.cfg.HealthCheck) }(runtime)
+			go func(rt *routeRuntime) {
+				defer h.wg.Done()
+				rt.pool.runHealthChecks(ctx, rt.cfg.HealthCheck, func(change healthChange) {
+					h.recordHealthChange(rt.cfg.Name, change)
+				})
+			}(runtime)
 		}
 	}
 	return h, nil
@@ -78,7 +95,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.ContentLength > 0 {
 		bytesIn = uint64(req.ContentLength)
 	}
-	finish := h.metrics.Begin(rt.cfg.Name, bytesIn)
+	finish := h.metrics.Begin(rt.cfg.Name, req.Method, bytesIn)
 	rw := &responseCapture{ResponseWriter: w}
 	result := requestResult{cacheStatus: "BYPASS"}
 	defer func() {
@@ -86,13 +103,69 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		if status == 0 {
 			status = http.StatusOK
 		}
-		finish(status, uint64(rw.bytes), time.Since(started), result.upstreamDuration, result.proxyError, result.upstreamCalls, result.retries, result.cacheStatus)
-		h.logger.Info("request",
-			"request_id", id, "client_ip", clientIP(req), "method", req.Method,
-			"host", req.Host, "path", req.URL.RequestURI(), "route", rt.cfg.Name,
-			"status", status, "bytes_out", rw.bytes, "duration_ms", float64(time.Since(started).Microseconds())/1000,
-			"upstream", result.upstream, "upstream_duration_ms", float64(result.upstreamDuration.Microseconds())/1000,
-			"cache", result.cacheStatus, "retries", result.retries,
+		duration := time.Since(started)
+		finish(metrics.RequestObservation{
+			Status:      status,
+			BytesOut:    uint64(maxInt64(rw.bytes, 0)),
+			Duration:    duration,
+			ProxyError:  result.proxyError,
+			Retries:     result.retries,
+			CacheStatus: result.cacheStatus,
+		})
+
+		level := "INFO"
+		if status >= 500 || result.proxyError {
+			level = "ERROR"
+		} else if status >= 400 {
+			level = "WARN"
+		}
+		if h.logs != nil {
+			h.logs.Append(accesslog.Entry{
+				Level:              level,
+				Event:              "request_completed",
+				Message:            "client request completed",
+				RequestID:          id,
+				ClientIP:           clientIP(req),
+				Method:             req.Method,
+				Host:               req.Host,
+				Path:               req.URL.EscapedPath(),
+				Query:              sanitizedQuery(req),
+				Route:              rt.cfg.Name,
+				Status:             status,
+				BytesIn:            bytesIn,
+				BytesOut:           uint64(maxInt64(rw.bytes, 0)),
+				DurationMS:         durationMS(duration),
+				CacheStatus:        result.cacheStatus,
+				Upstream:           result.upstream,
+				UpstreamStatus:     result.upstreamStatus,
+				UpstreamDurationMS: durationMS(result.upstreamDuration),
+				UpstreamCalls:      result.upstreamCalls,
+				Retries:            result.retries,
+				ProxyError:         result.proxyError,
+				Error:              result.errorMessage,
+				UserAgent:          req.UserAgent(),
+				Tags:               []string{"access", "proxy"},
+			})
+		}
+
+		h.logger.Log(context.Background(), parseLogLevel(level), "request",
+			"request_id", id,
+			"client_ip", clientIP(req),
+			"method", req.Method,
+			"host", req.Host,
+			"path", req.URL.RequestURI(),
+			"route", rt.cfg.Name,
+			"status", status,
+			"bytes_in", bytesIn,
+			"bytes_out", rw.bytes,
+			"duration_ms", durationMS(duration),
+			"upstream", result.upstream,
+			"upstream_status", result.upstreamStatus,
+			"upstream_calls", result.upstreamCalls,
+			"upstream_duration_ms", durationMS(result.upstreamDuration),
+			"cache", result.cacheStatus,
+			"retries", result.retries,
+			"proxy_error", result.proxyError,
 		)
 	}()
 
@@ -102,10 +175,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 type requestResult struct {
 	cacheStatus      string
 	upstream         string
+	upstreamStatus   int
 	upstreamDuration time.Duration
 	upstreamCalls    uint64
 	retries          uint64
 	proxyError       bool
+	errorMessage     string
 }
 
 func (h *Handler) handleRoute(w http.ResponseWriter, req *http.Request, rt *routeRuntime, id string) requestResult {
@@ -140,8 +215,7 @@ func (h *Handler) handleRoute(w http.ResponseWriter, req *http.Request, rt *rout
 			stale = &entry
 		}
 	}
-	result := h.fetchAndServe(w, req, rt, id, stale, "MISS")
-	return result
+	return h.fetchAndServe(w, req, rt, id, stale, "MISS")
 }
 
 func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *routeRuntime, id string, stale *cache.Entry, cacheStatus string) requestResult {
@@ -159,9 +233,13 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 	}
 	var resp *http.Response
 	var lastErr error
+	excluded := make(map[*upstream]bool)
 	for attempt := 0; attempt < attempts; attempt++ {
-		node := rt.pool.pick(nil)
+		node := rt.pool.pick(excluded)
 		if node == nil {
+			if lastErr == nil {
+				lastErr = errors.New("no eligible upstream available")
+			}
 			break
 		}
 		outReq, err := cloneRequest(ctx, req, node, rt.cfg, id)
@@ -169,24 +247,52 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 			lastErr = err
 			break
 		}
-		start := time.Now()
+
+		started := time.Now()
 		resp, err = node.transport.RoundTrip(outReq)
-		elapsed := time.Since(start)
+		elapsed := time.Since(started)
 		result.upstreamDuration += elapsed
 		result.upstreamCalls++
 		result.upstream = node.url.String()
-		if err == nil && !retryableStatus(resp.StatusCode) {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+			result.upstreamStatus = status
+		}
+		failed := err != nil || (resp != nil && retryableStatus(resp.StatusCode))
+		attemptErr := err
+		if attemptErr == nil && resp != nil && retryableStatus(resp.StatusCode) {
+			attemptErr = fmt.Errorf("upstream returned %s", resp.Status)
+		}
+		timedOut := isTimeoutError(err)
+		h.metrics.RecordUpstream(rt.cfg.Name, node.url.String(), metrics.UpstreamObservation{
+			Status:   status,
+			Duration: elapsed,
+			Failed:   failed,
+			Timeout:  timedOut,
+			Retry:    attempt > 0,
+		})
+		h.recordUpstreamAttempt(req, rt.cfg.Name, id, node.url.String(), attempt+1, status, elapsed, attempt > 0, timedOut, attemptErr, failed)
+
+		if !failed {
 			lastErr = nil
+			result.errorMessage = ""
+			if !node.healthy.Swap(true) {
+				h.recordHealthChange(rt.cfg.Name, healthChange{Upstream: node.url.String(), Healthy: true, Status: status, Duration: elapsed})
+			}
 			break
 		}
-		if err == nil {
-			io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+
+		if err == nil && resp != nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 			resp.Body.Close()
-			lastErr = fmt.Errorf("upstream returned %s", resp.Status)
-		} else {
-			lastErr = err
 		}
-		node.healthy.Store(false)
+		lastErr = attemptErr
+		result.errorMessage = errorText(lastErr)
+		excluded[node] = true
+		if node.healthy.Swap(false) {
+			h.recordHealthChange(rt.cfg.Name, healthChange{Upstream: node.url.String(), Healthy: false, Status: status, Duration: elapsed, Error: errorText(lastErr)})
+		}
 		if attempt+1 < attempts {
 			result.retries++
 			if backoff := rt.cfg.Proxy.RetryBackoff.Duration; backoff > 0 {
@@ -195,6 +301,7 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 				case <-ctx.Done():
 					timer.Stop()
 					lastErr = ctx.Err()
+					result.errorMessage = errorText(lastErr)
 					attempt = attempts
 				case <-timer.C:
 				}
@@ -209,17 +316,19 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 			return result
 		}
 		result.proxyError = true
-		h.logger.Error("upstream request failed", "request_id", id, "route", rt.cfg.Name, "error", lastErr)
+		result.errorMessage = errorText(lastErr)
+		h.logger.Error("upstream request failed",
+			"request_id", id,
+			"route", rt.cfg.Name,
+			"upstream", result.upstream,
+			"upstream_calls", result.upstreamCalls,
+			"retries", result.retries,
+			"error", lastErr,
+		)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return result
 	}
 	defer resp.Body.Close()
-	for _, node := range rt.pool.nodes {
-		if node.url.String() == result.upstream {
-			node.healthy.Store(true)
-			break
-		}
-	}
 
 	if stale != nil && retryableStatus(resp.StatusCode) {
 		serveCacheEntry(w, req, *stale, "STALE", time.Now())
@@ -253,13 +362,136 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 			StatusCode: resp.StatusCode,
 			Header:     resp.Header.Clone(),
 			Body:       append([]byte(nil), capture.Bytes()...),
-			StoredAt:   time.Now(), ExpiresAt: expiresAt, StaleUntil: staleUntil,
+			StoredAt:   time.Now(),
+			ExpiresAt:  expiresAt,
+			StaleUntil: staleUntil,
 		}
 		if rt.cache.Set(cacheKey(req, rt.cfg.Cache), entry) {
 			h.metrics.RecordCacheStore(rt.cfg.Name)
 		}
 	}
 	return result
+}
+
+func (h *Handler) recordUpstreamAttempt(req *http.Request, route, requestID, upstreamURL string, attempt, status int, duration time.Duration, retry, timeout bool, err error, failed bool) {
+	if h.logs == nil {
+		return
+	}
+	level := "INFO"
+	if failed {
+		level = "WARN"
+	}
+	if err != nil {
+		level = "ERROR"
+	}
+	h.logs.Append(accesslog.Entry{
+		Level:              level,
+		Event:              "upstream_attempt",
+		Message:            "origin request attempt completed",
+		RequestID:          requestID,
+		ClientIP:           clientIP(req),
+		Method:             req.Method,
+		Host:               req.Host,
+		Path:               req.URL.EscapedPath(),
+		Query:              sanitizedQuery(req),
+		Route:              route,
+		Upstream:           upstreamURL,
+		UpstreamStatus:     status,
+		UpstreamDurationMS: durationMS(duration),
+		Attempt:            attempt,
+		Retry:              retry,
+		Timeout:            timeout,
+		Error:              errorText(err),
+		Tags:               []string{"origin", "upstream"},
+	})
+}
+
+func (h *Handler) recordHealthChange(route string, change healthChange) {
+	level := "INFO"
+	message := "origin recovered"
+	if !change.Healthy {
+		level = "WARN"
+		message = "origin became unhealthy"
+	}
+	h.logger.Log(context.Background(), parseLogLevel(level), message,
+		"route", route,
+		"upstream", change.Upstream,
+		"healthy", change.Healthy,
+		"status", change.Status,
+		"duration_ms", durationMS(change.Duration),
+		"error", change.Error,
+	)
+	if h.logs != nil {
+		healthy := change.Healthy
+		h.logs.Append(accesslog.Entry{
+			Level:              level,
+			Event:              "upstream_health_changed",
+			Message:            message,
+			Route:              route,
+			Upstream:           change.Upstream,
+			UpstreamStatus:     change.Status,
+			UpstreamDurationMS: durationMS(change.Duration),
+			Healthy:            &healthy,
+			Error:              change.Error,
+			Tags:               []string{"health", "origin"},
+		})
+	}
+}
+
+func parseLogLevel(level string) slog.Level {
+	if strings.EqualFold(level, "ERROR") {
+		return slog.LevelError
+	}
+	if strings.EqualFold(level, "WARN") {
+		return slog.LevelWarn
+	}
+	return slog.LevelInfo
+}
+
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func sanitizedQuery(req *http.Request) string {
+	values := req.URL.Query()
+	for key := range values {
+		lower := strings.ToLower(key)
+		if strings.Contains(lower, "token") || strings.Contains(lower, "secret") ||
+			strings.Contains(lower, "password") || strings.Contains(lower, "passwd") ||
+			strings.Contains(lower, "authorization") || strings.Contains(lower, "api_key") ||
+			strings.Contains(lower, "apikey") || strings.Contains(lower, "signature") {
+			values.Set(key, "[REDACTED]")
+		}
+	}
+	return values.Encode()
+}
+
+func durationMS(duration time.Duration) float64 {
+	if duration < 0 {
+		return 0
+	}
+	return float64(duration) / float64(time.Millisecond)
+}
+
+func maxInt64(value, minimum int64) int64 {
+	if value < minimum {
+		return minimum
+	}
+	return value
 }
 
 func cloneRequest(ctx context.Context, in *http.Request, node *upstream, cfg *config.RouteConfig, id string) (*http.Request, error) {

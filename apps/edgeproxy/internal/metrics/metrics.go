@@ -1,47 +1,139 @@
 package metrics
 
 import (
+	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-type routeCounters struct {
-	Requests           uint64 `json:"requests"`
-	Success            uint64 `json:"success"`
-	ClientErrors       uint64 `json:"client_errors"`
-	ServerErrors       uint64 `json:"server_errors"`
-	ProxyErrors        uint64 `json:"proxy_errors"`
-	UpstreamCalls      uint64 `json:"upstream_calls"`
-	Retries            uint64 `json:"retries"`
-	BytesIn            uint64 `json:"bytes_in"`
-	BytesOut           uint64 `json:"bytes_out"`
-	CacheHits          uint64 `json:"cache_hits"`
-	CacheMisses        uint64 `json:"cache_misses"`
-	CacheStale         uint64 `json:"cache_stale"`
-	CacheBypasses      uint64 `json:"cache_bypasses"`
-	CacheStores        uint64 `json:"cache_stores"`
-	TotalDurationNS    uint64 `json:"-"`
-	UpstreamDurationNS uint64 `json:"-"`
+var latencyBounds = [...]time.Duration{
+	1 * time.Millisecond,
+	5 * time.Millisecond,
+	10 * time.Millisecond,
+	25 * time.Millisecond,
+	50 * time.Millisecond,
+	100 * time.Millisecond,
+	250 * time.Millisecond,
+	500 * time.Millisecond,
+	1 * time.Second,
+	2_500 * time.Millisecond,
+	5 * time.Second,
+	10 * time.Second,
+	30 * time.Second,
+}
+
+type stringCounters struct {
+	values sync.Map // map[string]*atomic.Uint64
+}
+
+func (c *stringCounters) Add(key string, delta uint64) {
+	if key == "" || delta == 0 {
+		return
+	}
+	value, _ := c.values.LoadOrStore(key, &atomic.Uint64{})
+	value.(*atomic.Uint64).Add(delta)
+}
+
+func (c *stringCounters) Snapshot() map[string]uint64 {
+	out := make(map[string]uint64)
+	c.values.Range(func(key, value any) bool {
+		out[key.(string)] = value.(*atomic.Uint64).Load()
+		return true
+	})
+	return out
+}
+
+type histogram struct {
+	count   atomic.Uint64
+	sumNS   atomic.Uint64
+	minNS   atomic.Uint64
+	maxNS   atomic.Uint64
+	buckets [len(latencyBounds) + 1]atomic.Uint64
+}
+
+func (h *histogram) Observe(duration time.Duration) {
+	if duration < 0 {
+		duration = 0
+	}
+	ns := uint64(duration)
+	h.count.Add(1)
+	h.sumNS.Add(ns)
+	updateMin(&h.minNS, ns)
+	updateMax(&h.maxNS, ns)
+	index := len(latencyBounds)
+	for i, bound := range latencyBounds {
+		if duration <= bound {
+			index = i
+			break
+		}
+	}
+	h.buckets[index].Add(1)
+}
+
+func updateMin(target *atomic.Uint64, value uint64) {
+	for {
+		current := target.Load()
+		if current != 0 && current <= value {
+			return
+		}
+		if target.CompareAndSwap(current, value) {
+			return
+		}
+	}
+}
+
+func updateMax(target *atomic.Uint64, value uint64) {
+	for {
+		current := target.Load()
+		if current >= value {
+			return
+		}
+		if target.CompareAndSwap(current, value) {
+			return
+		}
+	}
 }
 
 type Counters struct {
-	requests           atomic.Uint64
-	success            atomic.Uint64
-	clientErrors       atomic.Uint64
-	serverErrors       atomic.Uint64
-	proxyErrors        atomic.Uint64
-	upstreamCalls      atomic.Uint64
-	retries            atomic.Uint64
-	bytesIn            atomic.Uint64
-	bytesOut           atomic.Uint64
-	cacheHits          atomic.Uint64
-	cacheMisses        atomic.Uint64
-	cacheStale         atomic.Uint64
-	cacheBypasses      atomic.Uint64
-	cacheStores        atomic.Uint64
-	totalDurationNS    atomic.Uint64
-	upstreamDurationNS atomic.Uint64
+	requests            atomic.Uint64
+	success             atomic.Uint64
+	clientErrors        atomic.Uint64
+	serverErrors        atomic.Uint64
+	proxyErrors         atomic.Uint64
+	upstreamCalls       atomic.Uint64
+	upstreamSuccess     atomic.Uint64
+	upstreamFailures    atomic.Uint64
+	upstreamTimeouts    atomic.Uint64
+	retries             atomic.Uint64
+	bytesIn             atomic.Uint64
+	bytesOut            atomic.Uint64
+	cacheHits           atomic.Uint64
+	cacheMisses         atomic.Uint64
+	cacheStale          atomic.Uint64
+	cacheBypasses       atomic.Uint64
+	cacheStores         atomic.Uint64
+	methods             stringCounters
+	statusCodes         stringCounters
+	upstreamStatusCodes stringCounters
+	responseLatency     histogram
+	upstreamLatency     histogram
+}
+
+type UpstreamCounters struct {
+	calls       atomic.Uint64
+	success     atomic.Uint64
+	failures    atomic.Uint64
+	timeouts    atomic.Uint64
+	retries     atomic.Uint64
+	statusCodes stringCounters
+	latency     histogram
+}
+
+type routeMetrics struct {
+	counters  Counters
+	upstreams sync.Map // map[string]*UpstreamCounters
 }
 
 type Registry struct {
@@ -49,68 +141,160 @@ type Registry struct {
 	inflight  atomic.Int64
 	total     Counters
 	mu        sync.RWMutex
-	routes    map[string]*Counters
+	routes    map[string]*routeMetrics
+	upstreams sync.Map // global map[string]*UpstreamCounters
+}
+
+// RequestObservation finalizes one client-facing request.
+type RequestObservation struct {
+	Status      int
+	BytesOut    uint64
+	Duration    time.Duration
+	ProxyError  bool
+	Retries     uint64
+	CacheStatus string
+}
+
+// UpstreamObservation records one concrete attempt against one origin.
+type UpstreamObservation struct {
+	Status   int
+	Duration time.Duration
+	Failed   bool
+	Timeout  bool
+	Retry    bool
 }
 
 type Snapshot struct {
-	StartedAt     string                     `json:"started_at"`
-	UptimeSeconds int64                      `json:"uptime_seconds"`
-	Inflight      int64                      `json:"inflight"`
-	Total         CounterSnapshot            `json:"total"`
-	Routes        map[string]CounterSnapshot `json:"routes"`
+	SchemaVersion     string                      `json:"schema_version"`
+	GeneratedAt       string                      `json:"generated_at"`
+	StartedAt         string                      `json:"started_at"`
+	UptimeSeconds     int64                       `json:"uptime_seconds"`
+	Inflight          int64                       `json:"inflight"`
+	RequestsPerSecond float64                     `json:"requests_per_second"`
+	Total             CounterSnapshot             `json:"total"`
+	Upstreams         map[string]UpstreamSnapshot `json:"upstreams"`
+	Routes            map[string]RouteSnapshot    `json:"routes"`
+}
+
+type RouteSnapshot struct {
+	CounterSnapshot
+	Upstreams map[string]UpstreamSnapshot `json:"upstreams"`
 }
 
 type CounterSnapshot struct {
-	Requests              uint64  `json:"requests"`
-	Success               uint64  `json:"success"`
-	ClientErrors          uint64  `json:"client_errors"`
-	ServerErrors          uint64  `json:"server_errors"`
-	ProxyErrors           uint64  `json:"proxy_errors"`
-	UpstreamCalls         uint64  `json:"upstream_calls"`
-	Retries               uint64  `json:"retries"`
-	BytesIn               uint64  `json:"bytes_in"`
-	BytesOut              uint64  `json:"bytes_out"`
-	CacheHits             uint64  `json:"cache_hits"`
-	CacheMisses           uint64  `json:"cache_misses"`
-	CacheStale            uint64  `json:"cache_stale"`
-	CacheBypasses         uint64  `json:"cache_bypasses"`
-	CacheStores           uint64  `json:"cache_stores"`
-	AverageResponseTimeMS float64 `json:"average_response_time_ms"`
-	AverageUpstreamTimeMS float64 `json:"average_upstream_time_ms"`
-	CacheHitRatio         float64 `json:"cache_hit_ratio"`
+	Requests              uint64            `json:"requests"`
+	Success               uint64            `json:"success"`
+	ClientErrors          uint64            `json:"client_errors"`
+	ServerErrors          uint64            `json:"server_errors"`
+	ProxyErrors           uint64            `json:"proxy_errors"`
+	UpstreamCalls         uint64            `json:"upstream_calls"`
+	Retries               uint64            `json:"retries"`
+	BytesIn               uint64            `json:"bytes_in"`
+	BytesOut              uint64            `json:"bytes_out"`
+	CacheHits             uint64            `json:"cache_hits"`
+	CacheMisses           uint64            `json:"cache_misses"`
+	CacheStale            uint64            `json:"cache_stale"`
+	CacheBypasses         uint64            `json:"cache_bypasses"`
+	CacheStores           uint64            `json:"cache_stores"`
+	AverageResponseTimeMS float64           `json:"average_response_time_ms"`
+	AverageUpstreamTimeMS float64           `json:"average_upstream_time_ms"`
+	CacheHitRatio         float64           `json:"cache_hit_ratio"`
+	SuccessRate           float64           `json:"success_rate"`
+	ErrorRate             float64           `json:"error_rate"`
+	Methods               map[string]uint64 `json:"methods"`
+	StatusCodes           map[string]uint64 `json:"status_codes"`
+	Traffic               TrafficSnapshot   `json:"traffic"`
+	Cache                 CacheSnapshot     `json:"cache"`
+	ResponseLatencyMS     LatencySnapshot   `json:"response_latency_ms"`
+	Upstream              UpstreamAggregate `json:"upstream"`
+}
+
+type TrafficSnapshot struct {
+	BytesIn  uint64 `json:"bytes_in"`
+	BytesOut uint64 `json:"bytes_out"`
+}
+
+type CacheSnapshot struct {
+	Hits     uint64  `json:"hits"`
+	Misses   uint64  `json:"misses"`
+	Stale    uint64  `json:"stale"`
+	Bypasses uint64  `json:"bypasses"`
+	Stores   uint64  `json:"stores"`
+	HitRatio float64 `json:"hit_ratio"`
+}
+
+type UpstreamAggregate struct {
+	Calls       uint64            `json:"calls"`
+	Success     uint64            `json:"success"`
+	Failures    uint64            `json:"failures"`
+	Timeouts    uint64            `json:"timeouts"`
+	Retries     uint64            `json:"retries"`
+	StatusCodes map[string]uint64 `json:"status_codes"`
+	LatencyMS   LatencySnapshot   `json:"latency_ms"`
+}
+
+type UpstreamSnapshot struct {
+	Calls       uint64            `json:"calls"`
+	Success     uint64            `json:"success"`
+	Failures    uint64            `json:"failures"`
+	Timeouts    uint64            `json:"timeouts"`
+	Retries     uint64            `json:"retries"`
+	SuccessRate float64           `json:"success_rate"`
+	ErrorRate   float64           `json:"error_rate"`
+	StatusCodes map[string]uint64 `json:"status_codes"`
+	LatencyMS   LatencySnapshot   `json:"latency_ms"`
+}
+
+type LatencySnapshot struct {
+	Count        uint64          `json:"count"`
+	Average      float64         `json:"average"`
+	Minimum      float64         `json:"minimum"`
+	Maximum      float64         `json:"maximum"`
+	P50          float64         `json:"p50"`
+	P95          float64         `json:"p95"`
+	P99          float64         `json:"p99"`
+	Distribution []LatencyBucket `json:"distribution"`
+}
+
+type LatencyBucket struct {
+	UpperBoundMS *float64 `json:"upper_bound_ms"`
+	Count        uint64   `json:"count"`
+	Cumulative   uint64   `json:"cumulative_count"`
 }
 
 func New() *Registry {
-	return &Registry{startedAt: time.Now(), routes: make(map[string]*Counters)}
+	return &Registry{startedAt: time.Now(), routes: make(map[string]*routeMetrics)}
 }
 
-func (r *Registry) Begin(route string, bytesIn uint64) func(status int, bytesOut uint64, totalDuration, upstreamDuration time.Duration, proxyErr bool, upstreamCalls, retries uint64, cacheStatus string) {
+// Begin starts accounting for one client request. The returned callback must be
+// called exactly once when the response is complete.
+func (r *Registry) Begin(route, method string, bytesIn uint64) func(RequestObservation) {
 	r.inflight.Add(1)
-	c := r.route(route)
-	r.total.requests.Add(1)
-	c.requests.Add(1)
-	r.total.bytesIn.Add(bytesIn)
-	c.bytesIn.Add(bytesIn)
-	return func(status int, bytesOut uint64, totalDuration, upstreamDuration time.Duration, proxyErr bool, upstreamCalls, retries uint64, cacheStatus string) {
+	routeMetrics := r.route(route)
+	for _, target := range []*Counters{&r.total, &routeMetrics.counters} {
+		target.requests.Add(1)
+		target.bytesIn.Add(bytesIn)
+		target.methods.Add(method, 1)
+	}
+	return func(observation RequestObservation) {
 		defer r.inflight.Add(-1)
-		for _, target := range []*Counters{&r.total, c} {
-			target.bytesOut.Add(bytesOut)
-			target.totalDurationNS.Add(uint64(max(totalDuration, 0)))
-			target.upstreamDurationNS.Add(uint64(max(upstreamDuration, 0)))
-			target.upstreamCalls.Add(upstreamCalls)
-			target.retries.Add(retries)
-			if proxyErr {
+		for _, target := range []*Counters{&r.total, &routeMetrics.counters} {
+			target.bytesOut.Add(observation.BytesOut)
+			target.responseLatency.Observe(observation.Duration)
+			target.retries.Add(observation.Retries)
+			if observation.ProxyError {
 				target.proxyErrors.Add(1)
 			}
+			target.statusCodes.Add(strconv.Itoa(observation.Status), 1)
 			switch {
-			case status >= 200 && status < 400:
+			case observation.Status >= 200 && observation.Status < 400:
 				target.success.Add(1)
-			case status >= 400 && status < 500:
+			case observation.Status >= 400 && observation.Status < 500:
 				target.clientErrors.Add(1)
-			case status >= 500:
+			case observation.Status >= 500:
 				target.serverErrors.Add(1)
 			}
-			switch cacheStatus {
+			switch observation.CacheStatus {
 			case "HIT":
 				target.cacheHits.Add(1)
 			case "MISS":
@@ -119,77 +303,262 @@ func (r *Registry) Begin(route string, bytesIn uint64) func(status int, bytesOut
 				target.cacheStale.Add(1)
 			case "BYPASS":
 				target.cacheBypasses.Add(1)
-			case "STORE":
-				target.cacheStores.Add(1)
 			}
+		}
+	}
+}
+
+// RecordUpstream accounts for one physical request to one upstream origin.
+func (r *Registry) RecordUpstream(route, upstream string, observation UpstreamObservation) {
+	routeMetrics := r.route(route)
+	globalUpstream := upstreamCounter(&r.upstreams, upstream)
+	routeUpstream := upstreamCounter(&routeMetrics.upstreams, upstream)
+
+	for _, target := range []*Counters{&r.total, &routeMetrics.counters} {
+		target.upstreamCalls.Add(1)
+		target.upstreamLatency.Observe(observation.Duration)
+		if observation.Status > 0 {
+			target.upstreamStatusCodes.Add(strconv.Itoa(observation.Status), 1)
+		}
+		if observation.Failed {
+			target.upstreamFailures.Add(1)
+		} else {
+			target.upstreamSuccess.Add(1)
+		}
+		if observation.Timeout {
+			target.upstreamTimeouts.Add(1)
+		}
+	}
+	for _, target := range []*UpstreamCounters{globalUpstream, routeUpstream} {
+		target.calls.Add(1)
+		target.latency.Observe(observation.Duration)
+		if observation.Status > 0 {
+			target.statusCodes.Add(strconv.Itoa(observation.Status), 1)
+		}
+		if observation.Failed {
+			target.failures.Add(1)
+		} else {
+			target.success.Add(1)
+		}
+		if observation.Timeout {
+			target.timeouts.Add(1)
+		}
+		if observation.Retry {
+			target.retries.Add(1)
 		}
 	}
 }
 
 func (r *Registry) RecordCacheStore(route string) {
 	r.total.cacheStores.Add(1)
-	r.route(route).cacheStores.Add(1)
+	r.route(route).counters.cacheStores.Add(1)
 }
 
-func (r *Registry) route(name string) *Counters {
+func (r *Registry) route(name string) *routeMetrics {
 	r.mu.RLock()
-	c := r.routes[name]
+	value := r.routes[name]
 	r.mu.RUnlock()
-	if c != nil {
-		return c
+	if value != nil {
+		return value
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if c = r.routes[name]; c == nil {
-		c = &Counters{}
-		r.routes[name] = c
+	if value = r.routes[name]; value == nil {
+		value = &routeMetrics{}
+		r.routes[name] = value
 	}
-	return c
+	return value
+}
+
+func upstreamCounter(container *sync.Map, name string) *UpstreamCounters {
+	value, _ := container.LoadOrStore(name, &UpstreamCounters{})
+	return value.(*UpstreamCounters)
 }
 
 func (r *Registry) Snapshot() Snapshot {
+	uptime := time.Since(r.startedAt)
 	out := Snapshot{
-		StartedAt:     r.startedAt.UTC().Format(time.RFC3339),
-		UptimeSeconds: int64(time.Since(r.startedAt).Seconds()),
+		SchemaVersion: "2.0",
+		GeneratedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+		StartedAt:     r.startedAt.UTC().Format(time.RFC3339Nano),
+		UptimeSeconds: int64(uptime.Seconds()),
 		Inflight:      r.inflight.Load(),
 		Total:         snapshotCounters(&r.total),
-		Routes:        make(map[string]CounterSnapshot),
+		Upstreams:     snapshotUpstreamMap(&r.upstreams),
+		Routes:        make(map[string]RouteSnapshot),
 	}
+	if uptime > 0 {
+		out.RequestsPerSecond = float64(out.Total.Requests) / uptime.Seconds()
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	for name, c := range r.routes {
-		out.Routes[name] = snapshotCounters(c)
+	for name, route := range r.routes {
+		out.Routes[name] = RouteSnapshot{
+			CounterSnapshot: snapshotCounters(&route.counters),
+			Upstreams:       snapshotUpstreamMap(&route.upstreams),
+		}
 	}
 	return out
 }
 
 func snapshotCounters(c *Counters) CounterSnapshot {
 	requests := c.requests.Load()
-	upstreamCalls := c.upstreamCalls.Load()
 	hits := c.cacheHits.Load()
 	misses := c.cacheMisses.Load()
-	s := CounterSnapshot{
-		Requests: requests,
-		Success:  c.success.Load(), ClientErrors: c.clientErrors.Load(), ServerErrors: c.serverErrors.Load(),
-		ProxyErrors: c.proxyErrors.Load(), UpstreamCalls: upstreamCalls, Retries: c.retries.Load(),
-		BytesIn: c.bytesIn.Load(), BytesOut: c.bytesOut.Load(), CacheHits: hits, CacheMisses: misses,
-		CacheStale: c.cacheStale.Load(), CacheBypasses: c.cacheBypasses.Load(), CacheStores: c.cacheStores.Load(),
+	success := c.success.Load()
+	clientErrors := c.clientErrors.Load()
+	serverErrors := c.serverErrors.Load()
+	responseLatency := c.responseLatency.Snapshot()
+	upstreamLatency := c.upstreamLatency.Snapshot()
+	upstreamCalls := c.upstreamCalls.Load()
+	upstreamFailures := c.upstreamFailures.Load()
+	upstreamSuccess := c.upstreamSuccess.Load()
+
+	snapshot := CounterSnapshot{
+		Requests:              requests,
+		Success:               success,
+		ClientErrors:          clientErrors,
+		ServerErrors:          serverErrors,
+		ProxyErrors:           c.proxyErrors.Load(),
+		UpstreamCalls:         upstreamCalls,
+		Retries:               c.retries.Load(),
+		BytesIn:               c.bytesIn.Load(),
+		BytesOut:              c.bytesOut.Load(),
+		CacheHits:             hits,
+		CacheMisses:           misses,
+		CacheStale:            c.cacheStale.Load(),
+		CacheBypasses:         c.cacheBypasses.Load(),
+		CacheStores:           c.cacheStores.Load(),
+		AverageResponseTimeMS: responseLatency.Average,
+		AverageUpstreamTimeMS: upstreamLatency.Average,
+		Methods:               sortedCounterMap(c.methods.Snapshot()),
+		StatusCodes:           sortedCounterMap(c.statusCodes.Snapshot()),
+		ResponseLatencyMS:     responseLatency,
 	}
 	if requests > 0 {
-		s.AverageResponseTimeMS = float64(c.totalDurationNS.Load()) / float64(requests) / 1e6
-	}
-	if upstreamCalls > 0 {
-		s.AverageUpstreamTimeMS = float64(c.upstreamDurationNS.Load()) / float64(upstreamCalls) / 1e6
+		snapshot.SuccessRate = float64(success) / float64(requests)
+		snapshot.ErrorRate = float64(clientErrors+serverErrors) / float64(requests)
 	}
 	if hits+misses > 0 {
-		s.CacheHitRatio = float64(hits) / float64(hits+misses)
+		snapshot.CacheHitRatio = float64(hits) / float64(hits+misses)
 	}
-	return s
+	snapshot.Traffic = TrafficSnapshot{BytesIn: snapshot.BytesIn, BytesOut: snapshot.BytesOut}
+	snapshot.Cache = CacheSnapshot{
+		Hits: hits, Misses: misses, Stale: snapshot.CacheStale,
+		Bypasses: snapshot.CacheBypasses, Stores: snapshot.CacheStores,
+		HitRatio: snapshot.CacheHitRatio,
+	}
+	snapshot.Upstream = UpstreamAggregate{
+		Calls:       upstreamCalls,
+		Success:     upstreamSuccess,
+		Failures:    upstreamFailures,
+		Timeouts:    c.upstreamTimeouts.Load(),
+		Retries:     snapshot.Retries,
+		StatusCodes: sortedCounterMap(c.upstreamStatusCodes.Snapshot()),
+		LatencyMS:   upstreamLatency,
+	}
+	return snapshot
 }
 
-func max(d time.Duration, min time.Duration) time.Duration {
-	if d < min {
-		return min
+func snapshotUpstreamMap(container *sync.Map) map[string]UpstreamSnapshot {
+	out := make(map[string]UpstreamSnapshot)
+	container.Range(func(key, value any) bool {
+		out[key.(string)] = snapshotUpstream(value.(*UpstreamCounters))
+		return true
+	})
+	return out
+}
+
+func snapshotUpstream(c *UpstreamCounters) UpstreamSnapshot {
+	calls := c.calls.Load()
+	success := c.success.Load()
+	failures := c.failures.Load()
+	out := UpstreamSnapshot{
+		Calls:       calls,
+		Success:     success,
+		Failures:    failures,
+		Timeouts:    c.timeouts.Load(),
+		Retries:     c.retries.Load(),
+		StatusCodes: sortedCounterMap(c.statusCodes.Snapshot()),
+		LatencyMS:   c.latency.Snapshot(),
 	}
-	return d
+	if calls > 0 {
+		out.SuccessRate = float64(success) / float64(calls)
+		out.ErrorRate = float64(failures) / float64(calls)
+	}
+	return out
+}
+
+func (h *histogram) Snapshot() LatencySnapshot {
+	count := h.count.Load()
+	out := LatencySnapshot{Count: count, Distribution: make([]LatencyBucket, 0, len(latencyBounds)+1)}
+	if count == 0 {
+		return out
+	}
+	out.Average = nsToMS(h.sumNS.Load() / count)
+	out.Minimum = nsToMS(h.minNS.Load())
+	out.Maximum = nsToMS(h.maxNS.Load())
+
+	var cumulative uint64
+	bucketCounts := make([]uint64, len(latencyBounds)+1)
+	for i := range bucketCounts {
+		bucketCounts[i] = h.buckets[i].Load()
+		cumulative += bucketCounts[i]
+		var upper *float64
+		if i < len(latencyBounds) {
+			value := durationToMS(latencyBounds[i])
+			upper = &value
+		}
+		out.Distribution = append(out.Distribution, LatencyBucket{UpperBoundMS: upper, Count: bucketCounts[i], Cumulative: cumulative})
+	}
+	out.P50 = percentileUpperBound(bucketCounts, count, 0.50, out.Maximum)
+	out.P95 = percentileUpperBound(bucketCounts, count, 0.95, out.Maximum)
+	out.P99 = percentileUpperBound(bucketCounts, count, 0.99, out.Maximum)
+	return out
+}
+
+func percentileUpperBound(buckets []uint64, count uint64, quantile float64, maximum float64) float64 {
+	if count == 0 {
+		return 0
+	}
+	target := uint64(float64(count)*quantile + 0.999999999)
+	if target == 0 {
+		target = 1
+	}
+	var cumulative uint64
+	for i, bucketCount := range buckets {
+		cumulative += bucketCount
+		if cumulative >= target {
+			if i < len(latencyBounds) {
+				return durationToMS(latencyBounds[i])
+			}
+			return maximum
+		}
+	}
+	return maximum
+}
+
+func durationToMS(duration time.Duration) float64 {
+	return float64(duration) / float64(time.Millisecond)
+}
+
+func nsToMS(value uint64) float64 {
+	return float64(value) / float64(time.Millisecond)
+}
+
+func sortedCounterMap(values map[string]uint64) map[string]uint64 {
+	if len(values) == 0 {
+		return map[string]uint64{}
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make(map[string]uint64, len(values))
+	for _, key := range keys {
+		out[key] = values[key]
+	}
+	return out
 }

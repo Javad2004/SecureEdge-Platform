@@ -4,7 +4,7 @@ This repository is the implementation of **Phases 1 and 2** of the bachelor’s 
 
 > Design and Implementation of a Web Application Firewall Featuring Reverse Proxy, Caching, and Web Security Mechanisms Using Go
 
-The first two phases of this project are about a deployable edge proxy that receives real client traffic, forwards it to one or more origin servers, caches eligible HTTP responses, exposes operational metrics, and provides a stable integration boundary for the later WAF and dashboard phases.
+The first two phases are a deployable edge proxy that receives real client traffic, forwards it to one or more origin servers, caches eligible HTTP responses, exposes operational metrics, and provides a stable integration boundary for the later WAF and dashboard phases.
 
 ## Implemented scope
 
@@ -21,7 +21,7 @@ The first two phases of this project are about a deployable edge proxy that rece
 - Request correlation through `X-Request-ID`
 - Hop-by-hop header removal
 - Graceful shutdown
-- Structured JSON request logs
+- Structured JSON request logs plus a bounded, filterable in-memory Admin Log API
 - Optional inbound TLS termination
 
 ### Phase 2 — HTTP Caching and Performance Optimization
@@ -40,7 +40,7 @@ The first two phases of this project are about a deployable edge proxy that rece
 - Cache-stampede prevention by serializing fills per cache key
 - Stale-if-error fallback when the origin is unavailable
 - Cache purge API
-- Cache and proxy metrics for the later dashboard phase
+- Professional global, per-route, and per-origin metrics for the later dashboard phase
 
 ## Three-device deployment model
 
@@ -49,7 +49,7 @@ Client device
     |
     |  project.local resolves to Proxy-IP
     v
-Proxy device (Go application, ports 8080 and 9090)
+Proxy device (Go application, public port 80 in `edgeproxy.json`; admin port 9090)
     |
     v
 Origin device (demo or real web application, port 9000)
@@ -105,9 +105,9 @@ curl -i http://project.local:8080/api/time
 
 The first `/api/products` response should show `X-Cache: MISS`; the second should show `X-Cache: HIT`. `/api/time` always uses `Cache-Control: no-store` and should show `X-Cache: BYPASS`.
 
-## Admin and metrics API
+## Admin, metrics, and logs API
 
-The admin server is deliberately separated from the public proxy listener. Protect it with a strong token and firewall rules.
+The admin server is deliberately separated from the public proxy listener. Protect it with a strong token and firewall rules. Metrics are available globally, per route, and independently for every origin. Recent structured events are kept in a bounded in-memory ring buffer and can be filtered by route, origin, request ID, event, status, cache result, time range, and duration.
 
 ```bash
 curl -H "Authorization: Bearer dev-token" \
@@ -115,6 +115,12 @@ curl -H "Authorization: Bearer dev-token" \
 
 curl -H "Authorization: Bearer dev-token" \
   http://127.0.0.1:9090/api/v1/status
+
+curl -H "Authorization: Bearer dev-token" \
+  "http://127.0.0.1:9090/api/v1/logs?limit=100"
+
+curl -H "Authorization: Bearer dev-token" \
+  "http://127.0.0.1:9090/api/v1/logs?event=upstream_attempt&status=5xx"
 ```
 
 Purge all cache entries for a route:
@@ -148,5 +154,6 @@ No third-party Go dependency is required.
 docker compose up --build
 ```
 
-Then add `127.0.0.1 project.local` and access `http://project.local:8080`.
+Then add `127.0.0.1 project.local` and access `http://project.local:8080` for the Docker/local-development configuration. The three-device `configs/edgeproxy.json` uses standard HTTP port 80.
+
 

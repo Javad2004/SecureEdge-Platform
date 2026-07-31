@@ -20,3 +20,7 @@ curl.exe -s -H "Authorization: Bearer $Token" "$AdminUrl/api/v1/metrics"
 
 Write-Host "`n5) Status"
 curl.exe -s -H "Authorization: Bearer $Token" "$AdminUrl/api/v1/status"
+
+
+Write-Host "`n6) Latest structured logs"
+curl.exe -s -H "Authorization: Bearer $Token" "$AdminUrl/api/v1/logs?limit=20"

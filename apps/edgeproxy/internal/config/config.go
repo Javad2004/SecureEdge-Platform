@@ -35,9 +35,17 @@ type TLSConfig struct {
 }
 
 type AdminConfig struct {
-	Enabled    bool   `json:"enabled"`
-	ListenAddr string `json:"listen_addr"`
-	AuthToken  string `json:"auth_token"`
+	Enabled    bool           `json:"enabled"`
+	ListenAddr string         `json:"listen_addr"`
+	AuthToken  string         `json:"auth_token"`
+	LogStore   AdminLogConfig `json:"log_store"`
+}
+
+type AdminLogConfig struct {
+	Enabled         bool `json:"enabled"`
+	Capacity        int  `json:"capacity"`
+	DefaultPageSize int  `json:"default_page_size"`
+	MaxPageSize     int  `json:"max_page_size"`
 }
 
 type RouteConfig struct {
@@ -118,7 +126,16 @@ func Default() Config {
 			ShutdownTimeout:   Duration{10 * time.Second},
 			MaxHeaderBytes:    1 << 20,
 		},
-		Admin: AdminConfig{Enabled: true, ListenAddr: "127.0.0.1:9090"},
+		Admin: AdminConfig{
+			Enabled:    true,
+			ListenAddr: "127.0.0.1:9090",
+			LogStore: AdminLogConfig{
+				Enabled:         true,
+				Capacity:        5000,
+				DefaultPageSize: 100,
+				MaxPageSize:     500,
+			},
+		},
 	}
 }
 
@@ -135,6 +152,23 @@ func (c Config) Validate() error {
 	if c.Admin.Enabled {
 		if _, _, err := net.SplitHostPort(c.Admin.ListenAddr); err != nil {
 			errs = append(errs, fmt.Errorf("invalid admin.listen_addr: %w", err))
+		}
+		if c.Admin.LogStore.Enabled {
+			if c.Admin.LogStore.Capacity <= 0 {
+				errs = append(errs, errors.New("admin.log_store.capacity must be positive"))
+			}
+			if c.Admin.LogStore.DefaultPageSize <= 0 {
+				errs = append(errs, errors.New("admin.log_store.default_page_size must be positive"))
+			}
+			if c.Admin.LogStore.MaxPageSize <= 0 {
+				errs = append(errs, errors.New("admin.log_store.max_page_size must be positive"))
+			}
+			if c.Admin.LogStore.DefaultPageSize > c.Admin.LogStore.MaxPageSize {
+				errs = append(errs, errors.New("admin.log_store.default_page_size cannot exceed max_page_size"))
+			}
+			if c.Admin.LogStore.MaxPageSize > c.Admin.LogStore.Capacity {
+				errs = append(errs, errors.New("admin.log_store.max_page_size cannot exceed capacity"))
+			}
 		}
 	}
 	if len(c.Routes) == 0 {

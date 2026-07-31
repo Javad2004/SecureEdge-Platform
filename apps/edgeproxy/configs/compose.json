@@ -16,7 +16,13 @@
   "admin": {
     "enabled": true,
     "listen_addr": "0.0.0.0:9090",
-    "auth_token": "dev-token"
+    "auth_token": "dev-token",
+    "log_store": {
+      "enabled": true,
+      "capacity": 5000,
+      "default_page_size": 100,
+      "max_page_size": 500
+    }
   },
   "routes": [
     {

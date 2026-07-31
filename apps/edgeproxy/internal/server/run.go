@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/bachelor-project/edgeproxy/internal/accesslog"
 	"github.com/bachelor-project/edgeproxy/internal/admin"
 	"github.com/bachelor-project/edgeproxy/internal/config"
 	"github.com/bachelor-project/edgeproxy/internal/metrics"
@@ -18,7 +19,11 @@ import (
 
 func Run(cfg config.Config, logger *slog.Logger) error {
 	registry := metrics.New()
-	handler, err := proxy.NewHandler(cfg, logger, registry)
+	var logStore *accesslog.Store
+	if cfg.Admin.Enabled && cfg.Admin.LogStore.Enabled {
+		logStore = accesslog.New(cfg.Admin.LogStore.Capacity)
+	}
+	handler, err := proxy.NewHandler(cfg, logger, registry, logStore)
 	if err != nil {
 		return err
 	}
@@ -49,7 +54,7 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 
 	var adminServer *http.Server
 	if cfg.Admin.Enabled {
-		adminServer = admin.New(cfg.Admin, logger, registry, handler).HTTPServer()
+		adminServer = admin.New(cfg.Admin, logger, registry, handler, logStore).HTTPServer()
 		go func() {
 			logger.Info("admin server starting", "address", cfg.Admin.ListenAddr)
 			if serveErr := adminServer.ListenAndServe(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {

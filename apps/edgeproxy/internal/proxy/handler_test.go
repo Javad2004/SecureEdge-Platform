@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bachelor-project/edgeproxy/internal/accesslog"
 	"github.com/bachelor-project/edgeproxy/internal/config"
 	"github.com/bachelor-project/edgeproxy/internal/metrics"
 )
@@ -35,7 +36,7 @@ func TestProxyCacheMissThenHit(t *testing.T) {
 		_, _ = io.WriteString(w, "origin-body")
 	}))
 	defer origin.Close()
-	h, err := NewHandler(testConfig(origin.URL), slog.New(slog.NewTextHandler(os.Stderr, nil)), metrics.New())
+	h, err := NewHandler(testConfig(origin.URL), slog.New(slog.NewTextHandler(os.Stderr, nil)), metrics.New(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +66,7 @@ func TestNoStoreBypassesCache(t *testing.T) {
 		_, _ = io.WriteString(w, "dynamic")
 	}))
 	defer origin.Close()
-	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New())
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +96,7 @@ func TestRetryOnTemporaryUpstreamFailure(t *testing.T) {
 	defer origin.Close()
 	cfg := testConfig(origin.URL)
 	cfg.Routes[0].Proxy.RetryCount = 1
-	h, err := NewHandler(cfg, slog.Default(), metrics.New())
+	h, err := NewHandler(cfg, slog.Default(), metrics.New(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +122,7 @@ func TestStaleIfError(t *testing.T) {
 	cfg.Routes[0].Cache.DefaultTTL = config.Duration{Duration: 10 * time.Millisecond}
 	cfg.Routes[0].Cache.StaleIfError = config.Duration{Duration: time.Minute}
 	cfg.Routes[0].Cache.RespectOriginHeaders = false
-	h, err := NewHandler(cfg, slog.Default(), metrics.New())
+	h, err := NewHandler(cfg, slog.Default(), metrics.New(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +152,7 @@ func TestCacheStampedePrevention(t *testing.T) {
 		_, _ = io.WriteString(w, "shared")
 	}))
 	defer origin.Close()
-	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New())
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +195,7 @@ func TestCookieRangeAndUnsupportedVaryBypass(t *testing.T) {
 		_, _ = io.WriteString(w, "value")
 	}))
 	defer origin.Close()
-	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New())
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +229,7 @@ func TestConditionalRequestFromCache(t *testing.T) {
 		_, _ = io.WriteString(w, "etag-body")
 	}))
 	defer origin.Close()
-	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New())
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,5 +242,126 @@ func TestConditionalRequestFromCache(t *testing.T) {
 	h.ServeHTTP(rr, req)
 	if rr.Code != http.StatusNotModified || rr.Header().Get("X-Cache") != "HIT" || rr.Body.Len() != 0 {
 		t.Fatalf("unexpected conditional response: code=%d cache=%q body=%q", rr.Code, rr.Header().Get("X-Cache"), rr.Body.String())
+	}
+}
+
+func TestRoundRobinMetricsAndPerOriginLogs(t *testing.T) {
+	originA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = io.WriteString(w, "origin-a")
+	}))
+	defer originA.Close()
+	originB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = io.WriteString(w, "origin-b")
+	}))
+	defer originB.Close()
+
+	cfg := testConfig(originA.URL)
+	cfg.Routes[0].Upstreams = []config.UpstreamConfig{{URL: originA.URL}, {URL: originB.URL}}
+	registry := metrics.New()
+	logs := accesslog.New(100)
+	h, err := NewHandler(cfg, slog.Default(), registry, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	got := make([]string, 0, 4)
+	for i := 0; i < 4; i++ {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://proxy.test/time", nil))
+		got = append(got, strings.TrimSpace(rr.Body.String()))
+	}
+	want := []string{"origin-a", "origin-b", "origin-a", "origin-b"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("request %d expected %q got %q; all=%v", i, want[i], got[i], got)
+		}
+	}
+
+	snapshot := registry.Snapshot()
+	route := snapshot.Routes["test"]
+	if route.Upstreams[originA.URL].Calls != 2 || route.Upstreams[originB.URL].Calls != 2 {
+		t.Fatalf("unexpected per-origin metrics: %#v", route.Upstreams)
+	}
+	originALogs := logs.Query(accesslog.Filter{Event: "upstream_attempt", Upstream: originA.URL, Limit: 10})
+	originBLogs := logs.Query(accesslog.Filter{Event: "upstream_attempt", Upstream: originB.URL, Limit: 10})
+	if len(originALogs.Entries) != 2 || len(originBLogs.Entries) != 2 {
+		t.Fatalf("unexpected per-origin logs: a=%d b=%d", len(originALogs.Entries), len(originBLogs.Entries))
+	}
+}
+
+func TestRetryUsesAnotherOriginAndCorrelatesLogs(t *testing.T) {
+	var firstCalls atomic.Int64
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstCalls.Add(1)
+		http.Error(w, "temporary", http.StatusServiceUnavailable)
+	}))
+	defer first.Close()
+	var secondCalls atomic.Int64
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondCalls.Add(1)
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = io.WriteString(w, "recovered-by-second-origin")
+	}))
+	defer second.Close()
+
+	cfg := testConfig(first.URL)
+	cfg.Routes[0].Upstreams = []config.UpstreamConfig{{URL: first.URL}, {URL: second.URL}}
+	cfg.Routes[0].Proxy.RetryCount = 1
+	registry := metrics.New()
+	logs := accesslog.New(100)
+	h, err := NewHandler(cfg, slog.Default(), registry, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://proxy.test/retry-two-origins", nil))
+	if rr.Code != http.StatusOK || strings.TrimSpace(rr.Body.String()) != "recovered-by-second-origin" {
+		t.Fatalf("unexpected response: code=%d body=%q", rr.Code, rr.Body.String())
+	}
+	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
+		t.Fatalf("unexpected calls: first=%d second=%d", firstCalls.Load(), secondCalls.Load())
+	}
+
+	attempts := logs.Query(accesslog.Filter{Event: "upstream_attempt", Limit: 10})
+	if len(attempts.Entries) != 2 {
+		t.Fatalf("expected 2 attempt logs, got %d", len(attempts.Entries))
+	}
+	// Entries are newest-first: second origin is the retry.
+	if !attempts.Entries[0].Retry || attempts.Entries[0].Attempt != 2 || attempts.Entries[0].Upstream != second.URL {
+		t.Fatalf("unexpected retry entry: %#v", attempts.Entries[0])
+	}
+	if attempts.Entries[0].RequestID == "" || attempts.Entries[0].RequestID != attempts.Entries[1].RequestID {
+		t.Fatalf("attempt logs are not correlated: %#v", attempts.Entries)
+	}
+}
+
+func TestAccessLogRedactsSensitiveQueryValues(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer origin.Close()
+	logs := accesslog.New(20)
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/data?token=super-secret&normal=value", nil)
+	req.Header.Set("Authorization", "Bearer must-not-be-retained")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	result := logs.Query(accesslog.Filter{Event: "request_completed", Limit: 10})
+	if len(result.Entries) != 1 {
+		t.Fatalf("expected request log")
+	}
+	query := result.Entries[0].Query
+	if strings.Contains(query, "super-secret") || !strings.Contains(query, "normal=value") || !strings.Contains(query, "REDACTED") {
+		t.Fatalf("query was not safely redacted: %q", query)
 	}
 }

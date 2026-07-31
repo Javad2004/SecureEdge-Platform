@@ -24,6 +24,14 @@ type upstreamPool struct {
 	next  atomic.Uint64
 }
 
+type healthChange struct {
+	Upstream string
+	Healthy  bool
+	Status   int
+	Duration time.Duration
+	Error    string
+}
+
 func newUpstreamPool(route config.RouteConfig) (*upstreamPool, error) {
 	pool := &upstreamPool{}
 	for _, raw := range route.Upstreams {
@@ -65,13 +73,24 @@ func (p *upstreamPool) pick(exclude map[*upstream]bool) *upstream {
 			return node
 		}
 	}
+	// If every non-excluded origin is currently marked unhealthy, still attempt one.
+	// This allows automatic recovery even between active health-check intervals.
 	for i := 0; i < n; i++ {
 		node := p.nodes[(start+i)%n]
 		if !exclude[node] {
 			return node
 		}
 	}
-	return nil
+	// All origins have already been attempted. When retry_count exceeds the number
+	// of origins (or only one origin exists), cycle again rather than abandoning
+	// a configured retry.
+	for i := 0; i < n; i++ {
+		node := p.nodes[(start+i)%n]
+		if node.healthy.Load() {
+			return node
+		}
+	}
+	return p.nodes[start]
 }
 
 func (p *upstreamPool) closeIdleConnections() {
@@ -88,7 +107,7 @@ func (p *upstreamPool) healthSnapshot() []map[string]any {
 	return out
 }
 
-func (p *upstreamPool) runHealthChecks(ctx context.Context, cfg config.HealthCheckConfig) {
+func (p *upstreamPool) runHealthChecks(ctx context.Context, cfg config.HealthCheckConfig, onChange func(healthChange)) {
 	if !cfg.Enabled {
 		return
 	}
@@ -100,15 +119,17 @@ func (p *upstreamPool) runHealthChecks(ctx context.Context, cfg config.HealthChe
 		for _, node := range p.nodes {
 			target := *node.url
 			target.Path = joinPath(node.url.Path, cfg.Path)
+			started := time.Now()
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 			if err != nil {
-				node.healthy.Store(false)
+				setNodeHealth(node, false, healthChange{Upstream: node.url.String(), Healthy: false, Duration: time.Since(started), Error: err.Error()}, onChange)
 				continue
 			}
 			client := &http.Client{Transport: node.transport, Timeout: cfg.Timeout.Duration}
 			resp, err := client.Do(req)
+			elapsed := time.Since(started)
 			if err != nil {
-				node.healthy.Store(false)
+				setNodeHealth(node, false, healthChange{Upstream: node.url.String(), Healthy: false, Duration: elapsed, Error: err.Error()}, onChange)
 				continue
 			}
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
@@ -117,7 +138,7 @@ func (p *upstreamPool) runHealthChecks(ctx context.Context, cfg config.HealthChe
 			if len(statuses) > 0 {
 				healthy = statuses[resp.StatusCode]
 			}
-			node.healthy.Store(healthy)
+			setNodeHealth(node, healthy, healthChange{Upstream: node.url.String(), Healthy: healthy, Status: resp.StatusCode, Duration: elapsed}, onChange)
 		}
 	}
 	check()
@@ -130,5 +151,12 @@ func (p *upstreamPool) runHealthChecks(ctx context.Context, cfg config.HealthChe
 		case <-ticker.C:
 			check()
 		}
+	}
+}
+
+func setNodeHealth(node *upstream, healthy bool, change healthChange, onChange func(healthChange)) {
+	previous := node.healthy.Swap(healthy)
+	if previous != healthy && onChange != nil {
+		onChange(change)
 	}
 }

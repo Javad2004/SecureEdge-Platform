@@ -1,159 +1,225 @@
-# EdgeProxy Go — Reverse Proxy and HTTP Cache
+# EdgeProxy Go — Reverse Proxy, Load Balancer, HTTP Cache, and Observability
 
-This repository is the implementation of **Phases 1 and 2** of the bachelor’s project:
+This repository implements the first two phases of the bachelor's project:
 
 > Design and Implementation of a Web Application Firewall Featuring Reverse Proxy, Caching, and Web Security Mechanisms Using Go
 
-The first two phases are a deployable edge proxy that receives real client traffic, forwards it to one or more origin servers, caches eligible HTTP responses, exposes operational metrics, and provides a stable integration boundary for the later WAF and dashboard phases.
+The code in this repository covers **Phase 1 (reverse proxy and traffic management)** and **Phase 2 (HTTP caching and performance optimization)**. The WAF and graphical dashboard remain separate later phases.
 
-## Implemented scope
+## What is implemented
 
-### Phase 1 — Reverse Proxy and Traffic Management
+### Reverse proxy and traffic management
 
-- Real HTTP reverse proxy between a client device and an origin-server device
-- Host- and path-based routing
-- Multiple upstreams with round-robin selection
-- Active upstream health checks
-- Connection pooling and HTTP/2 support toward HTTPS origins
-- Configurable request, dial, response-header, idle, and shutdown timeouts
-- Retry for idempotent requests on network failures and 502/503/504 responses
-- Standard forwarding headers: `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host`
-- Request correlation through `X-Request-ID`
+- Real HTTP reverse proxy between client and origin devices
+- Host- and path-based routing for multiple websites and APIs
+- Exact-host, wildcard-host, and longest-path route precedence
+- Multiple origins per route with round-robin load balancing
+- Active health checks and route-level readiness
+- Retry of replayable idempotent requests on transport failures and 502/503/504 responses
+- Connection pooling and optional HTTPS connections to origins
+- Forwarding headers: `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host`
+- Correlated requests through `X-Request-ID`
 - Hop-by-hop header removal
-- Graceful shutdown
-- Structured JSON request logs plus a bounded, filterable in-memory Admin Log API
+- Graceful shutdown of proxy, admin server, and demo origin
 - Optional inbound TLS termination
 
-### Phase 2 — HTTP Caching and Performance Optimization
+### HTTP cache
 
 - Thread-safe in-memory LRU cache
-- Entry-count, total-byte, and per-object size limits
-- TTL from `Cache-Control: s-maxage`, `max-age`, or `Expires`
-- Configurable default TTL
-- `no-store`, `private`, `Authorization`, `Cookie`, and `Set-Cookie` safety rules
-- Safe handling of `Vary`: responses are cached only when every varied header is included in the configured cache key
+- Entry-count, total-byte, and per-object limits
+- TTL from `s-maxage`, `max-age`, or `Expires`
+- Safe bypass rules for `no-store`, `private`, Authorization, Cookie, Set-Cookie, Range, and unsupported `Vary`
 - Cache keys based on method, canonical host, URI, and configured request headers
-- Range requests are bypassed to prevent partial-response cache poisoning
 - `X-Cache: HIT`, `MISS`, `BYPASS`, or `STALE`
-- `Age` response header
-- Conditional cache responses with `If-None-Match` and `If-Modified-Since`
-- Cache-stampede prevention by serializing fills per cache key
-- Stale-if-error fallback when the origin is unavailable
-- Cache purge API
-- Professional global, per-route, and per-origin metrics for the later dashboard phase
+- `Age` header and conditional 304 responses
+- Cache-stampede prevention with per-key locking
+- Stale-if-error fallback
+- Route/host/path cache purge API
 
-## Three-device deployment model
+### Observability and administration
+
+- Global, per-route, and per-origin metrics
+- Request, status-code, cache, retry, timeout, byte, and latency statistics
+- Histogram-based P50/P95/P99 latency estimates
+- Bounded thread-safe in-memory log ring buffer
+- Correlated request, origin-attempt, health-change, and cache-purge events
+- Filtering, time ranges, pagination, and sensitive query-value redaction
+- Separate admin listener protected by Bearer token
+- `EDGEPROXY_ADMIN_TOKEN` environment override for deployments
+
+## Active three-device configuration
+
+`configs/edgeproxy.json` is the current Windows/LAN demonstration configuration:
 
 ```text
-Client device
+Phone or client
     |
-    |  project.local resolves to Proxy-IP
+    | DNS: project.test -> Proxy IP
+    | HTTP port 80
     v
-Proxy device (Go application, public port 80 in `edgeproxy.json`; admin port 9090)
-    |
+EdgeProxy device
+    | public: 0.0.0.0:80
+    | admin:  127.0.0.1:9090
     v
-Origin device (demo or real web application, port 9000)
+Origin device
+    | http://10.36.74.43:9000
 ```
 
-Example addresses:
+Supported hosts in that file include:
 
 ```text
-Client:  192.168.1.5
-Proxy:   192.168.1.10
-Origin:  192.168.1.20
+project.local
+project.test
+www.project.test
+localhost
+127.0.0.1
 ```
 
-On the client, add this hosts-file entry:
+Change the upstream URL when the Origin IP changes.
+
+## Run the three-device configuration
+
+On the Origin device:
+
+```powershell
+go run ./cmd/origin-demo -listen 0.0.0.0:9000 -name origin-a
+```
+
+On the Proxy device:
+
+```powershell
+go run ./cmd/edgeproxy -config .\configs\edgeproxy.json -validate
+go run ./cmd/edgeproxy -config .\configs\edgeproxy.json -pretty-logs
+```
+
+From the client:
 
 ```text
-192.168.1.10 project.local
+http://project.test
+http://project.test/api/products
 ```
 
-In `configs/edgeproxy.json`, set the upstream URL to:
+For a reliable cache test, send two ordinary requests rather than browser refresh requests:
 
-```json
-"url": "http://192.168.1.20:9000"
+```bash
+curl -i http://project.test/api/products
+curl -i http://project.test/api/products
 ```
 
-## Quick local run
+Expected result:
 
-Terminal 1:
+```text
+first request  -> X-Cache: MISS
+second request -> X-Cache: HIT
+```
+
+## Local development on one computer
+
+`configs/local-dev.json` intentionally uses port `8080` and token `dev-token`:
 
 ```bash
 go run ./cmd/origin-demo -listen :9000 -name origin-a
-```
-
-Terminal 2:
-
-```bash
 go run ./cmd/edgeproxy -config configs/local-dev.json -pretty-logs
 ```
 
-Add to the local hosts file:
+Add `127.0.0.1 project.local` to the local hosts file and test:
+
+```bash
+curl -i http://project.local:8080/api/products
+```
+
+## Admin API
+
+The active three-device configuration binds the admin listener to loopback only. Run these commands on the Proxy device:
+
+```powershell
+$AdminUrl = "http://127.0.0.1:9090"
+$Token = "EdgeProxyDemo2026"
+$Auth = "Authorization: Bearer $Token"
+```
+
+Endpoints:
 
 ```text
-127.0.0.1 project.local
+GET     /healthz
+GET     /readyz
+GET     /api/v1/status
+GET     /api/v1/metrics
+GET     /api/v1/logs
+DELETE  /api/v1/logs
+POST    /api/v1/cache/purge
 ```
 
-Then test:
+Examples:
 
-```bash
-curl -i http://project.local:8080/api/products
-curl -i http://project.local:8080/api/products
-curl -i http://project.local:8080/api/time
+```powershell
+curl.exe -i "$AdminUrl/healthz"
+curl.exe -i "$AdminUrl/readyz"
+curl.exe -s -H $Auth "$AdminUrl/api/v1/status"
+curl.exe -s -H $Auth "$AdminUrl/api/v1/metrics"
+curl.exe -s -H $Auth "$AdminUrl/api/v1/logs?limit=100"
 ```
 
-The first `/api/products` response should show `X-Cache: MISS`; the second should show `X-Cache: HIT`. `/api/time` always uses `Cache-Control: no-store` and should show `X-Cache: BYPASS`.
+`/healthz` is process liveness. `/readyz` returns `503 Service Unavailable` when any route has no healthy origin.
 
-## Admin, metrics, and logs API
+Purge one route's cache:
 
-The admin server is deliberately separated from the public proxy listener. Protect it with a strong token and firewall rules. Metrics are available globally, per route, and independently for every origin. Recent structured events are kept in a bounded in-memory ring buffer and can be filtered by route, origin, request ID, event, status, cache result, time range, and duration.
-
-```bash
-curl -H "Authorization: Bearer dev-token" \
-  http://127.0.0.1:9090/api/v1/metrics
-
-curl -H "Authorization: Bearer dev-token" \
-  http://127.0.0.1:9090/api/v1/status
-
-curl -H "Authorization: Bearer dev-token" \
-  "http://127.0.0.1:9090/api/v1/logs?limit=100"
-
-curl -H "Authorization: Bearer dev-token" \
-  "http://127.0.0.1:9090/api/v1/logs?event=upstream_attempt&status=5xx"
+```powershell
+curl.exe -X POST -H $Auth `
+  "$AdminUrl/api/v1/cache/purge?route=demo-app"
 ```
 
-Purge all cache entries for a route:
+## Admin-token environment override
 
-```bash
-curl -X POST -H "Authorization: Bearer dev-token" \
-  "http://127.0.0.1:9090/api/v1/cache/purge?route=demo-app"
+The environment variable takes precedence over the JSON value:
+
+```powershell
+$env:EDGEPROXY_ADMIN_TOKEN = "replace-with-a-long-random-token"
+go run ./cmd/edgeproxy -config .\configs\edgeproxy.json -pretty-logs
 ```
 
-Purge only a host/path prefix:
+This is preferable for non-demo deployments because the real token does not need to be committed to the repository.
 
-```bash
-curl -X POST -H "Authorization: Bearer dev-token" \
-  "http://127.0.0.1:9090/api/v1/cache/purge?route=demo-app&host=project.local&path_prefix=/api/products"
+## Multiple origins and routes
+
+Ready-to-copy examples are provided in:
+
+```text
+configs/examples/multi-origin.json
+configs/examples/multi-route.json
 ```
 
-## Build and test
+Each route has independent hosts, path prefix, origin pool, health state, cache, metrics, and filterable logs.
+
+## Build and verification
 
 ```bash
-make fmt
-make vet
-make test
-make build
+gofmt -w ./cmd ./internal
+go vet ./...
+go test ./...
+go test -race ./...
+go build ./cmd/edgeproxy
+go build ./cmd/origin-demo
 ```
 
 No third-party Go dependency is required.
 
-## Docker demonstration
+## Docker
+
+The container runs as a non-root user and therefore uses internal port `8080`:
 
 ```bash
 docker compose up --build
 ```
 
-Then add `127.0.0.1 project.local` and access `http://project.local:8080` for the Docker/local-development configuration. The three-device `configs/edgeproxy.json` uses standard HTTP port 80.
+Then access:
 
+```text
+http://project.local:8080
+```
 
+The admin port is published only on host loopback:
+
+```text
+127.0.0.1:9090
+```

@@ -65,20 +65,24 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	var runErr error
 	select {
 	case <-sigCtx.Done():
 		logger.Info("shutdown signal received")
-	case err := <-errCh:
-		return err
+	case runErr = <-errCh:
+		logger.Error("listener failed; shutting down remaining servers", "error", runErr)
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout.Duration)
 	defer cancel()
+	var shutdownErrs []error
 	if adminServer != nil {
-		_ = adminServer.Shutdown(shutdownCtx)
+		if err := adminServer.Shutdown(shutdownCtx); err != nil {
+			shutdownErrs = append(shutdownErrs, fmt.Errorf("admin graceful shutdown: %w", err))
+		}
 	}
 	if err := mainServer.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("graceful shutdown: %w", err)
+		shutdownErrs = append(shutdownErrs, fmt.Errorf("proxy graceful shutdown: %w", err))
 	}
-	return nil
+	return errors.Join(append([]error{runErr}, shutdownErrs...)...)
 }

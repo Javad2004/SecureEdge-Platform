@@ -71,3 +71,24 @@ func TestLogsEndpointRejectsOversizedPageAndCanClear(t *testing.T) {
 		t.Fatalf("clear failed: code=%d retained=%d", cleared.Code, store.Stats().Retained)
 	}
 }
+
+func TestAuthAcceptsCaseInsensitiveBearerAndReturnsChallenge(t *testing.T) {
+	server := testAdminServer(accesslog.New(10))
+
+	missing := httptest.NewRecorder()
+	server.HTTPServer().Handler.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/api/v1/logs", nil))
+	if missing.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", missing.Code)
+	}
+	if got := missing.Header().Get("WWW-Authenticate"); got == "" {
+		t.Fatal("expected WWW-Authenticate challenge")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/logs", nil)
+	req.Header.Set("Authorization", "bearer test-token")
+	rr := httptest.NewRecorder()
+	server.HTTPServer().Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected lowercase bearer scheme to work, got %d: %s", rr.Code, rr.Body.String())
+	}
+}

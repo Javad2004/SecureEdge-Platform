@@ -53,14 +53,10 @@ func (s *Server) HTTPServer() *http.Server { return s.http }
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.cfg.AuthToken != "" {
-			header := strings.TrimSpace(r.Header.Get("Authorization"))
-			const prefix = "Bearer "
-			if !strings.HasPrefix(header, prefix) {
-				writeAPIError(w, http.StatusUnauthorized, "unauthorized", "a valid Bearer token is required")
-				return
-			}
-			token := strings.TrimSpace(strings.TrimPrefix(header, prefix))
-			if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.AuthToken)) != 1 {
+			parts := strings.Fields(r.Header.Get("Authorization"))
+			if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") ||
+				subtle.ConstantTimeCompare([]byte(parts[1]), []byte(s.cfg.AuthToken)) != 1 {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="edgeproxy-admin"`)
 				writeAPIError(w, http.StatusUnauthorized, "unauthorized", "a valid Bearer token is required")
 				return
 			}
@@ -77,9 +73,24 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) ready(w http.ResponseWriter, _ *http.Request) {
+	generatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	if s.proxy == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ready", "generated_at": generatedAt})
+		return
+	}
+	readiness := s.proxy.Readiness()
+	if !readiness.Ready {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"status":           "not_ready",
+			"generated_at":     generatedAt,
+			"unhealthy_routes": readiness.UnhealthyRoutes,
+		})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":       "ready",
-		"generated_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"status":           "ready",
+		"generated_at":     generatedAt,
+		"unhealthy_routes": []string{},
 	})
 }
 

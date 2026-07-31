@@ -3,7 +3,6 @@ package router
 import (
 	"net"
 	"net/http"
-	"sort"
 	"strings"
 
 	"github.com/bachelor-project/edgeproxy/internal/config"
@@ -18,47 +17,69 @@ func New(routes []config.RouteConfig) *Router {
 	for i := range routes {
 		copied[i] = &routes[i]
 	}
-	sort.SliceStable(copied, func(i, j int) bool { return len(copied[i].PathPrefix) > len(copied[j].PathPrefix) })
 	return &Router{routes: copied}
 }
 
 func (r *Router) Match(req *http.Request) (Match, bool) {
 	host := canonicalHost(req.Host)
+	var best *config.RouteConfig
+	bestPathLength := -1
+	bestHostScore := -1
+
 	for _, route := range r.routes {
-		if !hostMatches(route.Hosts, host) {
+		matched, hostScore := hostMatchSpecificity(route.Hosts, host)
+		if !matched || !pathPrefixMatches(req.URL.Path, route.PathPrefix) {
 			continue
 		}
-		if !pathPrefixMatches(req.URL.Path, route.PathPrefix) {
-			continue
+
+		pathLength := len(route.PathPrefix)
+		if pathLength > bestPathLength || (pathLength == bestPathLength && hostScore > bestHostScore) {
+			best = route
+			bestPathLength = pathLength
+			bestHostScore = hostScore
 		}
-		return Match{Route: route}, true
 	}
-	return Match{}, false
+	if best == nil {
+		return Match{}, false
+	}
+	return Match{Route: best}, true
 }
 
 func canonicalHost(hostport string) string {
 	if host, _, err := net.SplitHostPort(hostport); err == nil {
 		hostport = host
 	}
-	return strings.ToLower(strings.TrimSuffix(hostport, "."))
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(hostport), "."))
 }
 
-func hostMatches(patterns []string, host string) bool {
+// hostMatchSpecificity returns whether the host matches and a score used to
+// resolve overlapping routes. Exact hosts beat wildcard suffixes, longer
+// wildcard suffixes beat shorter ones, and the catch-all pattern is last.
+func hostMatchSpecificity(patterns []string, host string) (bool, int) {
+	best := -1
 	for _, raw := range patterns {
 		p := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(raw, ".")))
 		switch {
 		case p == "*":
-			return true
+			if best < 1 {
+				best = 1
+			}
 		case strings.HasPrefix(p, "*."):
 			suffix := strings.TrimPrefix(p, "*")
 			if strings.HasSuffix(host, suffix) && host != strings.TrimPrefix(suffix, ".") {
-				return true
+				score := 1_000 + len(suffix)
+				if score > best {
+					best = score
+				}
 			}
 		case p == host:
-			return true
+			score := 1_000_000 + len(p)
+			if score > best {
+				best = score
+			}
 		}
 	}
-	return false
+	return best >= 0, best
 }
 
 func pathPrefixMatches(requestPath, prefix string) bool {

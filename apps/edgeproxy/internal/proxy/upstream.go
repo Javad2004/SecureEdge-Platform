@@ -52,7 +52,10 @@ func newUpstreamPool(route config.RouteConfig) (*upstreamPool, error) {
 			TLSClientConfig:        &tls.Config{InsecureSkipVerify: raw.InsecureSkipVerify}, //nolint:gosec -- explicit per-upstream demo option
 		}
 		node := &upstream{url: parsed, transport: tr}
-		node.healthy.Store(true)
+		// With active health checks enabled, begin in an unknown/not-ready state
+		// until the immediate first probe succeeds. Routes without health checks
+		// remain optimistic and recover through real request attempts.
+		node.healthy.Store(!route.HealthCheck.Enabled)
 		pool.nodes = append(pool.nodes, node)
 	}
 	return pool, nil
@@ -91,6 +94,15 @@ func (p *upstreamPool) pick(exclude map[*upstream]bool) *upstream {
 		}
 	}
 	return p.nodes[start]
+}
+
+func (p *upstreamPool) hasHealthy() bool {
+	for _, node := range p.nodes {
+		if node.healthy.Load() {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *upstreamPool) closeIdleConnections() {

@@ -365,3 +365,26 @@ func TestAccessLogRedactsSensitiveQueryValues(t *testing.T) {
 		t.Fatalf("query was not safely redacted: %q", query)
 	}
 }
+
+func TestReadinessRequiresOneHealthyOriginPerRoute(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer origin.Close()
+
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	if status := h.Readiness(); !status.Ready || len(status.UnhealthyRoutes) != 0 {
+		t.Fatalf("expected ready handler, got %#v", status)
+	}
+
+	h.routes["test"].pool.nodes[0].healthy.Store(false)
+	status := h.Readiness()
+	if status.Ready || len(status.UnhealthyRoutes) != 1 || status.UnhealthyRoutes[0] != "test" {
+		t.Fatalf("expected test route to be not ready, got %#v", status)
+	}
+}

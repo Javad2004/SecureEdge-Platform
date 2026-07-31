@@ -7,13 +7,23 @@ services:
     command: ["go", "run", "./cmd/origin-demo", "-listen", ":9000", "-name", "origin-compose"]
     expose:
       - "9000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9000/healthz"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+      start_period: 5s
 
   proxy:
     build: .
     depends_on:
-      - origin
+      origin:
+        condition: service_healthy
     ports:
       - "8080:8080"
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./configs/compose.json:/app/config.json:ro
+    read_only: true
+    security_opt:
+      - no-new-privileges:true

@@ -109,6 +109,11 @@ func Load(path string) (Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
+	// An environment variable can override the file value so deployments do not
+	// need to bake the admin credential into a committed JSON file.
+	if token := strings.TrimSpace(os.Getenv("EDGEPROXY_ADMIN_TOKEN")); token != "" {
+		cfg.Admin.AuthToken = token
+	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -139,19 +144,40 @@ func Default() Config {
 	}
 }
 
-func (c Config) Validate() error {
+func (c *Config) Validate() error {
 	var errs []error
+	c.Server.ListenAddr = strings.TrimSpace(c.Server.ListenAddr)
+	c.Server.TLS.CertFile = strings.TrimSpace(c.Server.TLS.CertFile)
+	c.Server.TLS.KeyFile = strings.TrimSpace(c.Server.TLS.KeyFile)
+	c.Admin.ListenAddr = strings.TrimSpace(c.Admin.ListenAddr)
+	c.Admin.AuthToken = strings.TrimSpace(c.Admin.AuthToken)
 	if strings.TrimSpace(c.Server.ListenAddr) == "" {
 		errs = append(errs, errors.New("server.listen_addr is required"))
 	} else if _, _, err := net.SplitHostPort(c.Server.ListenAddr); err != nil {
 		errs = append(errs, fmt.Errorf("invalid server.listen_addr: %w", err))
 	}
-	if c.Server.TLS.Enabled && (c.Server.TLS.CertFile == "" || c.Server.TLS.KeyFile == "") {
+	if c.Server.ReadHeaderTimeout.Duration <= 0 {
+		errs = append(errs, errors.New("server.read_header_timeout must be positive"))
+	}
+	if c.Server.ReadTimeout.Duration < 0 || c.Server.WriteTimeout.Duration < 0 || c.Server.IdleTimeout.Duration < 0 {
+		errs = append(errs, errors.New("server read/write/idle timeouts cannot be negative"))
+	}
+	if c.Server.ShutdownTimeout.Duration <= 0 {
+		errs = append(errs, errors.New("server.shutdown_timeout must be positive"))
+	}
+	if c.Server.MaxHeaderBytes <= 0 {
+		errs = append(errs, errors.New("server.max_header_bytes must be positive"))
+	}
+	if c.Server.TLS.Enabled && (strings.TrimSpace(c.Server.TLS.CertFile) == "" || strings.TrimSpace(c.Server.TLS.KeyFile) == "") {
 		errs = append(errs, errors.New("server.tls.cert_file and key_file are required when TLS is enabled"))
 	}
+
 	if c.Admin.Enabled {
-		if _, _, err := net.SplitHostPort(c.Admin.ListenAddr); err != nil {
+		host, _, err := net.SplitHostPort(c.Admin.ListenAddr)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("invalid admin.listen_addr: %w", err))
+		} else if strings.TrimSpace(c.Admin.AuthToken) == "" && !isLoopbackHost(host) {
+			errs = append(errs, errors.New("admin.auth_token is required when admin.listen_addr is not loopback"))
 		}
 		if c.Admin.LogStore.Enabled {
 			if c.Admin.LogStore.Capacity <= 0 {
@@ -171,12 +197,15 @@ func (c Config) Validate() error {
 			}
 		}
 	}
+
 	if len(c.Routes) == 0 {
 		errs = append(errs, errors.New("at least one route is required"))
 	}
 	names := map[string]struct{}{}
+	selectors := map[string]string{}
 	for i := range c.Routes {
 		r := &c.Routes[i]
+		r.Name = strings.TrimSpace(r.Name)
 		if r.Name == "" {
 			errs = append(errs, fmt.Errorf("routes[%d].name is required", i))
 		} else if _, exists := names[r.Name]; exists {
@@ -187,6 +216,21 @@ func (c Config) Validate() error {
 		if len(r.Hosts) == 0 {
 			errs = append(errs, fmt.Errorf("route %q requires at least one host", r.Name))
 		}
+		seenHosts := map[string]struct{}{}
+		for j, host := range r.Hosts {
+			host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+			r.Hosts[j] = host
+			if host == "" {
+				errs = append(errs, fmt.Errorf("route %q hosts[%d] cannot be empty", r.Name, j))
+				continue
+			}
+			if _, exists := seenHosts[host]; exists {
+				errs = append(errs, fmt.Errorf("route %q contains duplicate host pattern %q", r.Name, host))
+			} else {
+				seenHosts[host] = struct{}{}
+			}
+		}
+		r.PathPrefix = strings.TrimSpace(r.PathPrefix)
 		if r.PathPrefix == "" {
 			r.PathPrefix = "/"
 		}
@@ -196,22 +240,58 @@ func (c Config) Validate() error {
 		if len(r.Upstreams) == 0 {
 			errs = append(errs, fmt.Errorf("route %q requires at least one upstream", r.Name))
 		}
-		for j, up := range r.Upstreams {
+		for _, host := range r.Hosts {
+			if host == "" {
+				continue
+			}
+			key := host + "\x00" + r.PathPrefix
+			if owner, exists := selectors[key]; exists && owner != r.Name {
+				errs = append(errs, fmt.Errorf("routes %q and %q have the same host/path selector %q %q", owner, r.Name, host, r.PathPrefix))
+			} else {
+				selectors[key] = r.Name
+			}
+		}
+		for j := range r.Upstreams {
+			r.Upstreams[j].URL = strings.TrimSpace(r.Upstreams[j].URL)
+			up := r.Upstreams[j]
 			parsed, err := url.Parse(up.URL)
-			if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Hostname() == "" {
 				errs = append(errs, fmt.Errorf("route %q upstream[%d] has invalid URL %q", r.Name, j, up.URL))
 				continue
 			}
 			if parsed.Scheme != "http" && parsed.Scheme != "https" {
 				errs = append(errs, fmt.Errorf("route %q upstream[%d] scheme must be http or https", r.Name, j))
 			}
+			if parsed.User != nil {
+				errs = append(errs, fmt.Errorf("route %q upstream[%d] must not contain URL credentials", r.Name, j))
+			}
+			if parsed.Fragment != "" {
+				errs = append(errs, fmt.Errorf("route %q upstream[%d] must not contain a URL fragment", r.Name, j))
+			}
+			if up.InsecureSkipVerify && parsed.Scheme != "https" {
+				errs = append(errs, fmt.Errorf("route %q upstream[%d] insecure_skip_verify is only valid for https", r.Name, j))
+			}
+		}
+
+		if r.Proxy.RequestTimeout.Duration <= 0 || r.Proxy.DialTimeout.Duration <= 0 || r.Proxy.ResponseHeaderTimeout.Duration <= 0 {
+			errs = append(errs, fmt.Errorf("route %q proxy request/dial/response-header timeouts must be positive", r.Name))
+		}
+		if r.Proxy.IdleConnTimeout.Duration < 0 || r.Proxy.RetryBackoff.Duration < 0 {
+			errs = append(errs, fmt.Errorf("route %q proxy idle timeout and retry backoff cannot be negative", r.Name))
 		}
 		if r.Proxy.RetryCount < 0 {
 			errs = append(errs, fmt.Errorf("route %q retry_count cannot be negative", r.Name))
 		}
+		if r.Proxy.MaxIdleConns <= 0 || r.Proxy.MaxIdleConnsPerHost <= 0 || r.Proxy.MaxResponseHeaderBytes <= 0 {
+			errs = append(errs, fmt.Errorf("route %q proxy connection/header limits must be positive", r.Name))
+		}
+
 		if r.Cache.Enabled {
 			if r.Cache.DefaultTTL.Duration <= 0 {
 				errs = append(errs, fmt.Errorf("route %q cache.default_ttl must be positive", r.Name))
+			}
+			if r.Cache.StaleIfError.Duration < 0 {
+				errs = append(errs, fmt.Errorf("route %q cache.stale_if_error cannot be negative", r.Name))
 			}
 			if r.Cache.MaxEntries <= 0 || r.Cache.MaxBytes <= 0 || r.Cache.MaxObjectBytes <= 0 {
 				errs = append(errs, fmt.Errorf("route %q cache limits must be positive", r.Name))
@@ -219,15 +299,39 @@ func (c Config) Validate() error {
 			if r.Cache.MaxObjectBytes > r.Cache.MaxBytes {
 				errs = append(errs, fmt.Errorf("route %q max_object_bytes cannot exceed max_bytes", r.Name))
 			}
+			if len(r.Cache.CacheableStatusCodes) == 0 {
+				errs = append(errs, fmt.Errorf("route %q cache.cacheable_status_codes cannot be empty", r.Name))
+			}
+			for _, status := range r.Cache.CacheableStatusCodes {
+				if status < 100 || status > 599 {
+					errs = append(errs, fmt.Errorf("route %q has invalid cacheable status %d", r.Name, status))
+				}
+			}
 		}
+
 		if r.HealthCheck.Enabled {
+			r.HealthCheck.Path = strings.TrimSpace(r.HealthCheck.Path)
 			if r.HealthCheck.Path == "" || !strings.HasPrefix(r.HealthCheck.Path, "/") {
 				errs = append(errs, fmt.Errorf("route %q health_check.path must start with /", r.Name))
 			}
 			if r.HealthCheck.Interval.Duration <= 0 || r.HealthCheck.Timeout.Duration <= 0 {
 				errs = append(errs, fmt.Errorf("route %q health-check durations must be positive", r.Name))
 			}
+			for _, status := range r.HealthCheck.HealthyStatuses {
+				if status < 100 || status > 599 {
+					errs = append(errs, fmt.Errorf("route %q has invalid healthy status %d", r.Name, status))
+				}
+			}
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

@@ -1,0 +1,21 @@
+[Unit]
+Description=EdgeProxy Go Reverse Proxy and Cache
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=edgeproxy
+Group=edgeproxy
+ExecStart=/usr/local/bin/edgeproxy -config /etc/edgeproxy/config.json
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/etc/edgeproxy
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

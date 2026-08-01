@@ -61,7 +61,7 @@
   "edgeproxy": {
     "config_path": "../../../integration/edgeproxy-local-behind-waf.json",
     "admin_url": "http://127.0.0.1:9090",
-    "admin_token": "EdgeProxyDemo2026",
+    "admin_token": "dev-token",
     "timeout": "5s"
   },
   "waf": {

@@ -8,7 +8,7 @@ diff -ruN '--exclude=edgeproxy' '--exclude=origin-demo' '--exclude=.git' a/go.mo
 +
 +require github.com/bachelor-project/edgeproxy-security v0.0.0
 +
-+replace github.com/bachelor-project/edgeproxy-security => ../edgeproxy-go-second-member
++replace github.com/bachelor-project/edgeproxy-security => ../securityedge
 diff -ruN '--exclude=edgeproxy' '--exclude=origin-demo' '--exclude=.git' a/internal/server/run.go b/internal/server/run.go
 --- a/internal/server/run.go	2026-07-26 21:50:05.000000000 +0000
 +++ b/internal/server/run.go	2026-07-26 23:06:37.529628121 +0000

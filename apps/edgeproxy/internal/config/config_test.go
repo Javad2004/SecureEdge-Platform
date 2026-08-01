@@ -209,3 +209,31 @@ func TestRejectsInvalidTrustedProxyConfiguration(t *testing.T) {
 		t.Fatal("expected invalid forwarding header name to be rejected")
 	}
 }
+
+func TestValidateNormalizesCanonicalRouteAndHealthPaths(t *testing.T) {
+	cfg := Default()
+	route := validRouteForValidation()
+	route.PathPrefix = " /api/ "
+	route.HealthCheck = HealthCheckConfig{
+		Enabled: true, Path: " /healthz/ ", Interval: Duration{Duration: time.Second}, Timeout: Duration{Duration: time.Second}, HealthyStatuses: []int{200},
+	}
+	cfg.Routes = []RouteConfig{route}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Routes[0].PathPrefix != "/api" || cfg.Routes[0].HealthCheck.Path != "/healthz/" {
+		t.Fatalf("unexpected normalized paths: route=%q health=%q", cfg.Routes[0].PathPrefix, cfg.Routes[0].HealthCheck.Path)
+	}
+}
+
+func TestValidateRejectsNonCanonicalRoutePaths(t *testing.T) {
+	for _, value := range []string{"api", "/api/../admin", "/api//admin", "/api%2Fadmin", "/api?debug=1"} {
+		cfg := Default()
+		route := validRouteForValidation()
+		route.PathPrefix = value
+		cfg.Routes = []RouteConfig{route}
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("expected path_prefix %q to be rejected", value)
+		}
+	}
+}

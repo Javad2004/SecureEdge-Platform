@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -513,17 +514,13 @@ func validatePolicy(name string, p *Policy) error {
 
 	excludedPaths := make([]string, 0, len(p.ExcludedPathPrefixes))
 	seenExcludedPaths := map[string]bool{}
-	for _, prefix := range p.ExcludedPathPrefixes {
-		prefix = strings.TrimSpace(prefix)
+	for _, rawPrefix := range p.ExcludedPathPrefixes {
+		prefix, err := normalizePolicyPathPrefix(rawPrefix)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s.excluded_path_prefixes contains invalid path %q: %w", name, rawPrefix, err))
+			continue
+		}
 		if prefix == "" {
-			continue
-		}
-		if !strings.HasPrefix(prefix, "/") {
-			errs = append(errs, fmt.Errorf("%s.excluded_path_prefixes contains non-absolute path %q", name, prefix))
-			continue
-		}
-		if strings.ContainsAny(prefix, "?#") {
-			errs = append(errs, fmt.Errorf("%s.excluded_path_prefixes must contain paths only: %q", name, prefix))
 			continue
 		}
 		if !seenExcludedPaths[prefix] {
@@ -592,6 +589,34 @@ func normalizeIPList(name string, values []string, errs []error) ([]string, []er
 		out = append(out, canonical)
 	}
 	return out, errs
+}
+
+func normalizePolicyPathPrefix(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", nil
+	}
+	if !strings.HasPrefix(value, "/") {
+		return "", errors.New("must start with /")
+	}
+	if strings.ContainsAny(value, "?#") {
+		return "", errors.New("must contain a path only")
+	}
+	decoded, err := url.PathUnescape(value)
+	if err != nil {
+		return "", fmt.Errorf("contains invalid escaping: %w", err)
+	}
+	if decoded != value {
+		return "", errors.New("must not contain percent-encoded path bytes")
+	}
+	value = strings.TrimRight(value, "/")
+	if value == "" {
+		value = "/"
+	}
+	if path.Clean(value) != value {
+		return "", errors.New("must be canonical and must not contain dot-segments or repeated slashes")
+	}
+	return value, nil
 }
 
 func validHTTPToken(value string) bool {

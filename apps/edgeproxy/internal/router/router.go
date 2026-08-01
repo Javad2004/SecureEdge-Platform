@@ -3,6 +3,7 @@ package router
 import (
 	"net"
 	"net/http"
+	"path"
 	"strings"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
@@ -22,13 +23,14 @@ func New(routes []config.RouteConfig) *Router {
 
 func (r *Router) Match(req *http.Request) (Match, bool) {
 	host := canonicalHost(req.Host)
+	requestPath := canonicalRequestPath(req.URL.Path)
 	var best *config.RouteConfig
 	bestPathLength := -1
 	bestHostScore := -1
 
 	for _, route := range r.routes {
 		matched, hostScore := hostMatchSpecificity(route.Hosts, host)
-		if !matched || !pathPrefixMatches(req.URL.Path, route.PathPrefix) {
+		if !matched || !pathPrefixMatches(requestPath, route.PathPrefix) {
 			continue
 		}
 
@@ -80,6 +82,18 @@ func hostMatchSpecificity(patterns []string, host string) (bool, int) {
 		}
 	}
 	return best >= 0, best
+}
+
+func canonicalRequestPath(value string) string {
+	if value == "" {
+		return "/"
+	}
+	trailingSlash := strings.HasSuffix(value, "/")
+	cleaned := path.Clean("/" + strings.TrimPrefix(value, "/"))
+	if trailingSlash && cleaned != "/" {
+		cleaned += "/"
+	}
+	return cleaned
 }
 
 func pathPrefixMatches(requestPath, prefix string) bool {

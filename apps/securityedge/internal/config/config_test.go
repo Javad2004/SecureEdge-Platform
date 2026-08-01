@@ -82,7 +82,7 @@ func TestExcludedPathPrefixesAreNormalizedAndValidated(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"/healthz", "/readyz/"}
+	want := []string{"/healthz", "/readyz"}
 	if len(cfg.DefaultPolicy.ExcludedPathPrefixes) != len(want) {
 		t.Fatalf("unexpected normalized prefixes: %#v", cfg.DefaultPolicy.ExcludedPathPrefixes)
 	}
@@ -92,7 +92,7 @@ func TestExcludedPathPrefixesAreNormalizedAndValidated(t *testing.T) {
 		}
 	}
 
-	for _, invalid := range []string{"healthz", "/healthz?full=1", "/healthz#fragment"} {
+	for _, invalid := range []string{"healthz", "/healthz?full=1", "/healthz#fragment", "/healthz/../admin", "/healthz//ready", "/healthz%2Fready"} {
 		cfg := Default()
 		cfg.Server.Mode = "embedded"
 		cfg.EdgeProxy.ConfigPath = "edge.json"

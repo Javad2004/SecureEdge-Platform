@@ -72,6 +72,7 @@ func responseCachePolicy(req *http.Request, resp *http.Response, cfg config.Cach
 		if hasCacheDirective(cc, "no-store") || hasCacheDirective(cc, "private") || hasCacheDirective(cc, "no-cache") || headerHasToken(resp.Header.Values("Pragma"), "no-cache") {
 			return false, time.Time{}, time.Time{}, 0
 		}
+		initialAge = responseInitialAge(resp.Header, now)
 		if value := firstNonEmpty(cc["s-maxage"], cc["max-age"]); value != "" {
 			seconds, err := strconv.Atoi(value)
 			if err == nil {
@@ -79,12 +80,13 @@ func responseCachePolicy(req *http.Request, resp *http.Response, cfg config.Cach
 			}
 		} else if expires := resp.Header.Get("Expires"); expires != "" {
 			if parsed, err := http.ParseTime(expires); err == nil {
-				ttl = parsed.Sub(now)
+				reference := now
+				if date, dateErr := http.ParseTime(resp.Header.Get("Date")); dateErr == nil {
+					reference = date
+				}
+				ttl = parsed.Sub(reference)
 			}
 		}
-	}
-	if cfg.RespectOriginHeaders {
-		initialAge = responseInitialAge(resp.Header, now)
 		ttl -= initialAge
 	}
 	if ttl <= 0 {

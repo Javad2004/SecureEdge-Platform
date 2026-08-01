@@ -646,3 +646,27 @@ func TestCachedResponsePreservesUpstreamAge(t *testing.T) {
 		t.Fatalf("origin calls=%d, want 1", calls.Load())
 	}
 }
+
+func TestResponseCachePolicyUsesExpiresRelativeToDate(t *testing.T) {
+	now := time.Date(2026, time.August, 2, 12, 0, 40, 0, time.UTC)
+	cfg := testConfig("http://127.0.0.1").Routes[0].Cache
+	resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}
+	resp.Header.Set("Date", now.Add(-40*time.Second).Format(http.TimeFormat))
+	resp.Header.Set("Expires", now.Add(20*time.Second).Format(http.TimeFormat))
+
+	cacheable, expiresAt, _, initialAge := responseCachePolicy(
+		httptest.NewRequest(http.MethodGet, "http://proxy.test/expires", nil),
+		resp,
+		cfg,
+		now,
+	)
+	if !cacheable {
+		t.Fatal("response with 20 seconds of Expires freshness remaining should be cacheable")
+	}
+	if initialAge != 40*time.Second {
+		t.Fatalf("initial age=%s, want 40s", initialAge)
+	}
+	if got := expiresAt.Sub(now); got != 20*time.Second {
+		t.Fatalf("remaining freshness=%s, want 20s", got)
+	}
+}

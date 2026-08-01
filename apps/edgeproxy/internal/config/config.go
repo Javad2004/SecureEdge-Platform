@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 	"time"
 )
@@ -266,12 +267,11 @@ func (c *Config) Validate() error {
 				seenHosts[host] = struct{}{}
 			}
 		}
-		r.PathPrefix = strings.TrimSpace(r.PathPrefix)
-		if r.PathPrefix == "" {
-			r.PathPrefix = "/"
-		}
-		if !strings.HasPrefix(r.PathPrefix, "/") {
-			errs = append(errs, fmt.Errorf("route %q path_prefix must start with /", r.Name))
+		normalizedPrefix, prefixErr := normalizePathPrefix(r.PathPrefix)
+		if prefixErr != nil {
+			errs = append(errs, fmt.Errorf("route %q path_prefix: %w", r.Name, prefixErr))
+		} else {
+			r.PathPrefix = normalizedPrefix
 		}
 		if len(r.Upstreams) == 0 {
 			errs = append(errs, fmt.Errorf("route %q requires at least one upstream", r.Name))
@@ -346,9 +346,11 @@ func (c *Config) Validate() error {
 		}
 
 		if r.HealthCheck.Enabled {
-			r.HealthCheck.Path = strings.TrimSpace(r.HealthCheck.Path)
-			if r.HealthCheck.Path == "" || !strings.HasPrefix(r.HealthCheck.Path, "/") {
-				errs = append(errs, fmt.Errorf("route %q health_check.path must start with /", r.Name))
+			normalizedHealthPath, healthPathErr := normalizeAbsolutePath(r.HealthCheck.Path)
+			if healthPathErr != nil {
+				errs = append(errs, fmt.Errorf("route %q health_check.path: %w", r.Name, healthPathErr))
+			} else {
+				r.HealthCheck.Path = normalizedHealthPath
 			}
 			if r.HealthCheck.Interval.Duration <= 0 || r.HealthCheck.Timeout.Duration <= 0 {
 				errs = append(errs, fmt.Errorf("route %q health-check durations must be positive", r.Name))
@@ -361,6 +363,46 @@ func (c *Config) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func normalizePathPrefix(raw string) (string, error) {
+	value, err := normalizeAbsolutePath(raw)
+	if err != nil {
+		return "", err
+	}
+	if value != "/" {
+		value = strings.TrimSuffix(value, "/")
+	}
+	return value, nil
+}
+
+func normalizeAbsolutePath(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "/", nil
+	}
+	if !strings.HasPrefix(value, "/") {
+		return "", errors.New("must start with /")
+	}
+	if strings.ContainsAny(value, "?#") {
+		return "", errors.New("must contain a path only")
+	}
+	decoded, err := url.PathUnescape(value)
+	if err != nil {
+		return "", fmt.Errorf("contains invalid escaping: %w", err)
+	}
+	if decoded != value {
+		return "", errors.New("must not contain percent-encoded path bytes")
+	}
+	trailingSlash := strings.HasSuffix(value, "/")
+	cleaned := path.Clean(value)
+	if cleaned != value && !(trailingSlash && cleaned+"/" == value) {
+		return "", errors.New("must be canonical and must not contain dot-segments or repeated slashes")
+	}
+	if trailingSlash && cleaned != "/" {
+		cleaned += "/"
+	}
+	return cleaned, nil
 }
 
 func validHTTPToken(value string) bool {

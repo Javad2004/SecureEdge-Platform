@@ -48,3 +48,15 @@ func TestLongerWildcardSuffixWinsAtSamePath(t *testing.T) {
 		t.Fatalf("expected narrow wildcard route, got %#v", match)
 	}
 }
+
+func TestMatchUsesCanonicalRequestPath(t *testing.T) {
+	r := New([]config.RouteConfig{
+		{Name: "api", Hosts: []string{"app.local"}, PathPrefix: "/api"},
+		{Name: "admin", Hosts: []string{"app.local"}, PathPrefix: "/admin"},
+	})
+	req := httptest.NewRequest("GET", "http://app.local/api/../admin/settings", nil)
+	match, ok := r.Match(req)
+	if !ok || match.Route.Name != "admin" {
+		t.Fatalf("expected canonical /admin route, got %#v, ok=%v", match, ok)
+	}
+}

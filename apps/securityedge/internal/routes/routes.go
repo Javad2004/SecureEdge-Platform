@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"strings"
 )
 
@@ -35,10 +37,11 @@ func Load(path string) (*Table, error) {
 	seenNames := map[string]bool{}
 	for i := range cfg.Routes {
 		cfg.Routes[i].Name = strings.TrimSpace(cfg.Routes[i].Name)
-		cfg.Routes[i].PathPrefix = strings.TrimSpace(cfg.Routes[i].PathPrefix)
-		if cfg.Routes[i].PathPrefix == "" {
-			cfg.Routes[i].PathPrefix = "/"
+		normalizedPrefix, err := normalizePathPrefix(cfg.Routes[i].PathPrefix)
+		if err != nil {
+			return nil, fmt.Errorf("edgeproxy route %q path_prefix: %w", cfg.Routes[i].Name, err)
 		}
+		cfg.Routes[i].PathPrefix = normalizedPrefix
 		if cfg.Routes[i].Name == "" || len(cfg.Routes[i].Hosts) == 0 {
 			return nil, fmt.Errorf("edgeproxy route %d is incomplete", i)
 		}
@@ -46,9 +49,6 @@ func Load(path string) (*Table, error) {
 			return nil, fmt.Errorf("edgeproxy route name %q is duplicated", cfg.Routes[i].Name)
 		}
 		seenNames[cfg.Routes[i].Name] = true
-		if !strings.HasPrefix(cfg.Routes[i].PathPrefix, "/") {
-			return nil, fmt.Errorf("edgeproxy route %q path_prefix must start with /", cfg.Routes[i].Name)
-		}
 		hosts := make([]string, 0, len(cfg.Routes[i].Hosts))
 		seenHosts := map[string]bool{}
 		for _, raw := range cfg.Routes[i].Hosts {
@@ -68,12 +68,13 @@ func Load(path string) (*Table, error) {
 
 func (t *Table) Match(req *http.Request) (Route, bool) {
 	host := canonicalHost(req.Host)
+	requestPath := canonicalRequestPath(req.URL.Path)
 	var best *Route
 	bestPathLength, bestHostScore := -1, -1
 	for i := range t.routes {
 		route := &t.routes[i]
 		matched, hostScore := hostMatchSpecificity(route.Hosts, host)
-		if !matched || !pathPrefixMatches(req.URL.Path, route.PathPrefix) {
+		if !matched || !pathPrefixMatches(requestPath, route.PathPrefix) {
 			continue
 		}
 		pathLength := len(route.PathPrefix)
@@ -128,6 +129,47 @@ func hostMatchSpecificity(patterns []string, host string) (bool, int) {
 	}
 	return best >= 0, best
 }
+
+func normalizePathPrefix(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "/", nil
+	}
+	if !strings.HasPrefix(value, "/") {
+		return "", fmt.Errorf("must start with /")
+	}
+	if strings.ContainsAny(value, "?#") {
+		return "", fmt.Errorf("must contain a path only")
+	}
+	decoded, err := url.PathUnescape(value)
+	if err != nil {
+		return "", fmt.Errorf("contains invalid escaping: %w", err)
+	}
+	if decoded != value {
+		return "", fmt.Errorf("must not contain percent-encoded path bytes")
+	}
+	value = strings.TrimRight(value, "/")
+	if value == "" {
+		value = "/"
+	}
+	if path.Clean(value) != value {
+		return "", fmt.Errorf("must be canonical and must not contain dot-segments or repeated slashes")
+	}
+	return value, nil
+}
+
+func canonicalRequestPath(value string) string {
+	if value == "" {
+		return "/"
+	}
+	trailingSlash := strings.HasSuffix(value, "/")
+	cleaned := path.Clean("/" + strings.TrimPrefix(value, "/"))
+	if trailingSlash && cleaned != "/" {
+		cleaned += "/"
+	}
+	return cleaned
+}
+
 func pathPrefixMatches(requestPath, prefix string) bool {
 	if prefix == "/" || requestPath == prefix {
 		return true

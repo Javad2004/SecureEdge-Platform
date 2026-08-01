@@ -1,0 +1,269 @@
+package admin
+
+import (
+	"crypto/subtle"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/bachelor-project/edgeproxy/internal/accesslog"
+	"github.com/bachelor-project/edgeproxy/internal/config"
+	"github.com/bachelor-project/edgeproxy/internal/metrics"
+	"github.com/bachelor-project/edgeproxy/internal/proxy"
+)
+
+type Server struct {
+	cfg     config.AdminConfig
+	logger  *slog.Logger
+	metrics *metrics.Registry
+	proxy   *proxy.Handler
+	logs    *accesslog.Store
+	http    *http.Server
+}
+
+func New(cfg config.AdminConfig, logger *slog.Logger, registry *metrics.Registry, handler *proxy.Handler, logStore *accesslog.Store) *Server {
+	s := &Server{cfg: cfg, logger: logger, metrics: registry, proxy: handler, logs: logStore}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("GET /readyz", s.ready)
+	mux.HandleFunc("GET /api/v1/metrics", s.auth(s.metricsHandler))
+	mux.HandleFunc("GET /api/v1/status", s.auth(s.statusHandler))
+	mux.HandleFunc("GET /api/v1/logs", s.auth(s.logsHandler))
+	mux.HandleFunc("DELETE /api/v1/logs", s.auth(s.clearLogsHandler))
+	mux.HandleFunc("POST /api/v1/cache/purge", s.auth(s.purgeHandler))
+	s.http = &http.Server{
+		Addr:              cfg.ListenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       30 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+	return s
+}
+
+func (s *Server) HTTPServer() *http.Server { return s.http }
+
+func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.AuthToken != "" {
+			parts := strings.Fields(r.Header.Get("Authorization"))
+			if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") ||
+				subtle.ConstantTimeCompare([]byte(parts[1]), []byte(s.cfg.AuthToken)) != 1 {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="edgeproxy-admin"`)
+				writeAPIError(w, http.StatusUnauthorized, "unauthorized", "a valid Bearer token is required")
+				return
+			}
+		}
+		next(w, r)
+	}
+}
+
+func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":       "ok",
+		"generated_at": time.Now().UTC().Format(time.RFC3339Nano),
+	})
+}
+
+func (s *Server) ready(w http.ResponseWriter, _ *http.Request) {
+	generatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	if s.proxy == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ready", "generated_at": generatedAt})
+		return
+	}
+	readiness := s.proxy.Readiness()
+	if !readiness.Ready {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"status":           "not_ready",
+			"generated_at":     generatedAt,
+			"unhealthy_routes": readiness.UnhealthyRoutes,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":           "ready",
+		"generated_at":     generatedAt,
+		"unhealthy_routes": []string{},
+	})
+}
+
+func (s *Server) metricsHandler(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.metrics.Snapshot())
+}
+
+func (s *Server) statusHandler(w http.ResponseWriter, _ *http.Request) {
+	status := map[string]any{
+		"generated_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"routes":       s.proxy.RouteStatuses(),
+	}
+	if s.logs != nil {
+		status["log_store"] = s.logs.Stats()
+	} else {
+		status["log_store"] = accesslog.Stats{Enabled: false}
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) logsHandler(w http.ResponseWriter, r *http.Request) {
+	if s.logs == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "logs_disabled", "the in-memory admin log store is disabled")
+		return
+	}
+	filter, err := s.parseLogFilter(r)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.logs.Query(filter))
+}
+
+func (s *Server) clearLogsHandler(w http.ResponseWriter, _ *http.Request) {
+	if s.logs == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "logs_disabled", "the in-memory admin log store is disabled")
+		return
+	}
+	removed := s.logs.Clear()
+	s.logger.Warn("admin log store cleared", "removed_entries", removed)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"removed_entries": removed,
+		"cleared_at":      time.Now().UTC().Format(time.RFC3339Nano),
+	})
+}
+
+func (s *Server) purgeHandler(w http.ResponseWriter, r *http.Request) {
+	route := strings.TrimSpace(r.URL.Query().Get("route"))
+	if route == "" {
+		writeAPIError(w, http.StatusBadRequest, "missing_route", "route query parameter is required")
+		return
+	}
+	host := strings.TrimSpace(r.URL.Query().Get("host"))
+	pathPrefix := strings.TrimSpace(r.URL.Query().Get("path_prefix"))
+	count, ok := s.proxy.PurgeCache(route, host, pathPrefix)
+	if !ok {
+		writeAPIError(w, http.StatusNotFound, "route_not_found", "route was not found or its cache is disabled")
+		return
+	}
+	s.logger.Info("cache purged", "route", route, "host", host, "path_prefix", pathPrefix, "entries", count)
+	if s.logs != nil {
+		s.logs.Append(accesslog.Entry{
+			Level:   "INFO",
+			Event:   "cache_purged",
+			Message: "route cache entries purged through admin API",
+			Route:   route,
+			Host:    host,
+			Path:    pathPrefix,
+			Tags:    []string{"admin", "cache"},
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"purged_entries": count,
+		"route":          route,
+		"host":           host,
+		"path_prefix":    pathPrefix,
+		"purged_at":      time.Now().UTC().Format(time.RFC3339Nano),
+	})
+}
+
+func (s *Server) parseLogFilter(r *http.Request) (accesslog.Filter, error) {
+	query := r.URL.Query()
+	limit := s.cfg.LogStore.DefaultPageSize
+	if raw := strings.TrimSpace(query.Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			return accesslog.Filter{}, errors.New("limit must be a positive integer")
+		}
+		limit = parsed
+	}
+	if limit > s.cfg.LogStore.MaxPageSize {
+		return accesslog.Filter{}, fmt.Errorf("limit cannot exceed %d", s.cfg.LogStore.MaxPageSize)
+	}
+
+	filter := accesslog.Filter{
+		Route:       strings.TrimSpace(query.Get("route")),
+		Upstream:    strings.TrimSpace(query.Get("upstream")),
+		RequestID:   strings.TrimSpace(query.Get("request_id")),
+		Method:      strings.TrimSpace(query.Get("method")),
+		Event:       strings.TrimSpace(query.Get("event")),
+		Level:       strings.TrimSpace(query.Get("level")),
+		CacheStatus: strings.TrimSpace(query.Get("cache")),
+		Search:      strings.TrimSpace(query.Get("q")),
+		Limit:       limit,
+	}
+
+	if raw := strings.TrimSpace(query.Get("before_sequence")); raw != "" {
+		value, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil || value == 0 {
+			return accesslog.Filter{}, errors.New("before_sequence must be a positive integer")
+		}
+		filter.BeforeSequence = value
+	}
+
+	if raw := strings.ToLower(strings.TrimSpace(query.Get("status"))); raw != "" {
+		if len(raw) == 3 && raw[1:] == "xx" && raw[0] >= '1' && raw[0] <= '5' {
+			filter.StatusClass = raw
+		} else {
+			value, err := strconv.Atoi(raw)
+			if err != nil || value < 100 || value > 599 {
+				return accesslog.Filter{}, errors.New("status must be an HTTP status code or class such as 5xx")
+			}
+			filter.Status = value
+		}
+	}
+
+	if raw := strings.TrimSpace(query.Get("min_duration_ms")); raw != "" {
+		value, err := strconv.ParseFloat(raw, 64)
+		if err != nil || value < 0 {
+			return accesslog.Filter{}, errors.New("min_duration_ms must be a non-negative number")
+		}
+		filter.MinDurationMS = value
+	}
+
+	var err error
+	if raw := strings.TrimSpace(query.Get("since")); raw != "" {
+		filter.Since, err = time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return accesslog.Filter{}, errors.New("since must be an RFC3339 timestamp")
+		}
+	}
+	if raw := strings.TrimSpace(query.Get("until")); raw != "" {
+		filter.Until, err = time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return accesslog.Filter{}, errors.New("until must be an RFC3339 timestamp")
+		}
+	}
+	if !filter.Since.IsZero() && !filter.Until.IsZero() && filter.Since.After(filter.Until) {
+		return accesslog.Filter{}, errors.New("since cannot be after until")
+	}
+	return filter, nil
+}
+
+type apiError struct {
+	Error apiErrorBody `json:"error"`
+}
+
+type apiErrorBody struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func writeAPIError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, apiError{Error: apiErrorBody{Code: code, Message: message}})
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.WriteHeader(status)
+	encoder := json.NewEncoder(w)
+	encoder.SetEscapeHTML(true)
+	_ = encoder.Encode(value)
+}

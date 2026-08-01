@@ -1,0 +1,47 @@
+package metrics
+
+import (
+	"testing"
+	"time"
+)
+
+func TestRegistryCapturesRouteAndPerUpstreamMetrics(t *testing.T) {
+	registry := New()
+	finish := registry.Begin("demo", "GET", 12)
+	registry.RecordUpstream("demo", "http://origin-a", UpstreamObservation{Status: 503, Duration: 25 * time.Millisecond, Failed: true})
+	registry.RecordUpstream("demo", "http://origin-b", UpstreamObservation{Status: 200, Duration: 5 * time.Millisecond, Retry: true})
+	finish(RequestObservation{Status: 200, BytesOut: 100, Duration: 40 * time.Millisecond, Retries: 1, CacheStatus: "MISS"})
+	registry.RecordCacheStore("demo")
+
+	snapshot := registry.Snapshot()
+	if snapshot.Total.Requests != 1 || snapshot.Total.UpstreamCalls != 2 || snapshot.Total.Retries != 1 {
+		t.Fatalf("unexpected total snapshot: %#v", snapshot.Total)
+	}
+	if snapshot.Total.Upstream.Failures != 1 || snapshot.Total.Upstream.Success != 1 {
+		t.Fatalf("unexpected upstream aggregate: %#v", snapshot.Total.Upstream)
+	}
+	route := snapshot.Routes["demo"]
+	if len(route.Upstreams) != 2 {
+		t.Fatalf("expected 2 upstreams, got %d", len(route.Upstreams))
+	}
+	if route.Upstreams["http://origin-a"].Failures != 1 {
+		t.Fatalf("origin-a failure not recorded: %#v", route.Upstreams["http://origin-a"])
+	}
+	if route.Upstreams["http://origin-b"].Retries != 1 {
+		t.Fatalf("origin-b retry not recorded: %#v", route.Upstreams["http://origin-b"])
+	}
+	if snapshot.Total.CacheMisses != 1 || snapshot.Total.CacheStores != 1 {
+		t.Fatalf("unexpected cache metrics: %#v", snapshot.Total.Cache)
+	}
+	if snapshot.Total.ResponseLatencyMS.P95 <= 0 || snapshot.Total.Upstream.LatencyMS.P95 <= 0 {
+		t.Fatalf("latency percentiles missing")
+	}
+}
+
+func TestHistogramEmptySnapshot(t *testing.T) {
+	var h histogram
+	snapshot := h.Snapshot()
+	if snapshot.Count != 0 || snapshot.Average != 0 || len(snapshot.Distribution) != 0 {
+		t.Fatalf("unexpected empty histogram: %#v", snapshot)
+	}
+}

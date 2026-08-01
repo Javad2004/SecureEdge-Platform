@@ -1,0 +1,93 @@
+{
+  "server": {
+    "listen_addr": "0.0.0.0:80",
+    "read_header_timeout": "5s",
+    "read_timeout": "30s",
+    "write_timeout": "60s",
+    "idle_timeout": "90s",
+    "shutdown_timeout": "10s",
+    "max_header_bytes": 1048576,
+    "tls": {
+      "enabled": false,
+      "cert_file": "",
+      "key_file": ""
+    }
+  },
+  "admin": {
+    "enabled": true,
+    "listen_addr": "127.0.0.1:9090",
+    "auth_token": "EdgeProxyDemo2026",
+    "log_store": {
+      "enabled": true,
+      "capacity": 5000,
+      "default_page_size": 100,
+      "max_page_size": 500
+    }
+  },
+  "routes": [
+    {
+      "name": "demo-app",
+      "hosts": [
+        "project.local",
+        "project.test",
+        "www.project.test",
+        "localhost",
+        "127.0.0.1"
+      ],
+      "path_prefix": "/",
+      "strip_prefix": false,
+      "preserve_host": false,
+      "upstreams": [
+        {
+          "url": "http://10.36.74.43:9000",
+          "insecure_skip_verify": false
+        }
+      ],
+      "proxy": {
+        "request_timeout": "20s",
+        "dial_timeout": "3s",
+        "response_header_timeout": "10s",
+        "idle_conn_timeout": "90s",
+        "retry_count": 1,
+        "retry_backoff": "150ms",
+        "max_idle_conns": 100,
+        "max_idle_conns_per_host": 20,
+        "max_response_header_bytes": 1048576
+      },
+      "cache": {
+        "enabled": true,
+        "default_ttl": "30s",
+        "stale_if_error": "2m",
+        "max_entries": 1000,
+        "max_bytes": 67108864,
+        "max_object_bytes": 4194304,
+        "respect_origin_headers": true,
+        "cache_authorized_requests": false,
+        "cache_set_cookie_responses": false,
+        "vary_request_headers": [
+          "Accept",
+          "Accept-Encoding"
+        ],
+        "cacheable_status_codes": [
+          200,
+          203,
+          204,
+          300,
+          301,
+          404,
+          410
+        ],
+        "cache_cookie_requests": false
+      },
+      "health_check": {
+        "enabled": true,
+        "path": "/healthz",
+        "interval": "5s",
+        "timeout": "2s",
+        "healthy_statuses": [
+          200
+        ]
+      }
+    }
+  ]
+}

@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
+	"time"
 )
 
 var hopHeaders = []string{
@@ -45,14 +47,33 @@ func sanitizeOriginResponseHeaders(h http.Header) {
 }
 
 func requestID(req *http.Request) string {
-	if value := strings.TrimSpace(req.Header.Get("X-Request-ID")); value != "" && len(value) <= 128 {
+	if value := strings.TrimSpace(req.Header.Get("X-Request-ID")); validRequestID(value) {
 		return value
 	}
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err == nil {
 		return hex.EncodeToString(b[:])
 	}
-	return "fallback-request-id"
+	return "fallback-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+}
+
+func validRequestID(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		b := value[i]
+		if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') {
+			continue
+		}
+		switch b {
+		case '-', '_', '.', ':':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func clientIP(req *http.Request) string {

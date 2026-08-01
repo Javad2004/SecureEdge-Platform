@@ -2,6 +2,7 @@ package securityedge
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -79,5 +80,114 @@ func TestNewRejectsUnknownRoutePolicy(t *testing.T) {
 	}
 	if _, err := New(cfgPath, nil); err == nil {
 		t.Fatal("expected unknown route policy to be rejected")
+	}
+}
+
+type restartRequiredMarker interface {
+	RestartRequired() bool
+}
+
+func TestReloadRejectsRestartRequiredChangesWithoutMutatingRuntime(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	originalListen := runtime.Config().Server.ListenAddr
+
+	cfg.Server.ListenAddr = "127.0.0.1:18082"
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	err = runtime.Reload()
+	if err == nil {
+		t.Fatal("expected restart-required reload failure")
+	}
+	var marker restartRequiredMarker
+	if !errors.As(err, &marker) || !marker.RestartRequired() {
+		t.Fatalf("unexpected reload error: %v", err)
+	}
+	if got := runtime.Config().Server.ListenAddr; got != originalListen {
+		t.Fatalf("runtime listener changed after rejected reload: got %q want %q", got, originalListen)
+	}
+}
+
+func TestReloadAppliesPolicyOnlyChanges(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	cfg.DefaultPolicy.AnomalyThreshold = 11
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if got := runtime.EffectivePolicy("demo-app").AnomalyThreshold; got != 11 {
+		t.Fatalf("reloaded threshold=%d, want 11", got)
+	}
+}
+
+func TestPolicyUpdateDoesNotPersistWhenReloadPreparationFails(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if err := os.Remove(edgePath); err != nil {
+		t.Fatal(err)
+	}
+	policy := runtime.EffectivePolicy("demo-app")
+	policy.AnomalyThreshold = 17
+	if err := runtime.UpdateDefaultPolicy(policy); err == nil {
+		t.Fatal("expected update to fail while EdgeProxy route config is unavailable")
+	}
+	saved, err := config.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.DefaultPolicy.AnomalyThreshold == 17 {
+		t.Fatal("failed update was persisted to disk")
 	}
 }

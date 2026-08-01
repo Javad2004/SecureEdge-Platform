@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,7 +22,10 @@ import (
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/waf"
 )
 
-type fakeRuntime struct{ cfg config.Config }
+type fakeRuntime struct {
+	cfg       config.Config
+	reloadErr error
+}
 
 func (f *fakeRuntime) Config() config.Config { return f.cfg }
 func (f *fakeRuntime) Routes() []routes.Route {
@@ -31,7 +35,7 @@ func (f *fakeRuntime) EffectivePolicy(string) config.Policy          { return f.
 func (f *fakeRuntime) UpdateDefaultPolicy(config.Policy) error       { return nil }
 func (f *fakeRuntime) UpdateRoutePolicy(string, config.Policy) error { return nil }
 func (f *fakeRuntime) DeleteRoutePolicy(string) error                { return nil }
-func (f *fakeRuntime) Reload() error                                 { return nil }
+func (f *fakeRuntime) Reload() error                                 { return f.reloadErr }
 func (f *fakeRuntime) LimiterSize() int                              { return 0 }
 func (f *fakeRuntime) ActiveBans() []ratelimit.Ban                   { return nil }
 func (f *fakeRuntime) ActiveBanCount() int                           { return 0 }
@@ -237,5 +241,70 @@ func TestSecureTokenEqualHandlesDifferentLengths(t *testing.T) {
 	}
 	if secureTokenEqual("short", "a-much-longer-token") {
 		t.Fatal("different tokens matched")
+	}
+}
+
+type fakeRestartRequiredError struct{}
+
+func (fakeRestartRequiredError) Error() string         { return "listener change requires restart" }
+func (fakeRestartRequiredError) RestartRequired() bool { return true }
+
+func TestReloadReturnsConflictWhenRestartIsRequired(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Admin.AuthToken = "secret-token"
+	inspector, err := waf.NewInspector(nil, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &fakeRuntime{cfg: cfg, reloadErr: fakeRestartRequiredError{}}
+	s, err := New(cfg.Admin, runtime, metrics.New(), securitylog.New(100), traffic.New(100, time.Minute), inspector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(s.HTTPServer().Handler)
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/reload", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status=%d, want %d", resp.StatusCode, http.StatusConflict)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	errorBody, _ := body["error"].(map[string]any)
+	if errorBody["code"] != "restart_required" {
+		t.Fatalf("body=%#v", body)
+	}
+}
+
+func TestRequestIDMiddlewareRejectsUnsafeValues(t *testing.T) {
+	handler := requestIDMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	for _, value := range []string{"valid-id_123:abc", "bad id", "bad\tvalue", strings.Repeat("a", 129)} {
+		req := httptest.NewRequest(http.MethodGet, "http://example.test/", nil)
+		req.Header.Set("X-Request-ID", value)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		got := rr.Header().Get("X-Request-ID")
+		if value == "valid-id_123:abc" {
+			if got != value {
+				t.Fatalf("valid request ID changed: got %q want %q", got, value)
+			}
+			continue
+		}
+		if got == value || !validRequestID(got) {
+			t.Fatalf("unsafe request ID was not replaced: input=%q output=%q", value, got)
+		}
 	}
 }

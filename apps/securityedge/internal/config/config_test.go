@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRejectsInvalidCustomRule(t *testing.T) {
@@ -175,5 +176,29 @@ func TestRejectsPolicyAddressInBothAllowAndDenyLists(t *testing.T) {
 	cfg.DefaultPolicy.IPDenylist = []string{"192.0.2.10"}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error")
+	}
+}
+
+func TestRoutePoliciesShareProcessWideLimiterLifecycle(t *testing.T) {
+	cfg := Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	policy := cfg.DefaultPolicy
+	policy.RateLimit.IdleTTL.Duration += time.Minute
+	cfg.RoutePolicies["demo-app"] = policy
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected route-specific limiter lifecycle to be rejected")
+	}
+}
+
+func TestApplyEnvironmentOverridesDoesNotRequireFileMutation(t *testing.T) {
+	cfg := Default()
+	cfg.Admin.AuthToken = "file-admin"
+	cfg.EdgeProxy.AdminToken = "file-edge"
+	t.Setenv("SECURITYEDGE_ADMIN_TOKEN", "runtime-admin")
+	t.Setenv("EDGEPROXY_ADMIN_TOKEN", "runtime-edge")
+	ApplyEnvironmentOverrides(&cfg)
+	if cfg.Admin.AuthToken != "runtime-admin" || cfg.EdgeProxy.AdminToken != "runtime-edge" {
+		t.Fatalf("environment overrides were not applied: admin=%q edge=%q", cfg.Admin.AuthToken, cfg.EdgeProxy.AdminToken)
 	}
 }

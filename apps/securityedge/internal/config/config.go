@@ -204,16 +204,25 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	ApplyEnvironmentOverrides(&cfg)
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// ApplyEnvironmentOverrides injects runtime-only credentials without changing
+// the file-backed configuration that is persisted by policy updates.
+func ApplyEnvironmentOverrides(cfg *Config) {
+	if cfg == nil {
+		return
+	}
 	if v := strings.TrimSpace(os.Getenv("SECURITYEDGE_ADMIN_TOKEN")); v != "" {
 		cfg.Admin.AuthToken = v
 	}
 	if v := strings.TrimSpace(os.Getenv("EDGEPROXY_ADMIN_TOKEN")); v != "" {
 		cfg.EdgeProxy.AdminToken = v
 	}
-	if err := cfg.Validate(); err != nil {
-		return Config{}, err
-	}
-	return cfg, nil
 }
 
 // LoadFile reads JSON without applying secret environment overrides. This keeps
@@ -404,6 +413,9 @@ func (c *Config) Validate() error {
 		}
 		if p.MaxInspectionBodyBytes > c.Server.MaxRequestBodyBytes {
 			errs = append(errs, fmt.Errorf("route_policies.%s.max_inspection_body_bytes cannot exceed server.max_request_body_bytes", name))
+		}
+		if p.RateLimit.CleanupInterval != c.DefaultPolicy.RateLimit.CleanupInterval || p.RateLimit.IdleTTL != c.DefaultPolicy.RateLimit.IdleTTL {
+			errs = append(errs, fmt.Errorf("route_policies.%s rate_limit cleanup_interval and idle_ttl must match default_policy because limiter cleanup is process-wide", name))
 		}
 		c.RoutePolicies[name] = p
 	}

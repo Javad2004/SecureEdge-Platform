@@ -670,3 +670,28 @@ func TestResponseCachePolicyUsesExpiresRelativeToDate(t *testing.T) {
 		t.Fatalf("remaining freshness=%s, want 20s", got)
 	}
 }
+
+func TestRequestIDAcceptsOnlySafeCorrelationTokens(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		keep  bool
+	}{
+		{value: "trace-1234_abcd:01", keep: true},
+		{value: "request id with spaces"},
+		{value: "request\twith-tab"},
+		{value: strings.Repeat("a", 129)},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "http://project.test/", nil)
+		req.Header.Set("X-Request-ID", tc.value)
+		got := requestID(req)
+		if tc.keep {
+			if got != tc.value {
+				t.Fatalf("valid request ID changed: got %q want %q", got, tc.value)
+			}
+			continue
+		}
+		if got == tc.value || !validRequestID(got) {
+			t.Fatalf("unsafe request ID was not replaced: input=%q output=%q", tc.value, got)
+		}
+	}
+}

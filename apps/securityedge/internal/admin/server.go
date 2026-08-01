@@ -3,9 +3,11 @@ package admin
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -313,11 +315,16 @@ func (s *Server) deleteRoutePolicy(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) reload(w http.ResponseWriter, _ *http.Request) {
 	if err := s.runtime.Reload(); err != nil {
-		writeError(w, 500, "reload_failed", err.Error())
+		var restartRequired interface{ RestartRequired() bool }
+		if errors.As(err, &restartRequired) && restartRequired.RestartRequired() {
+			writeError(w, http.StatusConflict, "restart_required", err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "reload_failed", err.Error())
 		return
 	}
 	s.runtime.Audit("configuration_reloaded", "security configuration reloaded", auditFields(nil, ""))
-	writeJSON(w, 200, map[string]any{"reloaded": true, "reloaded_at": now()})
+	writeJSON(w, http.StatusOK, map[string]any{"reloaded": true, "reloaded_at": now()})
 }
 func (s *Server) logsHandler(w http.ResponseWriter, r *http.Request) {
 	f, err := s.parseLogFilter(r)
@@ -535,13 +542,40 @@ func (s *Server) decodeJSON(r *http.Request, v any) error {
 func requestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimSpace(r.Header.Get("X-Request-ID"))
-		if id == "" || len(id) > 128 {
-			id = strconv.FormatInt(time.Now().UnixNano(), 36)
+		if !validRequestID(id) {
+			id = newAdminRequestID()
 		}
 		r.Header.Set("X-Request-ID", id)
 		w.Header().Set("X-Request-ID", id)
 		next.ServeHTTP(w, r)
 	})
+}
+
+func validRequestID(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		b := value[i]
+		if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') {
+			continue
+		}
+		switch b {
+		case '-', '_', '.', ':':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func newAdminRequestID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	return "fallback-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 }
 func remoteIP(addr string) string {
 	host, _, err := net.SplitHostPort(addr)

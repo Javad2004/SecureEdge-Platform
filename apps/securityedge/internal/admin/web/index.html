@@ -102,7 +102,7 @@
 
       <section id="view-security" class="view">
         <article class="panel">
-          <div class="panel-head"><div><h2>Security event explorer</h2><p>Search WAF, rate-limit, overload, temporary-ban, and administrative audit events.</p></div><div class="top-actions"><button id="export-ndjson" class="ghost">Export NDJSON</button><button id="export-csv" class="ghost">Export CSV</button><button id="clear-security" class="danger ghost">Clear memory</button></div></div>
+          <div class="panel-head"><div><h2>Security event explorer</h2><p>Search WAF, rate-limit, overload, temporary-ban, and administrative audit events.</p></div><div class="top-actions"><button id="export-ndjson" class="ghost">Export NDJSON</button><button id="export-csv" class="ghost">Export CSV</button><button id="clear-security" class="danger ghost">Clear all logs</button></div></div>
           <form id="security-filters" class="filters"><input name="q" placeholder="Search"><select name="action"><option value="">All actions</option><option>BLOCK</option><option>LOG</option><option>RATE_LIMIT</option><option>OVERLOAD</option><option>BANNED</option><option>ADMIN</option></select><input name="reason" placeholder="Reason"><input name="client_ip" placeholder="Client IP"><input name="route" placeholder="Route"><input name="rule_id" placeholder="Rule ID"><button type="submit">Apply</button></form>
           <div class="table-wrap"><table><thead><tr><th>Sequence</th><th>Timestamp</th><th>Action</th><th>Reason</th><th>Route</th><th>Client IP</th><th>Request</th><th>Rules</th><th>Score</th></tr></thead><tbody id="security-table"></tbody></table></div>
           <div class="pager"><button id="older-security" disabled>Load older</button><span id="security-count"></span></div>

@@ -295,6 +295,14 @@ POST    /api/v1/connectivity/check
 
 `DELETE /api/v1/logs` clears the in-memory event ring, truncates the active NDJSON log, and removes rotated backups. CSV exports neutralize spreadsheet-formula prefixes in user-controlled fields before writing rows.
 
+### Live reload boundaries
+
+`POST /api/v1/reload` validates the complete configuration before changing the live runtime. It can apply security policies, WAF custom rules, trusted-proxy lists, route metadata, and EdgeProxy Admin connectivity without interrupting traffic.
+
+Settings owned by already-running listeners or long-lived process resources require a SecurityEdge restart. This includes listener addresses and HTTP timeouts, the upstream data-plane URL and transport, Admin listener/authentication/log-store settings, and the process-wide rate-limiter cleanup lifecycle. When one of these values changes, the reload endpoint returns `409 Conflict` with the `restart_required` error code instead of reporting a partial success.
+
+Dashboard policy updates are prepared before the configuration file is replaced. A validation or reload-preparation failure therefore leaves both the persisted file and the active runtime unchanged.
+
 Authenticated EdgeProxy backend-for-frontend endpoints:
 
 ```text

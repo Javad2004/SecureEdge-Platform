@@ -3,11 +3,15 @@ package securityedge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -199,49 +203,137 @@ func (r *Runtime) DeleteRoutePolicy(route string) error {
 	return r.update(func(cfg *config.Config) { delete(cfg.RoutePolicies, route) })
 }
 
+type restartRequiredError struct {
+	fields []string
+}
+
+func (e *restartRequiredError) Error() string {
+	return "configuration changes require a process restart: " + strings.Join(e.fields, ", ")
+}
+
+func (*restartRequiredError) RestartRequired() bool { return true }
+
+type preparedReload struct {
+	cfg   config.Config
+	table *routes.Table
+	edge  *edgeadmin.Client
+}
+
 func (r *Runtime) Reload() error {
 	cfg, err := config.Load(r.configPath)
 	if err != nil {
 		return err
 	}
-	table, err := routes.Load(resolveEdgeConfigPath(r.configPath, cfg.EdgeProxy.ConfigPath))
+	prepared, err := r.prepareReload(cfg)
 	if err != nil {
 		return err
 	}
+	return r.applyReload(prepared)
+}
+
+func (r *Runtime) prepareReload(cfg config.Config) (preparedReload, error) {
+	r.mu.RLock()
+	current := cloneConfig(r.cfg)
+	r.mu.RUnlock()
+	if fields := restartRequiredChanges(current, cfg); len(fields) > 0 {
+		return preparedReload{}, &restartRequiredError{fields: fields}
+	}
+
+	table, err := routes.Load(resolveEdgeConfigPath(r.configPath, cfg.EdgeProxy.ConfigPath))
+	if err != nil {
+		return preparedReload{}, err
+	}
 	if err := validateRoutePolicies(cfg, table); err != nil {
-		return err
+		return preparedReload{}, err
 	}
 	edge, err := edgeadmin.New(cfg.EdgeProxy.AdminURL, cfg.EdgeProxy.AdminToken, cfg.EdgeProxy.Timeout.Duration)
 	if err != nil {
+		return preparedReload{}, err
+	}
+	// Validate every mutable component before changing the live runtime. The
+	// existing instances are updated only after all preparation has succeeded.
+	if _, err := waf.NewInspector(cfg.WAF.CustomRules, cfg.WAF.MaximumMatchesPerRequest); err != nil {
+		return preparedReload{}, err
+	}
+	if _, err := clientip.New(cfg.Server.TrustedProxyCIDRs, cfg.Server.ForwardedForHeader); err != nil {
+		return preparedReload{}, err
+	}
+	return preparedReload{cfg: cfg, table: table, edge: edge}, nil
+}
+
+func (r *Runtime) applyReload(prepared preparedReload) error {
+	if err := r.inspector.Replace(prepared.cfg.WAF.CustomRules, prepared.cfg.WAF.MaximumMatchesPerRequest); err != nil {
 		return err
 	}
-	if err := r.inspector.Replace(cfg.WAF.CustomRules, cfg.WAF.MaximumMatchesPerRequest); err != nil {
-		return err
-	}
-	if err := r.clients.Replace(cfg.Server.TrustedProxyCIDRs, cfg.Server.ForwardedForHeader); err != nil {
+	if err := r.clients.Replace(prepared.cfg.Server.TrustedProxyCIDRs, prepared.cfg.Server.ForwardedForHeader); err != nil {
 		return err
 	}
 	r.mu.Lock()
-	r.cfg = cfg
-	r.table = table
-	r.edge = edge
+	r.cfg = prepared.cfg
+	r.table = prepared.table
+	r.edge = prepared.edge
 	r.mu.Unlock()
 	return nil
 }
 
 func (r *Runtime) update(mutator func(*config.Config)) error {
-	candidate, err := config.LoadFile(r.configPath)
+	fileCfg, err := config.LoadFile(r.configPath)
 	if err != nil {
 		return err
 	}
+	candidate := cloneConfig(fileCfg)
 	mutator(&candidate)
 	if err := candidate.Validate(); err != nil {
 		return err
 	}
+
+	runtimeCfg := cloneConfig(candidate)
+	config.ApplyEnvironmentOverrides(&runtimeCfg)
+	if err := runtimeCfg.Validate(); err != nil {
+		return err
+	}
+	prepared, err := r.prepareReload(runtimeCfg)
+	if err != nil {
+		return err
+	}
+
+	// Persist only after the complete live configuration has been prepared.
+	// This prevents a failed reload from leaving disk and memory out of sync.
 	if err := config.Save(r.configPath, candidate); err != nil {
 		return err
 	}
-	return r.Reload()
+	if err := r.applyReload(prepared); err != nil {
+		rollbackErr := config.Save(r.configPath, fileCfg)
+		return errors.Join(err, rollbackErr)
+	}
+	return nil
+}
+
+func restartRequiredChanges(current, next config.Config) []string {
+	var fields []string
+	add := func(name string, changed bool) {
+		if changed {
+			fields = append(fields, name)
+		}
+	}
+
+	add("server.mode", current.Server.Mode != next.Server.Mode)
+	add("server.listen_addr", current.Server.ListenAddr != next.Server.ListenAddr)
+	add("server.upstream_proxy_url", current.Server.UpstreamProxyURL != next.Server.UpstreamProxyURL)
+	add("server.read_header_timeout", current.Server.ReadHeaderTimeout != next.Server.ReadHeaderTimeout)
+	add("server.read_timeout", current.Server.ReadTimeout != next.Server.ReadTimeout)
+	add("server.write_timeout", current.Server.WriteTimeout != next.Server.WriteTimeout)
+	add("server.idle_timeout", current.Server.IdleTimeout != next.Server.IdleTimeout)
+	add("server.shutdown_timeout", current.Server.ShutdownTimeout != next.Server.ShutdownTimeout)
+	add("server.max_header_bytes", current.Server.MaxHeaderBytes != next.Server.MaxHeaderBytes)
+	add("server.max_request_body_bytes", current.Server.MaxRequestBodyBytes != next.Server.MaxRequestBodyBytes)
+	add("server.preserve_host", current.Server.PreserveHost != next.Server.PreserveHost)
+	add("server.upstream_transport", !reflect.DeepEqual(current.Server.UpstreamTransport, next.Server.UpstreamTransport))
+	add("admin", !reflect.DeepEqual(current.Admin, next.Admin))
+	add("default_policy.rate_limit.cleanup_interval", current.DefaultPolicy.RateLimit.CleanupInterval != next.DefaultPolicy.RateLimit.CleanupInterval)
+	add("default_policy.rate_limit.idle_ttl", current.DefaultPolicy.RateLimit.IdleTTL != next.DefaultPolicy.RateLimit.IdleTTL)
+	sort.Strings(fields)
+	return fields
 }
 
 func validateRoutePolicies(cfg config.Config, table *routes.Table) error {

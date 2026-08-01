@@ -1,18 +1,42 @@
 param(
+    [string]$Config = ".\configs\securityedge.json",
     [switch]$Apply,
-    [string]$RemoteAddress = "LocalSubnet"
+    [string]$RemoteAddress = "LocalSubnet",
+    [switch]$ExposeDnsResolver
 )
 
+$ErrorActionPreference = "Stop"
+if (-not (Test-Path $Config)) { throw "Configuration file not found: $Config" }
+$configObject = Get-Content (Resolve-Path $Config) -Raw | ConvertFrom-Json
+
+function Get-Port([string]$Address) {
+    if ($Address -notmatch ':(\d+)$') { throw "Invalid endpoint: $Address" }
+    return [int]$Matches[1]
+}
+
+$ingressPort = Get-Port $configObject.server.listen_addr
 $rules = @(
-    @{ Name = "SecurityEdge HTTP 80"; Protocol = "TCP"; Port = 80 },
-    @{ Name = "Technitium DNS UDP 53"; Protocol = "UDP"; Port = 53 },
-    @{ Name = "Technitium DNS TCP 53"; Protocol = "TCP"; Port = 53 }
+    @{ Name = "SecurityEdge HTTP Ingress $ingressPort"; Protocol = "TCP"; Port = $ingressPort }
 )
+
+if ($ExposeDnsResolver) {
+    if (-not $configObject.admin.connectivity.dns.enabled) {
+        Write-Warning "DNS probing is disabled in the selected SecurityEdge profile. Firewall exposure is still possible, but verify that a DNS service is intentionally running on this host."
+    }
+    $dnsPort = Get-Port $configObject.admin.connectivity.dns.server
+    $rules += @(
+        @{ Name = "DNS Resolver UDP $dnsPort"; Protocol = "UDP"; Port = $dnsPort },
+        @{ Name = "DNS Resolver TCP $dnsPort"; Protocol = "TCP"; Port = $dnsPort }
+    )
+}
 
 if (-not $Apply) {
-    Write-Host "Dry run only. Re-run with -Apply from an elevated PowerShell to create/update:" -ForegroundColor Yellow
+    Write-Host "Dry run. Re-run with -Apply from an elevated PowerShell to create or replace these rules:" -ForegroundColor Yellow
     $rules | Format-Table Name, Protocol, Port -AutoSize
     Write-Host "Remote scope: $RemoteAddress"
+    if (-not $ExposeDnsResolver) {
+        Write-Host "DNS exposure is omitted by default. Add -ExposeDnsResolver only when this host intentionally serves DNS to the selected remote scope." -ForegroundColor Cyan
+    }
     exit 0
 }
 
@@ -29,4 +53,4 @@ foreach ($rule in $rules) {
     Write-Host "[OK] $($rule.Name)" -ForegroundColor Green
 }
 
-Write-Host "Internal ports 8080, 9090, and 9191 remain protected by loopback binding and are not opened here." -ForegroundColor Cyan
+Write-Host "EdgeProxy data-plane, EdgeProxy Admin, and SecurityEdge Admin ports are intentionally not opened by this script." -ForegroundColor Cyan

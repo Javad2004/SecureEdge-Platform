@@ -8,7 +8,7 @@ import (
 const Name = "SecurityEdge"
 
 var (
-	Version   = "3.1.0-professional-connectivity"
+	Version   = "3.2.0-professional-operations"
 	Commit    = "development"
 	BuildTime = "unknown"
 )

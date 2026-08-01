@@ -406,7 +406,7 @@ func probeDNS(ctx context.Context, cfg config.DNSProbeConfig) probeResult {
 	for _, name := range cfg.Names {
 		addresses, err := resolver.LookupHost(ctx, name)
 		if err != nil {
-			return probeResult{id: "technitium_dns", name: "Technitium DNS resolution", layer: "dns", status: StatusDown, critical: cfg.Critical, endpoint: endpoint, message: fmt.Sprintf("DNS lookup failed for %s", name), err: err.Error(), latency: time.Since(started), details: map[string]any{"resolved": resolved}}
+			return probeResult{id: "dns_resolution", name: "DNS resolution", layer: "dns", status: StatusDown, critical: cfg.Critical, endpoint: endpoint, message: fmt.Sprintf("DNS lookup failed for %s", name), err: err.Error(), latency: time.Since(started), details: map[string]any{"resolved": resolved}}
 		}
 		sort.Strings(addresses)
 		resolved[name] = addresses
@@ -415,12 +415,12 @@ func probeDNS(ctx context.Context, cfg config.DNSProbeConfig) probeResult {
 		}
 	}
 	status := StatusHealthy
-	message := "Technitium resolved all configured local domains"
+	message := "The configured DNS resolver resolved all monitored hostnames"
 	if !allExpected {
 		status = StatusDegraded
-		message = "DNS responded, but one or more domains did not resolve to an expected Proxy address"
+		message = "The DNS resolver responded, but one or more monitored hostnames did not resolve to an expected ingress address"
 	}
-	return probeResult{id: "technitium_dns", name: "Technitium DNS resolution", layer: "dns", status: status, critical: cfg.Critical, endpoint: endpoint, message: message, latency: time.Since(started), details: map[string]any{"resolved": resolved, "expected_addresses": cfg.ExpectedAddresses, "phone_dns_settings_verified": false}}
+	return probeResult{id: "dns_resolution", name: "DNS resolution", layer: "dns", status: status, critical: cfg.Critical, endpoint: endpoint, message: message, latency: time.Since(started), details: map[string]any{"resolved": resolved, "expected_addresses": cfg.ExpectedAddresses, "external_client_path_verified": false, "probe_scope": "server-side DNS resolution"}}
 }
 
 func updateComponent(previous Component, result probeResult, now time.Time) Component {
@@ -487,7 +487,7 @@ func aggregate(now time.Time, cfg config.ConnectivityConfig, components []Compon
 				traffic = StatusDegraded
 			}
 		}
-		if dns, ok := byID["technitium_dns"]; ok && dns.Critical {
+		if dns, ok := byID["dns_resolution"]; ok && dns.Critical {
 			if dns.Status == StatusDown {
 				traffic = StatusDown
 			} else if dns.Status == StatusDegraded {
@@ -597,7 +597,7 @@ func parseRoutes(raw json.RawMessage) ([]Route, Counts, error) {
 
 func componentOrder(id string) int {
 	order := map[string]int{
-		"technitium_dns": 10, "securityedge_admin": 20, "securityedge_ingress": 30,
+		"dns_resolution": 10, "securityedge_admin": 20, "securityedge_ingress": 30,
 		"edgeproxy_data_tcp": 40, "edgeproxy_data_http": 50, "edgeproxy_admin_health": 60,
 		"edgeproxy_readiness": 70, "edgeproxy_routes_origins": 80, "edgeproxy_metrics": 90,
 	}

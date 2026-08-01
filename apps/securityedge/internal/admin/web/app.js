@@ -1,7 +1,11 @@
 'use strict';
 
+function sessionGet(key) { try { return sessionStorage.getItem(key) || ''; } catch { return ''; } }
+function sessionSet(key, value) { try { sessionStorage.setItem(key, value); } catch {} }
+function sessionRemove(key) { try { sessionStorage.removeItem(key); } catch {} }
+
 const state = {
-  token: sessionStorage.getItem('securityedge_token') || '',
+  token: sessionGet('securityedge_token'),
   overview: null,
   policies: null,
   rules: [],
@@ -58,14 +62,14 @@ function lock() {
   $('login').classList.add('visible');
   $('live-dot').classList.remove('live','degraded','down');
   $('connection-label').textContent = 'Console locked';
-  sessionStorage.removeItem('securityedge_token');
+  sessionRemove('securityedge_token');
   state.token = '';
 }
 
 async function login(token) {
   state.token = token;
   await api('/api/v1/session');
-  sessionStorage.setItem('securityedge_token', token);
+  sessionSet('securityedge_token', token);
   $('login').classList.remove('visible');
   $('live-dot').classList.add('live');
   $('connection-label').textContent = 'Checking dependencies';
@@ -100,7 +104,7 @@ async function refreshAll() {
     toast(error.message);
     $('live-dot').classList.remove('live','degraded');
     $('live-dot').classList.add('down');
-    $('connection-label').textContent = 'Dashboard disconnected';
+    $('connection-label').textContent = 'Operations API unavailable';
   }
 }
 
@@ -170,10 +174,11 @@ function renderConnectivity() {
   panel.className = `panel connectivity-panel status-${overall}`;
   $('connectivity-overall').className = `status-pill ${overall}`;
   $('connectivity-overall').textContent = stale ? 'STALE' : statusLabel(overall).toUpperCase();
-  $('connectivity-title').textContent = overall === 'healthy' ? 'All monitored connections are healthy' : overall === 'down' ? 'Critical connectivity failure detected' : overall === 'degraded' ? 'Connectivity is degraded' : 'Connectivity status is unavailable';
+  $('connectivity-title').textContent = overall === 'healthy' ? 'All monitored service dependencies are operational' : overall === 'down' ? 'A critical service dependency is unavailable' : overall === 'degraded' ? 'One or more service dependencies are degraded' : 'Service health status is unavailable';
   $('connectivity-summary').textContent = stale ? 'The last probe is stale. Run a new check before relying on this status.' : (connectivity.summary || 'Waiting for the first dependency probe.');
   $('connectivity-updated').textContent = connectivity.generated_at ? `Checked ${dateText(connectivity.generated_at)}${stale ? ' · stale' : ''}` : 'Not checked';
   $('connectivity-traffic').innerHTML = statusBadge(connectivity.traffic_path_status);
+  $('connectivity-dns').innerHTML = statusBadge(componentByID(connectivity, 'dns_resolution')?.status || 'not_applicable');
   $('connectivity-edge').innerHTML = statusBadge(connectivity.edgeproxy_connection_status);
   $('connectivity-observability').innerHTML = statusBadge(connectivity.observability_status);
   const counts = connectivity.counts || {};
@@ -181,15 +186,17 @@ function renderConnectivity() {
   $('connectivity-origins').textContent = `${fmt(counts.healthy_origins)}/${fmt(counts.total_origins)} origins healthy`;
   $('connectivity-health-count').textContent = `${fmt(counts.components_healthy)} healthy · ${fmt(counts.components_degraded)} degraded · ${fmt(counts.components_down)} down`;
 
-  const dns = componentByID(connectivity, 'technitium_dns');
+  const dns = componentByID(connectivity, 'dns_resolution');
   const ingress = componentByID(connectivity, 'securityedge_ingress');
   const edgeHTTP = componentByID(connectivity, 'edgeproxy_data_http');
   const routeStatus = counts.total_routes ? (counts.ready_routes === counts.total_routes ? 'healthy' : counts.ready_routes > 0 ? 'degraded' : 'down') : 'unknown';
   const originStatus = counts.total_origins ? (counts.healthy_origins === counts.total_origins ? 'healthy' : counts.healthy_origins > 0 ? 'degraded' : 'down') : 'unknown';
   const topology = [
-    topologyNode(dns?.status || 'not_applicable', 'Phone & Technitium', dns ? 'Local DNS probe' : 'DNS probe disabled', dns?.latency_ms ? compactLatency(dns.latency_ms) : 'External phone path not directly verified'),
+    topologyNode('not_applicable', 'Client networks', 'Browser, API client, service, or device', 'Validated by an external acceptance test'),
     '<span class="topology-arrow">→</span>',
-    topologyNode(ingress?.status, 'SecurityEdge', 'Public WAF ingress', ingress?.endpoint || '—'),
+    topologyNode(dns?.status || 'not_applicable', 'DNS resolution', dns ? 'Configured hostname resolution' : 'DNS probe disabled', dns?.latency_ms ? `${compactLatency(dns.latency_ms)} · ${dns.endpoint || 'configured resolver'}` : 'Optional server-side probe'),
+    '<span class="topology-arrow">→</span>',
+    topologyNode(ingress?.status, 'SecurityEdge', 'Public application-security ingress', ingress?.endpoint || '—'),
     '<span class="topology-arrow">→</span>',
     topologyNode(connectivity.edgeproxy_connection_status, 'EdgeProxy', 'Data plane + Admin API', edgeHTTP ? compactLatency(edgeHTTP.latency_ms) : '—'),
     '<span class="topology-arrow">→</span>',
@@ -501,14 +508,14 @@ $('purge-form').onsubmit = async event => { event.preventDefault(); const query=
 $('check-connectivity').onclick = async () => {
   const button = $('check-connectivity');
   button.disabled = true;
-  button.textContent = 'Checking…';
+  button.textContent = 'Running…';
   try {
     const connectivity = await api('/api/v1/connectivity/check', {method:'POST'});
     state.overview = {...(state.overview || {}), connectivity};
     renderConnectivity();
     toast('Connectivity check completed');
   } catch (error) { toast(error.message); }
-  finally { button.disabled = false; button.textContent = 'Check now'; }
+  finally { button.disabled = false; button.textContent = 'Run checks'; }
 };
 $('reload-config').onclick = async () => { await api('/api/v1/reload',{method:'POST'}); await refreshAll(); toast('Configuration reloaded'); };
 window.addEventListener('resize', () => state.overview && drawTrend());

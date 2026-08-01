@@ -1,0 +1,12 @@
+/securityedge
+/bin/
+/logs/*
+!/logs/.gitkeep
+*.exe
+*.log
+*.tmp
+*.bak
+coverage.out
+.DS_Store
+.vscode/
+.idea/

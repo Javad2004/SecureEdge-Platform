@@ -1,5 +1,5 @@
 FROM golang:1.23-alpine AS build
-ARG VERSION=3.1.0-professional-connectivity
+ARG VERSION=3.2.0-professional-operations
 ARG COMMIT=container
 ARG BUILD_TIME=unknown
 WORKDIR /src
@@ -13,7 +13,7 @@ RUN CGO_ENABLED=0 go test ./... \
 FROM alpine:3.21
 LABEL org.opencontainers.image.title="SecurityEdge" \
       org.opencontainers.image.description="Application-layer WAF, traffic protection, and EdgeProxy operations dashboard" \
-      org.opencontainers.image.version="3.1.0-professional-connectivity"
+      org.opencontainers.image.version="3.2.0-professional-operations"
 RUN addgroup -S app && adduser -S -G app app
 WORKDIR /app
 COPY --from=build /out/securityedge /usr/local/bin/securityedge

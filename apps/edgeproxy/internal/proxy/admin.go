@@ -3,7 +3,7 @@ package proxy
 import (
 	"sort"
 
-	"github.com/bachelor-project/edgeproxy/internal/cache"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/cache"
 )
 
 type RouteStatus struct {

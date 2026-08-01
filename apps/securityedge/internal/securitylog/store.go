@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bachelor-project/edgeproxy-security/internal/config"
-	"github.com/bachelor-project/edgeproxy-security/internal/waf"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/waf"
 )
 
 type Entry struct {
@@ -269,7 +270,11 @@ func (s *Store) Export(w io.Writer, f Filter, format string) error {
 			return err
 		}
 		for _, e := range entries {
-			if err := cw.Write([]string{strconv.FormatUint(e.Sequence, 10), e.Timestamp, e.Level, e.Event, e.RequestID, e.ClientIP, e.Method, e.Host, e.Path, e.PathFingerprint, e.Route, strconv.Itoa(e.Status), e.Action, e.Reason, strconv.Itoa(e.Score), strings.Join(e.RuleIDs, "|"), strconv.FormatFloat(e.DurationMS, 'f', 3, 64), strconv.FormatBool(e.AutoBanned)}); err != nil {
+			row := []string{strconv.FormatUint(e.Sequence, 10), e.Timestamp, e.Level, e.Event, e.RequestID, e.ClientIP, e.Method, e.Host, e.Path, e.PathFingerprint, e.Route, strconv.Itoa(e.Status), e.Action, e.Reason, strconv.Itoa(e.Score), strings.Join(e.RuleIDs, "|"), strconv.FormatFloat(e.DurationMS, 'f', 3, 64), strconv.FormatBool(e.AutoBanned)}
+			for i := range row {
+				row[i] = safeCSVCell(row[i])
+			}
+			if err := cw.Write(row); err != nil {
 				return err
 			}
 		}
@@ -289,14 +294,29 @@ func (s *Store) Export(w io.Writer, f Filter, format string) error {
 	}
 }
 
-func (s *Store) Clear() int {
+func (s *Store) Clear() (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := s.count
 	clear(s.entries)
 	s.head = 0
 	s.count = 0
-	return n
+
+	var errs []error
+	if s.file != nil {
+		if err := s.file.Truncate(0); err != nil {
+			errs = append(errs, fmt.Errorf("truncate security log: %w", err))
+		} else {
+			s.fileBytes = 0
+		}
+	}
+	for i := 1; i <= s.maxBackups; i++ {
+		backup := fmt.Sprintf("%s.%d", s.filePath, i)
+		if err := os.Remove(backup); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, fmt.Errorf("remove security log backup %q: %w", backup, err))
+		}
+	}
+	return n, errors.Join(errs...)
 }
 func (s *Store) Stats() Stats {
 	s.mu.RLock()
@@ -446,6 +466,19 @@ func trim(v string, n int) string {
 	}
 	return v
 }
+func safeCSVCell(value string) string {
+	trimmed := strings.TrimLeft(value, " \t\r\n")
+	if trimmed == "" {
+		return value
+	}
+	switch trimmed[0] {
+	case '=', '+', '-', '@':
+		return "'" + value
+	default:
+		return value
+	}
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a

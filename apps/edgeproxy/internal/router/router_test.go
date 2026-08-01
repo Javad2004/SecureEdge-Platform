@@ -4,7 +4,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/bachelor-project/edgeproxy/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
 )
 
 func TestHostAndLongestPathMatch(t *testing.T) {

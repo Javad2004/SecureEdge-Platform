@@ -18,16 +18,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bachelor-project/edgeproxy-security/internal/admission"
-	"github.com/bachelor-project/edgeproxy-security/internal/config"
-	"github.com/bachelor-project/edgeproxy-security/internal/connectivity"
-	"github.com/bachelor-project/edgeproxy-security/internal/metrics"
-	"github.com/bachelor-project/edgeproxy-security/internal/ratelimit"
-	"github.com/bachelor-project/edgeproxy-security/internal/routes"
-	"github.com/bachelor-project/edgeproxy-security/internal/securitylog"
-	"github.com/bachelor-project/edgeproxy-security/internal/traffic"
-	"github.com/bachelor-project/edgeproxy-security/internal/version"
-	"github.com/bachelor-project/edgeproxy-security/internal/waf"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/admission"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/connectivity"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/metrics"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/ratelimit"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/routes"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/securitylog"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/traffic"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/version"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/waf"
 )
 
 //go:embed web/*
@@ -285,7 +285,12 @@ func (s *Server) logsHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s.logs.Query(f))
 }
 func (s *Server) clearLogs(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, 200, map[string]any{"removed_entries": s.logs.Clear(), "cleared_at": now()})
+	removed, err := s.logs.Clear()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "clear_logs_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"removed_entries": removed, "cleared_at": now()})
 }
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.PollTimeout.Duration)

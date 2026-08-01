@@ -293,6 +293,8 @@ GET     /api/v1/connectivity
 POST    /api/v1/connectivity/check
 ```
 
+`DELETE /api/v1/logs` clears the in-memory event ring, truncates the active NDJSON log, and removes rotated backups. CSV exports neutralize spreadsheet-formula prefixes in user-controlled fields before writing rows.
+
 Authenticated EdgeProxy backend-for-frontend endpoints:
 
 ```text

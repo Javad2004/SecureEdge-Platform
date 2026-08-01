@@ -9,14 +9,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bachelor-project/edgeproxy-security/internal/admission"
-	"github.com/bachelor-project/edgeproxy-security/internal/config"
-	"github.com/bachelor-project/edgeproxy-security/internal/metrics"
-	"github.com/bachelor-project/edgeproxy-security/internal/ratelimit"
-	"github.com/bachelor-project/edgeproxy-security/internal/routes"
-	"github.com/bachelor-project/edgeproxy-security/internal/securitylog"
-	"github.com/bachelor-project/edgeproxy-security/internal/traffic"
-	"github.com/bachelor-project/edgeproxy-security/internal/waf"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/admission"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/metrics"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/ratelimit"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/routes"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/securitylog"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/traffic"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/waf"
 )
 
 type fakeRuntime struct{ cfg config.Config }

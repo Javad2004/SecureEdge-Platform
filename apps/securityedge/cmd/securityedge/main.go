@@ -15,9 +15,9 @@ import (
 	"syscall"
 	"time"
 
-	securityedge "github.com/bachelor-project/edgeproxy-security"
-	"github.com/bachelor-project/edgeproxy-security/internal/config"
-	"github.com/bachelor-project/edgeproxy-security/internal/version"
+	securityedge "github.com/Javad2004/SecureEdge-Platform/apps/securityedge"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/version"
 )
 
 func main() {

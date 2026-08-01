@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bachelor-project/edgeproxy/internal/accesslog"
-	"github.com/bachelor-project/edgeproxy/internal/config"
-	"github.com/bachelor-project/edgeproxy/internal/metrics"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/accesslog"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/metrics"
 )
 
 func testConfig(origin string) config.Config {
@@ -410,5 +410,68 @@ func TestReadinessRequiresOneHealthyOriginPerRoute(t *testing.T) {
 	status := h.Readiness()
 	if status.Ready || len(status.UnhealthyRoutes) != 1 || status.UnhealthyRoutes[0] != "test" {
 		t.Fatalf("expected test route to be not ready, got %#v", status)
+	}
+}
+
+func TestProxyHidesOriginImplementationHeaders(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Server", "origin-server/1.0")
+		w.Header().Set("X-Powered-By", "example-framework")
+		w.Header().Set("X-AspNet-Version", "4.0")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer origin.Close()
+
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	for _, expectedCache := range []string{"MISS", "HIT"} {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://proxy.test/headers", nil))
+		if rr.Code != http.StatusOK || rr.Header().Get("X-Cache") != expectedCache {
+			t.Fatalf("unexpected response: code=%d cache=%q", rr.Code, rr.Header().Get("X-Cache"))
+		}
+		for _, name := range []string{"Server", "X-Powered-By", "X-AspNet-Version", "X-AspNetMvc-Version", "X-Upstream"} {
+			if value := rr.Header().Get(name); value != "" {
+				t.Fatalf("response leaked %s=%q", name, value)
+			}
+		}
+	}
+}
+
+func TestConditionalRequestDoesNotPartiallyMatchETag(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("ETag", `"v1"`)
+		_, _ = io.WriteString(w, "etag-body")
+	}))
+	defer origin.Close()
+
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://proxy.test/etag-exact", nil))
+
+	partial := httptest.NewRequest(http.MethodGet, "http://proxy.test/etag-exact", nil)
+	partial.Header.Set("If-None-Match", `"v10"`)
+	partialResponse := httptest.NewRecorder()
+	h.ServeHTTP(partialResponse, partial)
+	if partialResponse.Code != http.StatusOK || partialResponse.Body.String() != "etag-body" {
+		t.Fatalf("partial ETag incorrectly matched: code=%d body=%q", partialResponse.Code, partialResponse.Body.String())
+	}
+
+	weak := httptest.NewRequest(http.MethodGet, "http://proxy.test/etag-exact", nil)
+	weak.Header.Set("If-None-Match", `W/"v1"`)
+	weakResponse := httptest.NewRecorder()
+	h.ServeHTTP(weakResponse, weak)
+	if weakResponse.Code != http.StatusNotModified {
+		t.Fatalf("weak ETag should match a strong ETag for If-None-Match, got %d", weakResponse.Code)
 	}
 }

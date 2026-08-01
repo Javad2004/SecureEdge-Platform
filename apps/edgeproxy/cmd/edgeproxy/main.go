@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/bachelor-project/edgeproxy/internal/config"
-	"github.com/bachelor-project/edgeproxy/internal/server"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/server"
 )
 
 func main() {

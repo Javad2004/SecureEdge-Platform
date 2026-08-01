@@ -13,11 +13,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bachelor-project/edgeproxy/internal/accesslog"
-	"github.com/bachelor-project/edgeproxy/internal/cache"
-	"github.com/bachelor-project/edgeproxy/internal/config"
-	"github.com/bachelor-project/edgeproxy/internal/metrics"
-	"github.com/bachelor-project/edgeproxy/internal/router"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/accesslog"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/cache"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/metrics"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/router"
 )
 
 type routeRuntime struct {
@@ -338,10 +338,10 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 	}
 
 	removeHopByHop(resp.Header)
+	sanitizeOriginResponseHeaders(resp.Header)
 	copyHeaders(w.Header(), resp.Header)
 	w.Header().Set("Via", "1.1 edgeproxy-go")
 	w.Header().Set("X-Cache", cacheStatus)
-	w.Header().Set("X-Upstream", result.upstream)
 	w.Header().Set("X-Upstream-Response-Time", formatDuration(result.upstreamDuration))
 
 	cacheable, expiresAt, staleUntil := responseCachePolicy(req, resp, rt.cfg.Cache, time.Now())
@@ -534,6 +534,7 @@ func retryableStatus(status int) bool {
 func serveCacheEntry(w http.ResponseWriter, req *http.Request, entry cache.Entry, status string, now time.Time) {
 	copyHeaders(w.Header(), entry.Header)
 	removeHopByHop(w.Header())
+	sanitizeOriginResponseHeaders(w.Header())
 	age := int(now.Sub(entry.StoredAt).Seconds())
 	if age < 0 {
 		age = 0

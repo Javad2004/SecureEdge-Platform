@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bachelor-project/edgeproxy-security/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
 )
 
 func testConfig() config.RateLimitConfig {

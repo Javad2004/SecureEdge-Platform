@@ -1,3 +1,3 @@
-module github.com/bachelor-project/edgeproxy-security
+module github.com/Javad2004/SecureEdge-Platform/apps/securityedge
 
 go 1.23

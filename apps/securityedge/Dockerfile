@@ -12,9 +12,9 @@ COPY apps/securityedge/ ./
 RUN CGO_ENABLED=0 go test ./... \
  && CGO_ENABLED=0 go build -trimpath \
     -ldflags="-s -w \
-    -X github.com/bachelor-project/edgeproxy-security/internal/version.Version=${VERSION} \
-    -X github.com/bachelor-project/edgeproxy-security/internal/version.Commit=${COMMIT} \
-    -X github.com/bachelor-project/edgeproxy-security/internal/version.BuildTime=${BUILD_TIME}" \
+    -X github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/version.Version=${VERSION} \
+    -X github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/version.Commit=${COMMIT} \
+    -X github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/version.BuildTime=${BUILD_TIME}" \
     -o /out/securityedge ./cmd/securityedge
 
 FROM alpine:3.21

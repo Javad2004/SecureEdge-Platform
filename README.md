@@ -62,6 +62,17 @@ Each application has its own `go.mod`, tests, configuration files, scripts, Dock
 
 No third-party Go module is required by either application.
 
+## Go module paths
+
+The nested modules use paths that match this GitHub repository:
+
+```text
+github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy
+github.com/Javad2004/SecureEdge-Platform/apps/securityedge
+```
+
+The root `go.work` file connects both modules for local development and repository-wide builds.
+
 ## Quick start: local development
 
 Run these commands from the **repository root** in separate terminals.

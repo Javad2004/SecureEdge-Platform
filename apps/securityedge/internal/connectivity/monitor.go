@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bachelor-project/edgeproxy-security/internal/config"
-	"github.com/bachelor-project/edgeproxy-security/internal/routes"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/routes"
 )
 
 const (

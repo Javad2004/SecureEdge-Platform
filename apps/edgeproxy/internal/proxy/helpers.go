@@ -34,6 +34,16 @@ func copyHeaders(dst, src http.Header) {
 	}
 }
 
+// sanitizeOriginResponseHeaders removes implementation details that should not
+// be exposed by the edge. Operational details remain available through the
+// authenticated Admin API and structured logs.
+func sanitizeOriginResponseHeaders(h http.Header) {
+	h.Del("Server")
+	h.Del("X-Powered-By")
+	h.Del("X-AspNet-Version")
+	h.Del("X-AspNetMvc-Version")
+}
+
 func requestID(req *http.Request) string {
 	if value := strings.TrimSpace(req.Header.Get("X-Request-ID")); value != "" && len(value) <= 128 {
 		return value

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bachelor-project/edgeproxy/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
 )
 
 func cacheKey(req *http.Request, cfg config.CacheConfig) string {
@@ -118,8 +118,7 @@ func firstNonEmpty(values ...string) string {
 
 func conditionalNotModified(req *http.Request, header http.Header) bool {
 	if inm := req.Header.Get("If-None-Match"); inm != "" {
-		etag := header.Get("ETag")
-		if etag != "" && (inm == "*" || strings.Contains(inm, etag)) {
+		if weakETagMatch(inm, header.Get("ETag")) {
 			return true
 		}
 	}
@@ -131,6 +130,34 @@ func conditionalNotModified(req *http.Request, header http.Header) bool {
 		}
 	}
 	return false
+}
+
+func weakETagMatch(ifNoneMatch, current string) bool {
+	current = normalizeETag(current)
+	if current == "" {
+		return false
+	}
+	for _, raw := range strings.Split(ifNoneMatch, ",") {
+		candidate := strings.TrimSpace(raw)
+		if candidate == "*" {
+			return true
+		}
+		if normalizeETag(candidate) == current {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeETag(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 && (strings.HasPrefix(value, "W/") || strings.HasPrefix(value, "w/")) {
+		value = strings.TrimSpace(value[2:])
+	}
+	if len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+		return ""
+	}
+	return value
 }
 
 func cacheHost(hostport string) string {

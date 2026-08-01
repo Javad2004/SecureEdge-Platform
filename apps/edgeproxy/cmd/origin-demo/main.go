@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"log"
 	"net/http"
 	"os"
@@ -27,7 +28,7 @@ func main() {
 		return func(w http.ResponseWriter, r *http.Request) {
 			total.Add(1)
 			w.Header().Set("X-Origin-Name", *name)
-			log.Printf("origin=%s method=%s path=%s xff=%q request_id=%q", *name, r.Method, r.URL.RequestURI(), r.Header.Get("X-Forwarded-For"), r.Header.Get("X-Request-ID"))
+			log.Printf("origin=%s method=%s path=%s xff=%q request_id=%q", *name, r.Method, safeLogPath(r), r.Header.Get("X-Forwarded-For"), r.Header.Get("X-Request-ID"))
 			next(w, r)
 		}
 	}
@@ -40,7 +41,7 @@ func main() {
 	mux.HandleFunc("/", wrap(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "public, max-age=20")
-		fmt.Fprintf(w, `<!doctype html><html><body><h1>EdgeProxy Origin Demo</h1><p>Origin: %s</p><p>Path: %s</p><p>Generated: %s</p></body></html>`, *name, r.URL.Path, time.Now().Format(time.RFC3339Nano))
+		fmt.Fprintf(w, `<!doctype html><html><body><h1>EdgeProxy Origin Demo</h1><p>Origin: %s</p><p>Path: %s</p><p>Generated: %s</p></body></html>`, html.EscapeString(*name), html.EscapeString(r.URL.Path), time.Now().Format(time.RFC3339Nano))
 	}))
 	mux.HandleFunc("/api/products", wrap(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -112,4 +113,12 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("origin graceful shutdown failed: %v", err)
 	}
+}
+
+func safeLogPath(r *http.Request) string {
+	path := r.URL.EscapedPath()
+	if path == "" {
+		return "/"
+	}
+	return path
 }

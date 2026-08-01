@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bachelor-project/edgeproxy/internal/accesslog"
-	"github.com/bachelor-project/edgeproxy/internal/config"
-	"github.com/bachelor-project/edgeproxy/internal/metrics"
-	"github.com/bachelor-project/edgeproxy/internal/proxy"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/accesslog"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/metrics"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/proxy"
 )
 
 type Server struct {

@@ -15,7 +15,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/bachelor-project/edgeproxy-security/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
 )
 
 type Inspector struct {

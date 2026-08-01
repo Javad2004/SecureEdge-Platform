@@ -61,7 +61,8 @@ Standalone mode is useful for isolated development and for demonstrating the rev
 | `configs/edgeproxy.json` | `0.0.0.0:80` | `10.36.74.43:9000` | Standalone LAN demonstration |
 | `../../integration/edgeproxy-local-behind-waf.json` | `127.0.0.1:8080` | `127.0.0.1:9000` | Local integrated platform |
 | `../../integration/edgeproxy-behind-waf.json` | `127.0.0.1:8080` | `10.36.74.43:9000` | LAN integrated platform |
-| `configs/compose.json` | `0.0.0.0:8080` | `origin:9000` | Docker Compose demonstration |
+| `configs/compose.json` | `0.0.0.0:8080` | `origin:9000` | Standalone EdgeProxy Compose demonstration |
+| `../../integration/edgeproxy-compose-behind-waf.json` | `0.0.0.0:8080` | `origin:9000` | Full-platform Compose deployment behind SecurityEdge |
 
 The shared profiles are stored in the root-level [`integration`](../../integration/README.md) directory because they define the contract between both applications.
 
@@ -293,7 +294,9 @@ make validate
 make build
 ```
 
-## Docker Compose
+## Docker
+
+### Standalone EdgeProxy Compose stack
 
 Run from `apps/edgeproxy`:
 
@@ -301,19 +304,57 @@ Run from `apps/edgeproxy`:
 docker compose up --build
 ```
 
-Then access the standalone Compose proxy at:
+The Compose file builds two minimal non-root images from this Dockerfile:
 
 ```text
-http://127.0.0.1:8080
+Host client → EdgeProxy container → Origin container
 ```
 
-The Admin API is published only on host loopback:
+Published listeners:
 
 ```text
-127.0.0.1:9090
+EdgeProxy data plane   http://127.0.0.1:8080
+EdgeProxy Admin API    http://127.0.0.1:9090
 ```
 
-This Compose file demonstrates EdgeProxy and the demo Origin only; it is not the complete SecurityEdge Platform deployment.
+The Origin is available only inside the Compose network. Both services use read-only root filesystems, drop Linux capabilities, and enable `no-new-privileges`.
+
+Stop the stack:
+
+```powershell
+docker compose down
+```
+
+This Compose file intentionally demonstrates EdgeProxy and the demo Origin only.
+
+### Complete platform Compose stack
+
+To run SecurityEdge in front of EdgeProxy, still from `apps/edgeproxy`, use the repository-level deployment:
+
+```powershell
+docker compose `
+  -f ../../deployments/docker/compose.yml `
+  up --build
+```
+
+That deployment does not publish the EdgeProxy or Origin ports to the host; all public HTTP traffic enters through SecurityEdge. See [../../deployments/docker/README.md](../../deployments/docker/README.md).
+
+### Build images directly
+
+The final Dockerfile stage builds the EdgeProxy image:
+
+```powershell
+docker build -t edgeproxy:latest .
+```
+
+Build the demo Origin image by selecting its target:
+
+```powershell
+docker build `
+  --target origin-demo `
+  -t edgeproxy-origin-demo:latest `
+  .
+```
 
 ## Security guidance
 

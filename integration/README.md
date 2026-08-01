@@ -1,148 +1,134 @@
 # Platform Integration
 
-This directory contains the shared deployment contract between the two applications in the [SecureEdge Platform](../README.md):
+This directory defines the shared runtime contract between the two applications in the [SecureEdge Platform](../README.md):
 
-- [`apps/edgeproxy`](../apps/edgeproxy/README.md) — reverse proxy, routing, cache, origin health, access logs, and metrics;
+- [`apps/edgeproxy`](../apps/edgeproxy/README.md) — routing, reverse proxying, caching, origin health, logs, and metrics;
 - [`apps/securityedge`](../apps/securityedge/README.md) — WAF inspection, traffic admission, security telemetry, dependency monitoring, and dashboard.
 
 The files are stored at repository level because they describe how both applications participate in one deployment. They are not owned exclusively by either application.
 
-## Active deployment mode
+## Supported deployment modes
 
-The supported project workflow is standalone non-embedded gateway mode:
-
-```text
-HTTP client
-    │
-    ▼
-SecurityEdge public ingress
-    │
-    │ accepted HTTP requests
-    ▼
-EdgeProxy loopback data plane
-    │
-    ▼
-Application origin
-```
-
-SecurityEdge and EdgeProxy remain separate processes. SecurityEdge uses two EdgeProxy interfaces:
-
-1. the **data plane** for forwarding accepted application requests;
-2. the **Admin API** for status, metrics, logs, readiness, and cache operations.
-
-## Files
-
-### `edgeproxy-behind-waf.json`
-
-Reference LAN profile for EdgeProxy behind SecurityEdge.
+### Host or LAN gateway mode
 
 ```text
-EdgeProxy data plane    127.0.0.1:8080
-EdgeProxy Admin API     127.0.0.1:9090
-Admin token             EdgeProxyDemo2026
-Origin                   10.36.74.43:9000
-Route                    demo-app
-Health endpoint          /healthz
-Cache                    enabled
+HTTP client → SecurityEdge → EdgeProxy → Application Origin
 ```
 
-The profile supports these demonstration hosts:
+SecurityEdge and EdgeProxy run as separate processes on the gateway host. EdgeProxy binds its data and Admin listeners to loopback so clients cannot bypass SecurityEdge.
+
+### Docker Compose mode
 
 ```text
-project.local
-project.test
-www.project.test
-localhost
-127.0.0.1
+Host client → SecurityEdge container → EdgeProxy container → Origin container
 ```
 
-Update the Origin URL and hostnames when the deployment network changes.
+All services share a private Docker network. Only SecurityEdge ingress and its loopback-bound host dashboard port are published. EdgeProxy and the Origin remain internal services.
+
+## Integration files
 
 ### `edgeproxy-local-behind-waf.json`
 
-Local integrated-development profile.
+Local host-development profile paired with `apps/securityedge/configs/local-dev.json`.
 
 ```text
-EdgeProxy data plane    127.0.0.1:8080
-EdgeProxy Admin API     127.0.0.1:9090
-Admin token             dev-token
-Origin                   127.0.0.1:9000
-Route                    demo-app
-Cache                    enabled
+Data plane    127.0.0.1:8080
+Admin API     127.0.0.1:9090
+Admin token   dev-token
+Origin        127.0.0.1:9000
 ```
 
-Use this profile with `apps/securityedge/configs/local-dev.json`.
+### `edgeproxy-behind-waf.json`
+
+Reference LAN profile paired with `apps/securityedge/configs/securityedge.json`.
+
+```text
+Data plane    127.0.0.1:8080
+Admin API     127.0.0.1:9090
+Admin token   EdgeProxyDemo2026
+Origin        10.36.74.43:9000
+```
+
+Update the demonstration Origin address and hostnames before using another network.
+
+### `edgeproxy-compose-behind-waf.json`
+
+Container-network profile paired with `apps/securityedge/configs/compose.json`.
+
+```text
+Data plane    0.0.0.0:8080 inside the container network
+Admin API     0.0.0.0:9090 inside the container network
+Admin token   dev-token, normally overridden by environment
+Origin        http://origin:9000
+```
+
+Binding to `0.0.0.0` is required inside the container, but the platform Compose file does not publish either EdgeProxy port to the host.
 
 ### `edgeproxy-embedded-integration.patch`
 
-Optional reference patch for a possible future in-process integration in which EdgeProxy imports the SecurityEdge package and wraps its HTTP handler.
-
-The patch is not applied in the active source tree and is not required for the supported gateway deployment. It should be treated as an experimental integration artifact and revalidated whenever either application's internal server structure changes.
+Optional experimental patch for a possible future in-process integration in which EdgeProxy imports the SecurityEdge package and wraps its HTTP handler. It is not applied to the active source tree and is not required for the supported gateway or Compose deployments.
 
 ## Configuration mapping
 
-| SecurityEdge profile | EdgeProxy integration profile |
-|---|---|
-| `apps/securityedge/configs/local-dev.json` | `integration/edgeproxy-local-behind-waf.json` |
-| `apps/securityedge/configs/securityedge.json` | `integration/edgeproxy-behind-waf.json` |
-| `apps/securityedge/configs/embedded.json` | `integration/edgeproxy-local-behind-waf.json` |
+| SecurityEdge profile | EdgeProxy profile | Runtime |
+|---|---|---|
+| `apps/securityedge/configs/local-dev.json` | `integration/edgeproxy-local-behind-waf.json` | Local host development |
+| `apps/securityedge/configs/securityedge.json` | `integration/edgeproxy-behind-waf.json` | Reference LAN deployment |
+| `apps/securityedge/configs/compose.json` | `integration/edgeproxy-compose-behind-waf.json` | Full-platform Docker Compose |
+| `apps/securityedge/configs/embedded.json` | `integration/edgeproxy-local-behind-waf.json` | Optional embedded experiment |
 
-SecurityEdge resolves its `edgeproxy.config_path` relative to the directory containing the SecurityEdge JSON file. For example:
+SecurityEdge resolves `edgeproxy.config_path` relative to the directory containing its own JSON configuration. The checked-in `../../../integration/...` values therefore work both in the source tree and after the Compose profile is copied to `/app/config/securityedge.json` inside the image:
 
 ```text
-apps/securityedge/configs/securityedge.json
-+ ../../../integration/edgeproxy-behind-waf.json
-= integration/edgeproxy-behind-waf.json
+Source tree: /repository/apps/securityedge/configs + ../../../integration = /repository/integration
+Container:   /app/config                         + ../../../integration = /integration
 ```
 
-Do not simplify that JSON value to a path relative to the shell's current working directory; the application intentionally resolves it relative to the configuration file.
+Do not rewrite these values as paths relative to the shell's working directory.
 
 ## Credential contract
 
-The two administrative tokens serve different trust boundaries:
+The two credentials protect different trust boundaries:
 
 ```text
-SecurityEdge Admin token   authenticates operators to the dashboard and API
-EdgeProxy Admin token      authenticates SecurityEdge to the EdgeProxy Admin API
+SecurityEdge Admin token   authenticates dashboard and SecurityEdge API operators
+EdgeProxy Admin token      authenticates SecurityEdge control-plane calls to EdgeProxy
 ```
 
-The values must match across the paired profiles:
+Paired EdgeProxy tokens must match:
 
 | Deployment | SecurityEdge `edgeproxy.admin_token` | EdgeProxy `admin.auth_token` |
 |---|---|---|
 | Local | `dev-token` | `dev-token` |
 | Reference LAN | `EdgeProxyDemo2026` | `EdgeProxyDemo2026` |
+| Compose | `dev-token` | `dev-token` |
 
-For non-demonstration use, inject the real tokens through environment variables instead of committing them:
+For non-demonstration environments, inject both values:
 
 ```powershell
-$env:SECURITYEDGE_ADMIN_TOKEN = "<strong-random-token>"
-$env:EDGEPROXY_ADMIN_TOKEN = "<matching-edgeproxy-token>"
+$env:SECURITYEDGE_ADMIN_TOKEN = "<strong-random-dashboard-token>"
+$env:EDGEPROXY_ADMIN_TOKEN = "<strong-random-shared-token>"
 ```
 
-## Validate the shared profiles
+SecurityEdge deliberately loads environment-provided secrets after reading the file and does not persist them during policy updates.
 
-The commands below assume the current directory is `integration`. The Go `-C` option runs each application from its own module directory, so relative runtime paths such as SecurityEdge log files remain inside the owning application.
+## Validate profiles
 
-Validate the local EdgeProxy profile:
+Run these commands from `integration`.
 
 ```powershell
 go -C ../apps/edgeproxy run ./cmd/edgeproxy `
   -config ../../integration/edgeproxy-local-behind-waf.json `
   -validate
-```
 
-Validate the LAN EdgeProxy profile:
-
-```powershell
 go -C ../apps/edgeproxy run ./cmd/edgeproxy `
   -config ../../integration/edgeproxy-behind-waf.json `
   -validate
-```
 
-Validate the paired SecurityEdge profiles:
+go -C ../apps/edgeproxy run ./cmd/edgeproxy `
+  -config ../../integration/edgeproxy-compose-behind-waf.json `
+  -validate
 
-```powershell
 go -C ../apps/securityedge run ./cmd/securityedge `
   -config ./configs/local-dev.json `
   -validate
@@ -150,32 +136,35 @@ go -C ../apps/securityedge run ./cmd/securityedge `
 go -C ../apps/securityedge run ./cmd/securityedge `
   -config ./configs/securityedge.json `
   -validate
+
+go -C ../apps/securityedge run ./cmd/securityedge `
+  -config ./configs/compose.json `
+  -validate
 ```
+
+## Change-management checklist
+
+When changing a paired deployment profile:
+
+1. keep SecurityEdge `server.upstream_proxy_url` aligned with the EdgeProxy data listener;
+2. keep SecurityEdge `edgeproxy.admin_url` aligned with the EdgeProxy Admin listener;
+3. keep `EDGEPROXY_ADMIN_TOKEN` synchronized for both processes;
+4. keep SecurityEdge route-policy names aligned with EdgeProxy route names;
+5. verify that EdgeProxy can reach every configured Origin;
+6. validate both JSON profiles;
+7. test cache `MISS/HIT`, WAF blocking, route readiness, Origin health, and recovery after dependency restarts.
 
 ## Security boundaries
 
-The integrated deployment should preserve these boundaries:
-
 - SecurityEdge is the only public HTTP ingress.
-- EdgeProxy data and Admin listeners remain on loopback.
-- The SecurityEdge dashboard remains on loopback unless protected by another trusted access layer.
-- The Origin accepts traffic only from the gateway host.
-- The public client cannot bypass SecurityEdge by connecting directly to EdgeProxy or the Origin.
-- Demo tokens and addresses are replaced before non-lab use.
-
-## Change-management rules
-
-When changing an integration profile:
-
-1. keep the EdgeProxy data-plane URL synchronized with SecurityEdge's `server.upstream_proxy_url`;
-2. keep the EdgeProxy Admin URL synchronized with SecurityEdge's `edgeproxy.admin_url`;
-3. keep the EdgeProxy Admin token synchronized across both paired profiles;
-4. keep SecurityEdge route-policy names aligned with EdgeProxy route names;
-5. validate both JSON profiles;
-6. test route readiness, Origin health, cache `MISS/HIT`, WAF blocking, and automatic recovery after EdgeProxy restart.
+- EdgeProxy and Origin listeners are loopback-only on host deployments or unpublished on private container networks.
+- The SecurityEdge dashboard remains loopback-bound on the host unless another trusted access layer is added.
+- Runtime tokens, logs, `.env` files, and generated artifacts are not committed.
+- Demonstration tokens and lab IP addresses must be replaced before non-lab use.
 
 ## Related documentation
 
 - [Repository overview](../README.md)
 - [EdgeProxy](../apps/edgeproxy/README.md)
 - [SecurityEdge](../apps/securityedge/README.md)
+- [Docker deployment](../deployments/docker/README.md)

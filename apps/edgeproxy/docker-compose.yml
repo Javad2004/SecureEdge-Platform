@@ -1,29 +1,36 @@
 services:
   origin:
-    image: golang:1.23-alpine
-    working_dir: /src
-    volumes:
-      - .:/src:ro
-    command: ["go", "run", "./cmd/origin-demo", "-listen", ":9000", "-name", "origin-compose"]
+    build:
+      context: .
+      target: origin-demo
     expose:
       - "9000"
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9000/healthz"]
-      interval: 5s
-      timeout: 2s
-      retries: 10
-      start_period: 5s
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
   proxy:
-    build: .
+    build:
+      context: .
+      target: edgeproxy
     depends_on:
       origin:
         condition: service_healthy
+    environment:
+      EDGEPROXY_ADMIN_TOKEN: "${EDGEPROXY_ADMIN_TOKEN:-dev-token}"
     ports:
       - "8080:8080"
       - "127.0.0.1:9090:9090"
-    volumes:
-      - ./configs/compose.json:/app/config.json:ro
+    init: true
     read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
     security_opt:
       - no-new-privileges:true

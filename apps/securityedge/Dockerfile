@@ -19,28 +19,33 @@ RUN CGO_ENABLED=0 go test ./... \
 
 FROM alpine:3.21
 
+ARG VERSION=3.3.0-professional-traffic
+
 LABEL org.opencontainers.image.title="SecurityEdge" \
       org.opencontainers.image.description="Application-layer WAF, traffic protection, and EdgeProxy operations dashboard" \
-      org.opencontainers.image.version="3.3.0-professional-traffic"
+      org.opencontainers.image.version="${VERSION}"
 
-RUN addgroup -S app && adduser -S -G app app
+RUN apk add --no-cache ca-certificates \
+ && addgroup -S app \
+ && adduser -S -G app app \
+ && mkdir -p /app/config /app/configs /app/logs \
+ && chown -R app:app /app/config /app/logs
 
 WORKDIR /app
 
 COPY --from=build /out/securityedge /usr/local/bin/securityedge
 COPY apps/securityedge/configs /app/configs
+COPY --chown=app:app apps/securityedge/configs/compose.json /app/config/securityedge.json
 COPY integration /integration
-
-RUN mkdir -p /app/logs \
- && chown -R app:app /app/logs
 
 USER app
 
+VOLUME ["/app/config", "/app/logs"]
 EXPOSE 8081 9191
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget -q -O- http://127.0.0.1:9191/healthz >/dev/null || exit 1
+  CMD wget -q -O /dev/null http://127.0.0.1:9191/healthz || exit 1
 
-ENTRYPOINT ["securityedge"]
-
-CMD ["-config", "/app/configs/local-dev.json"]
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["/usr/local/bin/securityedge"]
+CMD ["-config", "/app/config/securityedge.json"]

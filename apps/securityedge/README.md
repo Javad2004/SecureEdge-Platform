@@ -80,6 +80,7 @@ SecurityEdge provides application-layer HTTP protection. SYN floods, UDP floods,
 | `configs/local-dev.json` | `127.0.0.1:8081` | `../../integration/edgeproxy-local-behind-waf.json` | Local integrated development |
 | `configs/securityedge.json` | `0.0.0.0:80` | `../../integration/edgeproxy-behind-waf.json` | Reference LAN deployment |
 | `configs/embedded.json` | no standalone ingress | local integration profile | Optional future embedded mode |
+| `configs/compose.json` | `0.0.0.0:8081` | `../../integration/edgeproxy-compose-behind-waf.json` | Full-platform Docker Compose deployment |
 
 The JSON value stored in `edgeproxy.config_path` is resolved relative to the SecurityEdge configuration file, not relative to the shell's current directory. The checked-in values therefore use `../../../integration/...` internally and correctly resolve to the repository-level `integration` directory.
 
@@ -381,6 +382,7 @@ Validate configurations:
 go run ./cmd/securityedge -config ./configs/local-dev.json -validate
 go run ./cmd/securityedge -config ./configs/securityedge.json -validate
 go run ./cmd/securityedge -config ./configs/embedded.json -validate
+go run ./cmd/securityedge -config ./configs/compose.json -validate
 ```
 
 Makefile targets:
@@ -397,9 +399,11 @@ make validate-network
 make verify
 ```
 
-## Docker image
+## Docker
 
-The Dockerfile copies files from both `apps/securityedge` and the root-level `integration` directory. Therefore, while the command is started from `apps/securityedge`, the build context must be the repository root:
+### Build the SecurityEdge image
+
+The Dockerfile copies files from both `apps/securityedge` and the repository-level `integration` directory. Commands in this README start from `apps/securityedge`, so the build context must be the repository root (`../..`):
 
 ```powershell
 docker build `
@@ -408,7 +412,59 @@ docker build `
   ../..
 ```
 
-The image defaults to `configs/local-dev.json`. That profile expects EdgeProxy on `127.0.0.1:8080`, which is the container's own loopback. For a real container deployment, mount or bake a profile whose `server.upstream_proxy_url` and `edgeproxy.admin_url` point to EdgeProxy on the container network. The repository does not currently provide a complete full-platform Compose file.
+The image uses `/app/config/securityedge.json`, initialized from `configs/compose.json`. Its container-specific settings are:
+
+```text
+SecurityEdge ingress       0.0.0.0:8081
+SecurityEdge Admin API     0.0.0.0:9191
+EdgeProxy data plane       http://edgeproxy:8080
+EdgeProxy Admin API        http://edgeproxy:9090
+EdgeProxy route profile    /integration/edgeproxy-compose-behind-waf.json
+```
+
+The `/app/config` and `/app/logs` paths are writable volumes owned by the non-root application user. This allows dashboard policy changes to be atomically persisted and allows rotated NDJSON logs to survive container recreation. Real credentials should be injected through `SECURITYEDGE_ADMIN_TOKEN` and `EDGEPROXY_ADMIN_TOKEN`.
+
+The image is designed to participate in a container network with services named `edgeproxy` and `origin`; running it alone will not provide a reachable upstream.
+
+### Run the complete platform
+
+From `apps/securityedge`:
+
+```powershell
+docker compose `
+  -f ../../deployments/docker/compose.yml `
+  up --build
+```
+
+Optional environment overrides can be loaded with:
+
+```powershell
+Copy-Item ../../deployments/docker/.env.example ../../deployments/docker/.env
+
+docker compose `
+  --env-file ../../deployments/docker/.env `
+  -f ../../deployments/docker/compose.yml `
+  up --build
+```
+
+The full stack publishes:
+
+```text
+SecurityEdge ingress    http://127.0.0.1:8081
+SecurityEdge dashboard  http://127.0.0.1:9191
+```
+
+EdgeProxy and the Origin remain internal to the Docker network, preventing direct host-side bypass of SecurityEdge.
+
+To reset persisted policy configuration and logs:
+
+```powershell
+docker compose `
+  -f ../../deployments/docker/compose.yml `
+  down -v
+```
+
+See [../../deployments/docker/README.md](../../deployments/docker/README.md) for service topology, volumes, ports, and credential overrides.
 
 ## Privacy and log handling
 

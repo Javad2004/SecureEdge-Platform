@@ -7,7 +7,7 @@ The repository contains two independently executable applications:
 - **[EdgeProxy](apps/edgeproxy/README.md)** — host/path routing, reverse proxying, origin health, retries, HTTP caching, access logs, metrics, and an authenticated Admin API.
 - **[SecurityEdge](apps/securityedge/README.md)** — Web Application Firewall inspection, HTTP flood and overload controls, security telemetry, dependency monitoring, and an operations dashboard placed in front of EdgeProxy.
 
-The active platform deployment uses **standalone non-embedded gateway mode**. SecurityEdge accepts public HTTP traffic, inspects and admits each request, and forwards accepted traffic to EdgeProxy over loopback.
+The active runtime model uses **standalone non-embedded gateway mode**. SecurityEdge accepts public HTTP traffic, inspects and admits each request, and forwards accepted traffic to EdgeProxy over loopback in host deployments or over a private service network in Docker Compose.
 
 ## Architecture
 
@@ -168,7 +168,8 @@ Open the public hostname from any permitted HTTP client. Requests that reach Sec
 | `apps/edgeproxy/configs/edgeproxy.json` | EdgeProxy-only LAN demonstration |
 | `integration/edgeproxy-local-behind-waf.json` | Local integrated deployment behind SecurityEdge |
 | `integration/edgeproxy-behind-waf.json` | LAN integrated deployment behind SecurityEdge |
-| `apps/edgeproxy/configs/compose.json` | EdgeProxy Docker Compose demonstration |
+| `apps/edgeproxy/configs/compose.json` | Standalone EdgeProxy Compose demonstration |
+| `integration/edgeproxy-compose-behind-waf.json` | Full-platform container deployment behind SecurityEdge |
 
 ### SecurityEdge
 
@@ -177,6 +178,7 @@ Open the public hostname from any permitted HTTP client. Requests that reach Sec
 | `apps/securityedge/configs/local-dev.json` | Local gateway on `127.0.0.1:8081` |
 | `apps/securityedge/configs/securityedge.json` | LAN gateway on `0.0.0.0:80` |
 | `apps/securityedge/configs/embedded.json` | Optional future embedded integration profile |
+| `apps/securityedge/configs/compose.json` | Full-platform container profile using Docker service discovery |
 
 See [integration/README.md](integration/README.md) for the shared deployment contract.
 
@@ -226,9 +228,11 @@ go run ./apps/securityedge/cmd/securityedge `
 
 ## Docker
 
-### EdgeProxy Compose demonstration
+The repository provides two container workflows.
 
-Run from the repository root:
+### Standalone EdgeProxy demonstration
+
+This stack runs only the demo Origin and EdgeProxy. Run from the repository root:
 
 ```powershell
 docker compose `
@@ -237,9 +241,61 @@ docker compose `
   up --build
 ```
 
-### SecurityEdge image
+The standalone proxy is exposed at `http://127.0.0.1:8080`; its Admin API is bound to `http://127.0.0.1:9090`.
 
-SecurityEdge's Dockerfile requires the repository root as its build context because it copies both the SecurityEdge application and the root-level `integration` directory:
+### Complete SecureEdge Platform
+
+The platform Compose deployment runs the demo Origin, EdgeProxy, and SecurityEdge on one private Docker network:
+
+```text
+Host client → SecurityEdge → EdgeProxy → Origin
+```
+
+EdgeProxy and the Origin are not published to the host. SecurityEdge ingress is published on port `8081`, while the dashboard remains loopback-only on port `9191`.
+
+Optional: create a local environment file before starting the stack:
+
+```powershell
+Copy-Item ./deployments/docker/.env.example ./deployments/docker/.env
+```
+
+Replace the demonstration tokens in that file for any non-lab use, then start the stack:
+
+```powershell
+docker compose `
+  --env-file ./deployments/docker/.env `
+  -f ./deployments/docker/compose.yml `
+  up --build
+```
+
+The `--env-file` option can be omitted when the checked-in demonstration defaults are acceptable.
+
+Verify the complete request path:
+
+```powershell
+curl.exe -i http://127.0.0.1:8081/api/products
+curl.exe -i http://127.0.0.1:8081/api/products
+```
+
+Open the dashboard at `http://127.0.0.1:9191`. The default demonstration token is `dev-security-token`.
+
+Stop the stack without deleting persisted SecurityEdge configuration or logs:
+
+```powershell
+docker compose -f ./deployments/docker/compose.yml down
+```
+
+Delete the stack and its named volumes when a clean configuration reset is required:
+
+```powershell
+docker compose -f ./deployments/docker/compose.yml down -v
+```
+
+SecurityEdge stores its mutable policy configuration and rotated NDJSON logs in named Docker volumes. Environment-provided tokens override the values in the persisted JSON and are never written back by policy updates.
+
+### Build the SecurityEdge image directly
+
+SecurityEdge's Dockerfile requires the repository root as its build context because it copies both the application and the root-level `integration` directory:
 
 ```powershell
 docker build `
@@ -248,7 +304,9 @@ docker build `
   .
 ```
 
-The repository does not currently include a complete multi-container Compose deployment for the full platform. A containerized runtime must provide SecurityEdge with an EdgeProxy endpoint reachable from its container network.
+The image defaults to the container-specific profile at `/app/config/securityedge.json`. That profile uses Docker service names and expects services named `edgeproxy` and `origin`; use the full-platform Compose file for the supported multi-container workflow.
+
+See [deployments/docker/README.md](deployments/docker/README.md) for the complete container contract.
 
 ## Administrative credentials
 
@@ -271,7 +329,7 @@ Environment variables override the JSON values.
 ## Security boundaries
 
 - Only SecurityEdge should expose the public HTTP ingress in the integrated deployment.
-- EdgeProxy data and Admin listeners should remain bound to loopback.
+- EdgeProxy data and Admin listeners should remain bound to loopback on host deployments, or remain unpublished on a private container network.
 - The SecurityEdge dashboard should remain bound to loopback unless protected by an additional trusted access layer.
 - The Origin should accept its application port only from the gateway host.
 - Runtime logs, `.env` files, generated binaries, and real secrets must not be committed.

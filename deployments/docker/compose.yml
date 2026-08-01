@@ -1,0 +1,82 @@
+services:
+  origin:
+    build:
+      context: ../../apps/edgeproxy
+      target: origin-demo
+    expose:
+      - "9000"
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+
+  edgeproxy:
+    build:
+      context: ../../apps/edgeproxy
+      target: edgeproxy
+    depends_on:
+      origin:
+        condition: service_healthy
+    environment:
+      EDGEPROXY_ADMIN_TOKEN: "${EDGEPROXY_ADMIN_TOKEN:-dev-token}"
+    expose:
+      - "8080"
+      - "9090"
+    volumes:
+      - ../../integration/edgeproxy-compose-behind-waf.json:/app/config.json:ro
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+
+  securityedge:
+    build:
+      context: ../..
+      dockerfile: apps/securityedge/Dockerfile
+      args:
+        VERSION: "${SECURITYEDGE_VERSION:-3.3.0-professional-traffic}"
+        COMMIT: "${SECURITYEDGE_COMMIT:-container}"
+        BUILD_TIME: "${SECURITYEDGE_BUILD_TIME:-unknown}"
+    depends_on:
+      edgeproxy:
+        condition: service_healthy
+    environment:
+      SECURITYEDGE_ADMIN_TOKEN: "${SECURITYEDGE_ADMIN_TOKEN:-dev-security-token}"
+      EDGEPROXY_ADMIN_TOKEN: "${EDGEPROXY_ADMIN_TOKEN:-dev-token}"
+    ports:
+      - "${SECURITYEDGE_HTTP_PORT:-8081}:8081"
+      - "127.0.0.1:${SECURITYEDGE_ADMIN_PORT:-9191}:9191"
+    volumes:
+      - securityedge-config:/app/config
+      - securityedge-logs:/app/logs
+      - ../../integration:/integration:ro
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+
+networks:
+  backend:
+    driver: bridge
+
+volumes:
+  securityedge-config:
+  securityedge-logs:

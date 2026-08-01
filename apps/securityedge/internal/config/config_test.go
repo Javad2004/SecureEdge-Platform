@@ -73,3 +73,32 @@ func TestLoadFileRejectsUnknownConfigurationField(t *testing.T) {
 		t.Fatalf("expected unknown-field error, got %v", err)
 	}
 }
+
+func TestExcludedPathPrefixesAreNormalizedAndValidated(t *testing.T) {
+	cfg := Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.DefaultPolicy.ExcludedPathPrefixes = []string{" /healthz ", "/healthz", "", "/readyz/"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/healthz", "/readyz/"}
+	if len(cfg.DefaultPolicy.ExcludedPathPrefixes) != len(want) {
+		t.Fatalf("unexpected normalized prefixes: %#v", cfg.DefaultPolicy.ExcludedPathPrefixes)
+	}
+	for i := range want {
+		if cfg.DefaultPolicy.ExcludedPathPrefixes[i] != want[i] {
+			t.Fatalf("unexpected normalized prefixes: %#v", cfg.DefaultPolicy.ExcludedPathPrefixes)
+		}
+	}
+
+	for _, invalid := range []string{"healthz", "/healthz?full=1", "/healthz#fragment"} {
+		cfg := Default()
+		cfg.Server.Mode = "embedded"
+		cfg.EdgeProxy.ConfigPath = "edge.json"
+		cfg.DefaultPolicy.ExcludedPathPrefixes = []string{invalid}
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("expected validation error for %q", invalid)
+		}
+	}
+}

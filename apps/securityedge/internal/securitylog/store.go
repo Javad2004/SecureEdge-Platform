@@ -203,23 +203,81 @@ func (s *Store) writeFileLocked(e Entry) {
 
 func (s *Store) rotateLocked() error {
 	if s.file != nil {
-		_ = s.file.Close()
+		if err := s.file.Close(); err != nil {
+			s.file = nil
+			return fmt.Errorf("close security log before rotation: %w", err)
+		}
 		s.file = nil
 	}
+
+	var rotationErr error
 	if s.maxBackups > 0 {
-		_ = os.Remove(fmt.Sprintf("%s.%d", s.filePath, s.maxBackups))
-		for i := s.maxBackups - 1; i >= 1; i-- {
-			_ = os.Rename(fmt.Sprintf("%s.%d", s.filePath, i), fmt.Sprintf("%s.%d", s.filePath, i+1))
+		oldest := fmt.Sprintf("%s.%d", s.filePath, s.maxBackups)
+		if err := removeIfExists(oldest); err != nil {
+			rotationErr = fmt.Errorf("remove oldest security log backup: %w", err)
 		}
-		_ = os.Rename(s.filePath, s.filePath+".1")
-	} else {
-		_ = os.Remove(s.filePath)
+		for i := s.maxBackups - 1; rotationErr == nil && i >= 1; i-- {
+			src := fmt.Sprintf("%s.%d", s.filePath, i)
+			dst := fmt.Sprintf("%s.%d", s.filePath, i+1)
+			if err := replaceRename(src, dst); err != nil {
+				rotationErr = fmt.Errorf("rotate security log backup %q to %q: %w", src, dst, err)
+			}
+		}
+		if rotationErr == nil {
+			if err := replaceRename(s.filePath, s.filePath+".1"); err != nil {
+				rotationErr = fmt.Errorf("rotate active security log: %w", err)
+			}
+		}
+	} else if err := removeIfExists(s.filePath); err != nil {
+		rotationErr = fmt.Errorf("remove active security log: %w", err)
 	}
+
+	if rotationErr != nil {
+		reopenErr := s.reopenAppendLocked()
+		return errors.Join(rotationErr, reopenErr)
+	}
+
 	file, err := os.OpenFile(s.filePath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
 	if err != nil {
-		return err
+		reopenErr := s.reopenAppendLocked()
+		return errors.Join(fmt.Errorf("open new security log after rotation: %w", err), reopenErr)
 	}
 	s.file, s.fileBytes = file, 0
+	return nil
+}
+
+func (s *Store) reopenAppendLocked() error {
+	file, err := os.OpenFile(s.filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+	if err != nil {
+		return fmt.Errorf("reopen security log after rotation failure: %w", err)
+	}
+	info, statErr := file.Stat()
+	if statErr != nil {
+		_ = file.Close()
+		return fmt.Errorf("stat security log after rotation failure: %w", statErr)
+	}
+	s.file = file
+	s.fileBytes = info.Size()
+	return nil
+}
+
+func replaceRename(src, dst string) error {
+	if _, err := os.Stat(src); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if err := removeIfExists(dst); err != nil {
+		return err
+	}
+	return os.Rename(src, dst)
+}
+
+func removeIfExists(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	return nil
 }
 
@@ -281,14 +339,13 @@ func (s *Store) Export(w io.Writer, f Filter, format string) error {
 		return cw.Error()
 	case "ndjson", "jsonl":
 		bw := bufio.NewWriter(w)
-		defer bw.Flush()
 		enc := json.NewEncoder(bw)
 		for _, e := range entries {
 			if err := enc.Encode(e); err != nil {
 				return err
 			}
 		}
-		return nil
+		return bw.Flush()
 	default:
 		return fmt.Errorf("unsupported export format %q", format)
 	}

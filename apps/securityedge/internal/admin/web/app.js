@@ -520,7 +520,7 @@ document.querySelectorAll('.nav-item').forEach(button => button.onclick = () => 
 document.querySelectorAll('[data-go]').forEach(button => button.onclick = () => setView(button.dataset.go));
 $('security-filters').onsubmit = event => { event.preventDefault(); loadSecurity(true); };
 $('older-security').onclick = () => loadSecurity(false);
-$('clear-security').onclick = async () => { if (!confirm('Clear all retained in-memory SecurityEdge events? Persistent NDJSON files are not deleted.')) return; await api('/api/v1/logs',{method:'DELETE'}); await loadSecurity(true); toast('In-memory security events cleared'); };
+$('clear-security').onclick = async () => { if (!confirm('Clear all retained SecurityEdge events, the active NDJSON log, and rotated backups?')) return; await api('/api/v1/logs',{method:'DELETE'}); await loadSecurity(true); toast('Security events and persistent log files cleared'); };
 $('export-ndjson').onclick = () => download('/api/v1/logs/export?format=ndjson','security-events.ndjson','application/x-ndjson').catch(error=>toast(error.message));
 $('export-csv').onclick = () => download('/api/v1/logs/export?format=csv','security-events.csv','text/csv').catch(error=>toast(error.message));
 $('export-prometheus').onclick = () => download('/api/v1/metrics/prometheus','securityedge.prom','text/plain').catch(error=>toast(error.message));

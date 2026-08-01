@@ -439,6 +439,29 @@ func validatePolicy(name string, p *Policy) error {
 		}
 	}
 	p.AllowedMethods = methods
+
+	excludedPaths := make([]string, 0, len(p.ExcludedPathPrefixes))
+	seenExcludedPaths := map[string]bool{}
+	for _, prefix := range p.ExcludedPathPrefixes {
+		prefix = strings.TrimSpace(prefix)
+		if prefix == "" {
+			continue
+		}
+		if !strings.HasPrefix(prefix, "/") {
+			errs = append(errs, fmt.Errorf("%s.excluded_path_prefixes contains non-absolute path %q", name, prefix))
+			continue
+		}
+		if strings.ContainsAny(prefix, "?#") {
+			errs = append(errs, fmt.Errorf("%s.excluded_path_prefixes must contain paths only: %q", name, prefix))
+			continue
+		}
+		if !seenExcludedPaths[prefix] {
+			excludedPaths = append(excludedPaths, prefix)
+			seenExcludedPaths[prefix] = true
+		}
+	}
+	p.ExcludedPathPrefixes = excludedPaths
+
 	if p.RateLimit.Enabled {
 		if p.RateLimit.RequestsPerSecond <= 0 || p.RateLimit.Burst <= 0 || p.RateLimit.GlobalRequestsPerSecond <= 0 || p.RateLimit.GlobalBurst <= 0 {
 			errs = append(errs, fmt.Errorf("%s rate_limit rates and bursts must be positive", name))

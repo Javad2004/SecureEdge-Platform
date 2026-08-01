@@ -1,4 +1,4 @@
-VERSION ?= 3.3.0-professional-traffic
+VERSION ?= development
 COMMIT ?= $$(git rev-parse --short HEAD 2>/dev/null || echo development)
 BUILD_TIME ?= $$(date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS = -s -w -X github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/version.Version=$(VERSION) -X github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/version.Commit=$(COMMIT) -X github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/version.BuildTime=$(BUILD_TIME)

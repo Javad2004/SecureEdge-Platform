@@ -101,3 +101,39 @@ func FuzzInspectorNeverPanics(f *testing.F) {
 		_, _ = inspector(t).Inspect(req, config.Default().DefaultPolicy)
 	})
 }
+
+func TestExcludedPathRequiresSegmentBoundary(t *testing.T) {
+	custom := []config.CustomRuleConfig{{
+		ID: "CUSTOM-EXCLUSION-001", Name: "Excluded path boundary", Category: "custom",
+		Description: "detects the regression marker", Score: 7, Targets: []string{"path"}, Pattern: `blocked-marker`,
+	}}
+	i, err := NewInspector(custom, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := config.Default().DefaultPolicy
+	policy.ExcludedPathPrefixes = []string{"/healthz"}
+
+	for _, path := range []string{"/healthz", "/healthz/ready"} {
+		req := httptest.NewRequest("GET", "http://project.test"+path+"/blocked-marker", nil)
+		if path == "/healthz" {
+			req = httptest.NewRequest("GET", "http://project.test/healthz", nil)
+		}
+		got, err := i.Inspect(req, policy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got.Excluded {
+			t.Fatalf("expected %q to be excluded", req.URL.Path)
+		}
+	}
+
+	req := httptest.NewRequest("GET", "http://project.test/healthz-admin/blocked-marker", nil)
+	got, err := i.Inspect(req, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Excluded || len(got.Matches) == 0 {
+		t.Fatalf("similar path must remain inspected: %#v", got)
+	}
+}

@@ -64,7 +64,7 @@ func (i *Inspector) Inspect(req *http.Request, policy config.Policy) (Result, er
 	i.mu.RUnlock()
 	result := Result{Matches: []Match{}}
 	for _, prefix := range policy.ExcludedPathPrefixes {
-		if prefix != "" && strings.HasPrefix(req.URL.Path, prefix) {
+		if excludedPathMatches(req.URL.Path, prefix) {
 			result.Excluded = true
 			return result, nil
 		}
@@ -114,6 +114,20 @@ func (i *Inspector) Inspect(req *http.Request, policy config.Policy) (Result, er
 	}
 	sortMatches(result.Matches)
 	return result, nil
+}
+
+func excludedPathMatches(requestPath, prefix string) bool {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return false
+	}
+	if prefix == "/" || requestPath == prefix {
+		return true
+	}
+	if strings.HasSuffix(prefix, "/") {
+		return strings.HasPrefix(requestPath, prefix)
+	}
+	return strings.HasPrefix(requestPath, prefix) && len(requestPath) > len(prefix) && requestPath[len(prefix)] == '/'
 }
 
 type sample struct{ location, value string }

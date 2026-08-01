@@ -3,6 +3,7 @@ package securitylog
 import (
 	"bytes"
 	"encoding/csv"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -84,5 +85,64 @@ func TestCSVExportNeutralizesSpreadsheetFormulas(t *testing.T) {
 	}
 	if got := records[1][8]; !strings.HasPrefix(got, "'") {
 		t.Fatalf("path formula was not neutralized: %q", got)
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("forced write failure")
+}
+
+func TestNDJSONExportReturnsFlushError(t *testing.T) {
+	s := New(10)
+	s.Append(Entry{Event: "test"})
+	if err := s.Export(failingWriter{}, Filter{Limit: 10}, "ndjson"); err == nil {
+		t.Fatal("expected buffered writer flush error")
+	}
+}
+
+func TestRotationReplacesExistingBackupDestinations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.ndjson")
+	s, err := NewWithConfig(config.LogStoreConfig{Capacity: 10, FilePath: path, MaxFileBytes: 1024, MaxBackups: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if _, err := s.file.WriteString("current\n"); err != nil {
+		t.Fatal(err)
+	}
+	s.fileBytes = int64(len("current\n"))
+	if err := os.WriteFile(path+".1", []byte("previous\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".2", []byte("oldest\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.rotateLocked(); err != nil {
+		t.Fatal(err)
+	}
+	backup1, err := os.ReadFile(path + ".1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup2, err := os.ReadFile(path + ".2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(backup1) != "current\n" {
+		t.Fatalf("unexpected first backup: %q", backup1)
+	}
+	if string(backup2) != "previous\n" {
+		t.Fatalf("unexpected second backup: %q", backup2)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("expected a fresh active log, size=%d", info.Size())
 	}
 }

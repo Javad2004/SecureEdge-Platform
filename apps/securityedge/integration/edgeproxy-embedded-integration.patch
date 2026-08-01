@@ -1,0 +1,90 @@
+diff -ruN '--exclude=edgeproxy' '--exclude=origin-demo' '--exclude=.git' a/go.mod b/go.mod
+--- a/go.mod	2026-07-24 23:06:11.000000000 +0000
++++ b/go.mod	2026-07-26 23:06:37.409628122 +0000
+@@ -1,3 +1,7 @@
+ module github.com/bachelor-project/edgeproxy
+ 
+ go 1.23
++
++require github.com/bachelor-project/edgeproxy-security v0.0.0
++
++replace github.com/bachelor-project/edgeproxy-security => ../edgeproxy-go-second-member
+diff -ruN '--exclude=edgeproxy' '--exclude=origin-demo' '--exclude=.git' a/internal/server/run.go b/internal/server/run.go
+--- a/internal/server/run.go	2026-07-26 21:50:05.000000000 +0000
++++ b/internal/server/run.go	2026-07-26 23:06:37.529628121 +0000
+@@ -8,8 +8,10 @@
+ 	"net/http"
+ 	"os"
+ 	"os/signal"
++	"strings"
+ 	"syscall"
+ 
++	securityedge "github.com/bachelor-project/edgeproxy-security"
+ 	"github.com/bachelor-project/edgeproxy/internal/accesslog"
+ 	"github.com/bachelor-project/edgeproxy/internal/admin"
+ 	"github.com/bachelor-project/edgeproxy/internal/config"
+@@ -29,8 +31,26 @@
+ 	}
+ 	defer handler.Close()
+ 
++	mainHandler := http.Handler(handler)
++	var securityRuntime *securityedge.Runtime
++	var securityAdminServer *http.Server
++	if securityConfig := strings.TrimSpace(os.Getenv("SECURITYEDGE_CONFIG")); securityConfig != "" {
++		securityRuntime, err = securityedge.New(securityConfig, logger)
++		if err != nil {
++			return fmt.Errorf("securityedge initialization: %w", err)
++		}
++		defer securityRuntime.Close()
++		mainHandler = securityRuntime.Wrap(handler)
++		if securityRuntime.Config().Admin.Enabled {
++			securityAdminServer, err = securityRuntime.AdminServer()
++			if err != nil {
++				return fmt.Errorf("securityedge admin initialization: %w", err)
++			}
++		}
++	}
++
+ 	mainServer := &http.Server{
+-		Addr: cfg.Server.ListenAddr, Handler: handler,
++		Addr: cfg.Server.ListenAddr, Handler: mainHandler,
+ 		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout.Duration,
+ 		ReadTimeout:       cfg.Server.ReadTimeout.Duration,
+ 		WriteTimeout:      cfg.Server.WriteTimeout.Duration,
+@@ -38,7 +58,7 @@
+ 		MaxHeaderBytes:    cfg.Server.MaxHeaderBytes,
+ 	}
+ 
+-	errCh := make(chan error, 2)
++	errCh := make(chan error, 3)
+ 	go func() {
+ 		logger.Info("proxy server starting", "address", cfg.Server.ListenAddr, "tls", cfg.Server.TLS.Enabled)
+ 		var serveErr error
+@@ -52,6 +72,15 @@
+ 		}
+ 	}()
+ 
++	if securityAdminServer != nil {
++		go func() {
++			logger.Info("securityedge admin server starting", "address", securityAdminServer.Addr)
++			if serveErr := securityAdminServer.ListenAndServe(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
++				errCh <- fmt.Errorf("securityedge admin server: %w", serveErr)
++			}
++		}()
++	}
++
+ 	var adminServer *http.Server
+ 	if cfg.Admin.Enabled {
+ 		adminServer = admin.New(cfg.Admin, logger, registry, handler, logStore).HTTPServer()
+@@ -76,6 +105,11 @@
+ 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout.Duration)
+ 	defer cancel()
+ 	var shutdownErrs []error
++	if securityAdminServer != nil {
++		if err := securityAdminServer.Shutdown(shutdownCtx); err != nil {
++			shutdownErrs = append(shutdownErrs, fmt.Errorf("securityedge admin graceful shutdown: %w", err))
++		}
++	}
+ 	if adminServer != nil {
+ 		if err := adminServer.Shutdown(shutdownCtx); err != nil {
+ 			shutdownErrs = append(shutdownErrs, fmt.Errorf("admin graceful shutdown: %w", err))

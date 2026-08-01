@@ -183,3 +183,49 @@ func TestRecentTrafficCapturesFinalDownstreamStatusAndCacheResult(t *testing.T) 
 		t.Fatalf("snapshot=%#v", snapshot)
 	}
 }
+
+func TestResolvedClientIPIsAvailableToDownstreamTransport(t *testing.T) {
+	p := config.Default().DefaultPolicy
+	p.RateLimit.Enabled = false
+	var resolved string
+	h := newTestHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resolved = ResolvedClientIP(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}), p)
+	req := httptest.NewRequest(http.MethodGet, "http://project.test/", nil)
+	req.RemoteAddr = "198.51.100.25:1234"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || resolved != "198.51.100.25" {
+		t.Fatalf("status=%d resolved=%q", rec.Code, resolved)
+	}
+}
+
+func TestGlobalRateLimitDoesNotAutoBanIndividualClient(t *testing.T) {
+	p := config.Default().DefaultPolicy
+	p.RateLimit.RequestsPerSecond = 100
+	p.RateLimit.Burst = 100
+	p.RateLimit.GlobalRequestsPerSecond = 1
+	p.RateLimit.GlobalBurst = 1
+	p.AutoBan.Enabled = true
+	p.AutoBan.ViolationThreshold = 1
+	p.AutoBan.Window = config.Duration{Duration: time.Minute}
+	p.AutoBan.BanDuration = config.Duration{Duration: time.Minute}
+	p.AutoBan.MaxTrackedClients = 100
+	h := newTestHandler(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }), p)
+
+	first := httptest.NewRequest(http.MethodGet, "http://project.test/first", nil)
+	first.RemoteAddr = "10.0.0.1:1234"
+	h.ServeHTTP(httptest.NewRecorder(), first)
+
+	second := httptest.NewRequest(http.MethodGet, "http://project.test/second", nil)
+	second.RemoteAddr = "10.0.0.2:1234"
+	secondResponse := httptest.NewRecorder()
+	h.ServeHTTP(secondResponse, second)
+	if secondResponse.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected global rate limit, got %d", secondResponse.Code)
+	}
+	if banned, _ := h.bans.IsBanned("10.0.0.2", time.Now()); banned {
+		t.Fatal("a client rejected by the global rate limit must not be auto-banned")
+	}
+}

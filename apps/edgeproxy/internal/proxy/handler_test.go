@@ -475,3 +475,95 @@ func TestConditionalRequestDoesNotPartiallyMatchETag(t *testing.T) {
 		t.Fatalf("weak ETag should match a strong ETag for If-None-Match, got %d", weakResponse.Code)
 	}
 }
+
+func TestTrustedProxyPreservesOriginalClientIP(t *testing.T) {
+	var forwarded string
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarded = r.Header.Get("X-Forwarded-For")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer origin.Close()
+
+	cfg := testConfig(origin.URL)
+	cfg.Server.TrustedProxyCIDRs = []string{"127.0.0.0/8"}
+	cfg.Server.ForwardedForHeader = "X-Forwarded-For"
+	h, err := NewHandler(cfg, slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/client-ip", nil)
+	req.RemoteAddr = "127.0.0.1:43210"
+	req.Header.Set("X-Forwarded-For", "198.51.100.25")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if forwarded != "198.51.100.25" {
+		t.Fatalf("expected original client IP, got %q", forwarded)
+	}
+}
+
+func TestUntrustedClientCannotSpoofForwardedFor(t *testing.T) {
+	var forwarded string
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarded = r.Header.Get("X-Forwarded-For")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer origin.Close()
+
+	cfg := testConfig(origin.URL)
+	cfg.Server.TrustedProxyCIDRs = []string{"127.0.0.0/8"}
+	h, err := NewHandler(cfg, slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/client-ip", nil)
+	req.RemoteAddr = "203.0.113.44:43210"
+	req.Header.Set("X-Forwarded-For", "198.51.100.25")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if forwarded != "203.0.113.44" {
+		t.Fatalf("spoofed forwarded address was trusted: %q", forwarded)
+	}
+}
+
+func TestNoCacheResponseIsNotStored(t *testing.T) {
+	var calls atomic.Int64
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Cache-Control", "no-cache")
+		_, _ = io.WriteString(w, "must-revalidate")
+	}))
+	defer origin.Close()
+
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	for i := 0; i < 2; i++ {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "http://proxy.test/no-cache", nil))
+		if rr.Code != http.StatusOK || rr.Header().Get("X-Cache") != "BYPASS" {
+			t.Fatalf("request %d code=%d cache=%q", i, rr.Code, rr.Header().Get("X-Cache"))
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("no-cache response was stored; origin calls=%d", calls.Load())
+	}
+}
+
+func TestIfNoneMatchTakesPrecedenceOverIfModifiedSince(t *testing.T) {
+	header := make(http.Header)
+	header.Set("ETag", `"current"`)
+	header.Set("Last-Modified", time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat))
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/resource", nil)
+	req.Header.Set("If-None-Match", `"different"`)
+	req.Header.Set("If-Modified-Since", time.Now().UTC().Format(http.TimeFormat))
+	if conditionalNotModified(req, header) {
+		t.Fatal("If-Modified-Since must be ignored when If-None-Match is present and does not match")
+	}
+}

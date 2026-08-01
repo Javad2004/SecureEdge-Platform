@@ -20,14 +20,16 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	ListenAddr        string    `json:"listen_addr"`
-	ReadHeaderTimeout Duration  `json:"read_header_timeout"`
-	ReadTimeout       Duration  `json:"read_timeout"`
-	WriteTimeout      Duration  `json:"write_timeout"`
-	IdleTimeout       Duration  `json:"idle_timeout"`
-	ShutdownTimeout   Duration  `json:"shutdown_timeout"`
-	MaxHeaderBytes    int       `json:"max_header_bytes"`
-	TLS               TLSConfig `json:"tls"`
+	ListenAddr         string    `json:"listen_addr"`
+	TrustedProxyCIDRs  []string  `json:"trusted_proxy_cidrs"`
+	ForwardedForHeader string    `json:"forwarded_for_header"`
+	ReadHeaderTimeout  Duration  `json:"read_header_timeout"`
+	ReadTimeout        Duration  `json:"read_timeout"`
+	WriteTimeout       Duration  `json:"write_timeout"`
+	IdleTimeout        Duration  `json:"idle_timeout"`
+	ShutdownTimeout    Duration  `json:"shutdown_timeout"`
+	MaxHeaderBytes     int       `json:"max_header_bytes"`
+	TLS                TLSConfig `json:"tls"`
 }
 
 type TLSConfig struct {
@@ -133,13 +135,14 @@ func Load(path string) (Config, error) {
 func Default() Config {
 	return Config{
 		Server: ServerConfig{
-			ListenAddr:        ":8080",
-			ReadHeaderTimeout: Duration{5 * time.Second},
-			ReadTimeout:       Duration{30 * time.Second},
-			WriteTimeout:      Duration{60 * time.Second},
-			IdleTimeout:       Duration{90 * time.Second},
-			ShutdownTimeout:   Duration{10 * time.Second},
-			MaxHeaderBytes:    1 << 20,
+			ListenAddr:         ":8080",
+			ForwardedForHeader: "X-Forwarded-For",
+			ReadHeaderTimeout:  Duration{5 * time.Second},
+			ReadTimeout:        Duration{30 * time.Second},
+			WriteTimeout:       Duration{60 * time.Second},
+			IdleTimeout:        Duration{90 * time.Second},
+			ShutdownTimeout:    Duration{10 * time.Second},
+			MaxHeaderBytes:     1 << 20,
 		},
 		Admin: AdminConfig{
 			Enabled:    true,
@@ -157,6 +160,10 @@ func Default() Config {
 func (c *Config) Validate() error {
 	var errs []error
 	c.Server.ListenAddr = strings.TrimSpace(c.Server.ListenAddr)
+	c.Server.ForwardedForHeader = strings.TrimSpace(c.Server.ForwardedForHeader)
+	if c.Server.ForwardedForHeader == "" {
+		c.Server.ForwardedForHeader = "X-Forwarded-For"
+	}
 	c.Server.TLS.CertFile = strings.TrimSpace(c.Server.TLS.CertFile)
 	c.Server.TLS.KeyFile = strings.TrimSpace(c.Server.TLS.KeyFile)
 	c.Admin.ListenAddr = strings.TrimSpace(c.Admin.ListenAddr)
@@ -178,6 +185,25 @@ func (c *Config) Validate() error {
 	if c.Server.MaxHeaderBytes <= 0 {
 		errs = append(errs, errors.New("server.max_header_bytes must be positive"))
 	}
+	if !validHTTPToken(c.Server.ForwardedForHeader) {
+		errs = append(errs, errors.New("server.forwarded_for_header must be a valid HTTP header field name"))
+	}
+	trusted := make([]string, 0, len(c.Server.TrustedProxyCIDRs))
+	seenTrusted := map[string]struct{}{}
+	for _, raw := range c.Server.TrustedProxyCIDRs {
+		_, network, err := net.ParseCIDR(strings.TrimSpace(raw))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("invalid server.trusted_proxy_cidrs entry %q", raw))
+			continue
+		}
+		canonical := network.String()
+		if _, exists := seenTrusted[canonical]; exists {
+			continue
+		}
+		seenTrusted[canonical] = struct{}{}
+		trusted = append(trusted, canonical)
+	}
+	c.Server.TrustedProxyCIDRs = trusted
 	if c.Server.TLS.Enabled && (strings.TrimSpace(c.Server.TLS.CertFile) == "" || strings.TrimSpace(c.Server.TLS.KeyFile) == "") {
 		errs = append(errs, errors.New("server.tls.cert_file and key_file are required when TLS is enabled"))
 	}
@@ -335,6 +361,20 @@ func (c *Config) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func validHTTPToken(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		b := value[i]
+		if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || strings.ContainsRune("!#$%&'*+-.^_`|~", rune(b)) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func isLoopbackHost(host string) bool {

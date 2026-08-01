@@ -17,7 +17,7 @@ EdgeProxy owns the platform's upstream delivery path:
 - round-robin origin selection;
 - active origin health checks;
 - route-level readiness;
-- HTTP reverse proxying and forwarding headers;
+- HTTP reverse proxying with trusted-proxy-aware forwarding headers;
 - retries for safe replayable requests;
 - connection pooling and upstream timeouts;
 - in-memory HTTP caching;
@@ -131,6 +131,8 @@ Data plane   127.0.0.1:8080
 Admin API    127.0.0.1:9090
 ```
 
+These profiles trust forwarded client addresses only from the local SecurityEdge process. The full-platform Compose profile trusts only the fixed SecurityEdge container address `172.30.0.10`. Standalone profiles do not trust client-supplied forwarding headers.
+
 Start SecurityEdge separately by following [`../securityedge/README.md`](../securityedge/README.md).
 
 ## Routing
@@ -158,6 +160,7 @@ configs/examples/multi-route.json
 EdgeProxy provides:
 
 - `X-Forwarded-For`, `X-Forwarded-Proto`, and `X-Forwarded-Host` handling;
+- explicit `server.trusted_proxy_cidrs` and `server.forwarded_for_header` controls so only approved upstream proxies can supply the original client address;
 - `X-Request-ID` generation and propagation;
 - hop-by-hop header removal;
 - optional incoming TLS termination;
@@ -180,7 +183,7 @@ The cache is an in-memory, thread-safe LRU with:
 - stale-if-error fallback;
 - route/host/path purge support.
 
-Requests or responses are bypassed when caching would be unsafe, including common cases involving `Authorization`, cookies, `Set-Cookie`, `Range`, `private`, `no-store`, or unsupported `Vary` values.
+Requests or responses are bypassed when caching would be unsafe, including common cases involving `Authorization`, cookies, `Set-Cookie`, `Range`, `private`, `no-store`, `no-cache`, legacy `Pragma: no-cache`, or unsupported `Vary` values.
 
 ## Demo Origin endpoints
 

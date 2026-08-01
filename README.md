@@ -9,6 +9,8 @@ The repository contains two independently executable applications:
 
 The active runtime model uses **standalone non-embedded gateway mode**. SecurityEdge accepts public HTTP traffic, inspects and admits each request, and forwards accepted traffic to EdgeProxy over loopback in host deployments or over a private service network in Docker Compose.
 
+SecurityEdge resolves the original client address using an explicit trusted-proxy policy and forwards only that verified address to EdgeProxy. EdgeProxy independently trusts forwarding metadata only from the expected SecurityEdge peer, preserving client identity without accepting spoofed headers from direct clients.
+
 ## Architecture
 
 ```text

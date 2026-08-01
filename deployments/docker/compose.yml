@@ -71,11 +71,15 @@ services:
     security_opt:
       - no-new-privileges:true
     networks:
-      - backend
+      backend:
+        ipv4_address: 172.30.0.10
 
 networks:
   backend:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
 
 volumes:
   securityedge-config:

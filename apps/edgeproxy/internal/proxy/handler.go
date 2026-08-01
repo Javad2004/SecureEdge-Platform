@@ -33,11 +33,16 @@ type Handler struct {
 	metrics *metrics.Registry
 	logs    *accesslog.Store
 	routes  map[string]*routeRuntime
+	clients *clientResolver
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 }
 
 func NewHandler(cfg config.Config, logger *slog.Logger, registry *metrics.Registry, logStore *accesslog.Store) (*Handler, error) {
+	clients, err := newClientResolver(cfg.Server.TrustedProxyCIDRs, cfg.Server.ForwardedForHeader)
+	if err != nil {
+		return nil, fmt.Errorf("configure trusted proxies: %w", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &Handler{
 		logger:  logger,
@@ -45,6 +50,7 @@ func NewHandler(cfg config.Config, logger *slog.Logger, registry *metrics.Regist
 		metrics: registry,
 		logs:    logStore,
 		routes:  make(map[string]*routeRuntime),
+		clients: clients,
 		cancel:  cancel,
 	}
 	for i := range cfg.Routes {
@@ -82,6 +88,7 @@ func (h *Handler) Close() {
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	started := time.Now()
+	req = withResolvedClientIP(req, h.clients.Resolve(req))
 	match, ok := h.router.Match(req)
 	if !ok {
 		http.Error(w, "no route configured for this host and path", http.StatusNotFound)

@@ -58,3 +58,26 @@ func TestPolicyWriteDoesNotPersistEnvironmentSecretsOrAbsoluteRoutePath(t *testi
 		t.Fatalf("policy update not persisted")
 	}
 }
+
+func TestNewRejectsUnknownRoutePolicy(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.RoutePolicies["missing-route"] = cfg.DefaultPolicy
+	cfgPath := filepath.Join(dir, "security.json")
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(cfgPath, nil); err == nil {
+		t.Fatal("expected unknown route policy to be rejected")
+	}
+}

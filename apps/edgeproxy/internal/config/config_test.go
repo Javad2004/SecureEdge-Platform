@@ -177,3 +177,35 @@ func TestLoadRejectsUnknownConfigurationField(t *testing.T) {
 		t.Fatalf("expected unknown-field error, got %v", err)
 	}
 }
+
+func TestTrustedProxyConfigurationIsNormalized(t *testing.T) {
+	cfg := Default()
+	cfg.Routes = []RouteConfig{validRouteForValidation()}
+	cfg.Server.TrustedProxyCIDRs = []string{" 127.0.0.1/8 ", "127.0.0.0/8"}
+	cfg.Server.ForwardedForHeader = " X-Forwarded-For "
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Server.TrustedProxyCIDRs) != 1 || cfg.Server.TrustedProxyCIDRs[0] != "127.0.0.0/8" {
+		t.Fatalf("unexpected trusted proxies: %#v", cfg.Server.TrustedProxyCIDRs)
+	}
+	if cfg.Server.ForwardedForHeader != "X-Forwarded-For" {
+		t.Fatalf("unexpected forwarding header: %q", cfg.Server.ForwardedForHeader)
+	}
+}
+
+func TestRejectsInvalidTrustedProxyConfiguration(t *testing.T) {
+	cfg := Default()
+	cfg.Routes = []RouteConfig{validRouteForValidation()}
+	cfg.Server.TrustedProxyCIDRs = []string{"not-a-cidr"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid trusted proxy CIDR to be rejected")
+	}
+
+	cfg = Default()
+	cfg.Routes = []RouteConfig{validRouteForValidation()}
+	cfg.Server.ForwardedForHeader = "X Forwarded For"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid forwarding header name to be rejected")
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -121,6 +122,10 @@ func excludedPathMatches(requestPath, prefix string) bool {
 	if prefix == "" {
 		return false
 	}
+	// Canonicalize the decoded request path before applying an exclusion. This
+	// prevents dot-segments such as /healthz/../admin from inheriting a trusted
+	// health-path exemption while still reaching a different upstream resource.
+	requestPath = canonicalRequestPath(requestPath)
 	if prefix == "/" || requestPath == prefix {
 		return true
 	}
@@ -128,6 +133,18 @@ func excludedPathMatches(requestPath, prefix string) bool {
 		return strings.HasPrefix(requestPath, prefix)
 	}
 	return strings.HasPrefix(requestPath, prefix) && len(requestPath) > len(prefix) && requestPath[len(prefix)] == '/'
+}
+
+func canonicalRequestPath(value string) string {
+	if value == "" {
+		return "/"
+	}
+	trailingSlash := strings.HasSuffix(value, "/")
+	cleaned := path.Clean("/" + strings.TrimPrefix(value, "/"))
+	if trailingSlash && cleaned != "/" {
+		cleaned += "/"
+	}
+	return cleaned
 }
 
 type sample struct{ location, value string }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/url"
 	"os"
@@ -242,6 +243,16 @@ func LoadFile(path string) (Config, error) {
 func (c *Config) Validate() error {
 	var errs []error
 	c.Server.Mode = strings.ToLower(strings.TrimSpace(c.Server.Mode))
+	c.Server.ListenAddr = strings.TrimSpace(c.Server.ListenAddr)
+	c.Server.UpstreamProxyURL = strings.TrimSpace(c.Server.UpstreamProxyURL)
+	c.Server.ForwardedForHeader = strings.TrimSpace(c.Server.ForwardedForHeader)
+	c.Admin.ListenAddr = strings.TrimSpace(c.Admin.ListenAddr)
+	c.Admin.AuthToken = strings.TrimSpace(c.Admin.AuthToken)
+	c.Admin.LogStore.FilePath = strings.TrimSpace(c.Admin.LogStore.FilePath)
+	c.Admin.Connectivity.DNS.Server = strings.TrimSpace(c.Admin.Connectivity.DNS.Server)
+	c.EdgeProxy.ConfigPath = strings.TrimSpace(c.EdgeProxy.ConfigPath)
+	c.EdgeProxy.AdminURL = strings.TrimSpace(c.EdgeProxy.AdminURL)
+	c.EdgeProxy.AdminToken = strings.TrimSpace(c.EdgeProxy.AdminToken)
 	if c.Server.Mode != "gateway" && c.Server.Mode != "embedded" {
 		errs = append(errs, errors.New("server.mode must be gateway or embedded"))
 	}
@@ -249,13 +260,16 @@ func (c *Config) Validate() error {
 		if err := validateListen("server.listen_addr", c.Server.ListenAddr); err != nil {
 			errs = append(errs, err)
 		}
-		u, err := url.Parse(strings.TrimSpace(c.Server.UpstreamProxyURL))
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			errs = append(errs, errors.New("server.upstream_proxy_url must be an absolute http(s) URL"))
+		u, err := url.Parse(c.Server.UpstreamProxyURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Fragment != "" {
+			errs = append(errs, errors.New("server.upstream_proxy_url must be an absolute http(s) URL without credentials or fragments"))
 		}
 	}
 	if c.Server.ReadHeaderTimeout.Duration <= 0 || c.Server.ShutdownTimeout.Duration <= 0 {
 		errs = append(errs, errors.New("server read_header_timeout and shutdown_timeout must be positive"))
+	}
+	if c.Server.ReadTimeout.Duration < 0 || c.Server.WriteTimeout.Duration < 0 || c.Server.IdleTimeout.Duration < 0 {
+		errs = append(errs, errors.New("server read/write/idle timeouts cannot be negative"))
 	}
 	if c.Server.MaxHeaderBytes <= 0 || c.Server.MaxHeaderBytes > 16<<20 {
 		errs = append(errs, errors.New("server.max_header_bytes must be between 1 and 16777216"))
@@ -266,15 +280,28 @@ func (c *Config) Validate() error {
 	if c.Server.MaxConcurrentRequests <= 0 || c.Server.MaxConcurrentPerClient <= 0 || c.Server.MaxConcurrentPerClient > c.Server.MaxConcurrentRequests {
 		errs = append(errs, errors.New("server concurrency limits must be positive and per-client cannot exceed global"))
 	}
-	c.Server.ForwardedForHeader = strings.TrimSpace(c.Server.ForwardedForHeader)
 	if c.Server.ForwardedForHeader == "" {
 		c.Server.ForwardedForHeader = "X-Forwarded-For"
 	}
-	for _, cidr := range c.Server.TrustedProxyCIDRs {
-		if _, _, err := net.ParseCIDR(strings.TrimSpace(cidr)); err != nil {
-			errs = append(errs, fmt.Errorf("invalid server.trusted_proxy_cidrs entry %q", cidr))
-		}
+	if !validHTTPToken(c.Server.ForwardedForHeader) {
+		errs = append(errs, errors.New("server.forwarded_for_header must be a valid HTTP header field name"))
 	}
+	trusted := make([]string, 0, len(c.Server.TrustedProxyCIDRs))
+	seenTrusted := map[string]struct{}{}
+	for _, raw := range c.Server.TrustedProxyCIDRs {
+		_, network, err := net.ParseCIDR(strings.TrimSpace(raw))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("invalid server.trusted_proxy_cidrs entry %q", raw))
+			continue
+		}
+		canonical := network.String()
+		if _, exists := seenTrusted[canonical]; exists {
+			continue
+		}
+		seenTrusted[canonical] = struct{}{}
+		trusted = append(trusted, canonical)
+	}
+	c.Server.TrustedProxyCIDRs = trusted
 	if err := validateTransport(c.Server.UpstreamTransport); err != nil {
 		errs = append(errs, err)
 	}
@@ -325,6 +352,9 @@ func (c *Config) Validate() error {
 		if c.Admin.MaxRequestBodyBytes <= 0 || c.Admin.MaxRequestBodyBytes > 16<<20 {
 			errs = append(errs, errors.New("admin.max_request_body_bytes must be between 1 and 16777216"))
 		}
+		if c.Admin.PollTimeout.Duration <= 0 || c.Admin.PollTimeout.Duration > 5*time.Minute {
+			errs = append(errs, errors.New("admin.poll_timeout must be positive and no greater than 5m"))
+		}
 		if c.Admin.AuthFailuresPerMinute <= 0 || c.Admin.AuthLockoutDuration.Duration <= 0 {
 			errs = append(errs, errors.New("admin auth failure and lockout settings must be positive"))
 		}
@@ -334,9 +364,12 @@ func (c *Config) Validate() error {
 	}
 	if c.EdgeProxy.AdminURL != "" {
 		u, err := url.Parse(c.EdgeProxy.AdminURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			errs = append(errs, errors.New("edgeproxy.admin_url must be an absolute http(s) URL"))
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Fragment != "" {
+			errs = append(errs, errors.New("edgeproxy.admin_url must be an absolute http(s) URL without credentials or fragments"))
 		}
+	}
+	if c.EdgeProxy.Timeout.Duration <= 0 || c.EdgeProxy.Timeout.Duration > 5*time.Minute {
+		errs = append(errs, errors.New("edgeproxy.timeout must be positive and no greater than 5m"))
 	}
 	if c.WAF.MaximumMatchesPerRequest <= 0 || c.WAF.MaximumMatchesPerRequest > 256 {
 		errs = append(errs, errors.New("waf.maximum_matches_per_request must be between 1 and 256"))
@@ -347,6 +380,9 @@ func (c *Config) Validate() error {
 	if err := validatePolicy("default_policy", &c.DefaultPolicy); err != nil {
 		errs = append(errs, err)
 	}
+	if c.DefaultPolicy.MaxInspectionBodyBytes > c.Server.MaxRequestBodyBytes {
+		errs = append(errs, errors.New("default_policy.max_inspection_body_bytes cannot exceed server.max_request_body_bytes"))
+	}
 	names := make([]string, 0, len(c.RoutePolicies))
 	for name := range c.RoutePolicies {
 		names = append(names, name)
@@ -354,12 +390,19 @@ func (c *Config) Validate() error {
 	sort.Strings(names)
 	for _, name := range names {
 		p := c.RoutePolicies[name]
-		if strings.TrimSpace(name) == "" {
+		trimmedName := strings.TrimSpace(name)
+		if trimmedName == "" {
 			errs = append(errs, errors.New("route policy name cannot be empty"))
 			continue
 		}
+		if trimmedName != name {
+			errs = append(errs, fmt.Errorf("route policy name %q must not contain surrounding whitespace", name))
+		}
 		if err := validatePolicy("route_policies."+name, &p); err != nil {
 			errs = append(errs, err)
+		}
+		if p.MaxInspectionBodyBytes > c.Server.MaxRequestBodyBytes {
+			errs = append(errs, fmt.Errorf("route_policies.%s.max_inspection_body_bytes cannot exceed server.max_request_body_bytes", name))
 		}
 		c.RoutePolicies[name] = p
 	}
@@ -423,6 +466,27 @@ func validatePolicy(name string, p *Policy) error {
 	if p.MaxInspectionBodyBytes < 0 || p.MaxInspectionBodyBytes > 16<<20 {
 		errs = append(errs, fmt.Errorf("%s.max_inspection_body_bytes must be between 0 and 16777216", name))
 	}
+	if p.InspectRequestBody && p.MaxInspectionBodyBytes <= 0 {
+		errs = append(errs, fmt.Errorf("%s.max_inspection_body_bytes must be positive when request-body inspection is enabled", name))
+	}
+	bodyTypes := make([]string, 0, len(p.BodyContentTypes))
+	seenBodyTypes := map[string]bool{}
+	for _, raw := range p.BodyContentTypes {
+		mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(raw))
+		mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+		if err != nil || mediaType == "" || len(params) != 0 {
+			errs = append(errs, fmt.Errorf("%s.body_content_types contains invalid media type %q", name, raw))
+			continue
+		}
+		if !seenBodyTypes[mediaType] {
+			seenBodyTypes[mediaType] = true
+			bodyTypes = append(bodyTypes, mediaType)
+		}
+	}
+	p.BodyContentTypes = bodyTypes
+	if p.InspectRequestBody && len(p.BodyContentTypes) == 0 {
+		errs = append(errs, fmt.Errorf("%s.body_content_types cannot be empty when request-body inspection is enabled", name))
+	}
 	if p.MaxPathBytes <= 0 || p.MaxPathBytes > 1<<20 || p.MaxQueryBytes <= 0 || p.MaxQueryBytes > 16<<20 {
 		errs = append(errs, fmt.Errorf("%s path/query limits are invalid", name))
 	}
@@ -433,7 +497,14 @@ func validatePolicy(name string, p *Policy) error {
 	seen := map[string]bool{}
 	for _, m := range p.AllowedMethods {
 		m = strings.ToUpper(strings.TrimSpace(m))
-		if m != "" && !seen[m] {
+		if m == "" {
+			continue
+		}
+		if !validHTTPToken(m) {
+			errs = append(errs, fmt.Errorf("%s.allowed_methods contains invalid method %q", name, m))
+			continue
+		}
+		if !seen[m] {
 			methods = append(methods, m)
 			seen[m] = true
 		}
@@ -462,12 +533,23 @@ func validatePolicy(name string, p *Policy) error {
 	}
 	p.ExcludedPathPrefixes = excludedPaths
 
+	disabledRules := make([]string, 0, len(p.DisabledRules))
+	seenDisabledRules := map[string]bool{}
+	for _, raw := range p.DisabledRules {
+		id := strings.ToUpper(strings.TrimSpace(raw))
+		if id != "" && !seenDisabledRules[id] {
+			seenDisabledRules[id] = true
+			disabledRules = append(disabledRules, id)
+		}
+	}
+	p.DisabledRules = disabledRules
+
 	if p.RateLimit.Enabled {
 		if p.RateLimit.RequestsPerSecond <= 0 || p.RateLimit.Burst <= 0 || p.RateLimit.GlobalRequestsPerSecond <= 0 || p.RateLimit.GlobalBurst <= 0 {
 			errs = append(errs, fmt.Errorf("%s rate_limit rates and bursts must be positive", name))
 		}
-		if p.RateLimit.CleanupInterval.Duration <= 0 || p.RateLimit.IdleTTL.Duration <= 0 || p.RateLimit.MaxBuckets <= 0 {
-			errs = append(errs, fmt.Errorf("%s rate_limit lifecycle settings must be positive", name))
+		if p.RateLimit.CleanupInterval.Duration <= 0 || p.RateLimit.IdleTTL.Duration <= 0 || p.RateLimit.MaxBuckets < 2 {
+			errs = append(errs, fmt.Errorf("%s rate_limit lifecycle settings must be positive and max_buckets must be at least 2", name))
 		}
 	}
 	if p.AutoBan.Enabled {
@@ -475,16 +557,55 @@ func validatePolicy(name string, p *Policy) error {
 			errs = append(errs, fmt.Errorf("%s auto_ban settings must be positive", name))
 		}
 	}
-	for _, list := range [][]string{p.IPAllowlist, p.IPDenylist} {
-		for _, item := range list {
-			if net.ParseIP(strings.TrimSpace(item)) == nil {
-				if _, _, err := net.ParseCIDR(strings.TrimSpace(item)); err != nil {
-					errs = append(errs, fmt.Errorf("%s contains invalid IP/CIDR %q", name, item))
-				}
-			}
+	p.IPAllowlist, errs = normalizeIPList(name+".ip_allowlist", p.IPAllowlist, errs)
+	p.IPDenylist, errs = normalizeIPList(name+".ip_denylist", p.IPDenylist, errs)
+	denied := make(map[string]struct{}, len(p.IPDenylist))
+	for _, item := range p.IPDenylist {
+		denied[item] = struct{}{}
+	}
+	for _, item := range p.IPAllowlist {
+		if _, exists := denied[item]; exists {
+			errs = append(errs, fmt.Errorf("%s contains %q in both allowlist and denylist", name, item))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func normalizeIPList(name string, values []string, errs []error) ([]string, []error) {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		canonical := ""
+		if ip := net.ParseIP(value); ip != nil {
+			canonical = ip.String()
+		} else if _, network, err := net.ParseCIDR(value); err == nil {
+			canonical = network.String()
+		} else {
+			errs = append(errs, fmt.Errorf("%s contains invalid IP/CIDR %q", name, raw))
+			continue
+		}
+		if _, exists := seen[canonical]; exists {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		out = append(out, canonical)
+	}
+	return out, errs
+}
+
+func validHTTPToken(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		b := value[i]
+		if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || strings.ContainsRune("!#$%&'*+-.^_`|~", rune(b)) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func validateListen(name, addr string) error {

@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -24,6 +25,16 @@ import (
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/traffic"
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/waf"
 )
+
+type resolvedClientIPKey struct{}
+
+// ResolvedClientIP returns the client address selected by the trusted-proxy
+// resolver for the current request. Gateway transports use it to preserve the
+// original client address without trusting arbitrary inbound forwarding headers.
+func ResolvedClientIP(ctx context.Context) string {
+	value, _ := ctx.Value(resolvedClientIPKey{}).(string)
+	return strings.TrimSpace(value)
+}
 
 type PolicyProvider interface {
 	Policy(route string) config.Policy
@@ -65,6 +76,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	requestID := newRequestID()
 	req.Header.Set("X-Request-ID", requestID)
 	client := h.clients.Resolve(req)
+	req = req.WithContext(context.WithValue(req.Context(), resolvedClientIPKey{}, client))
 	action, reason := "ALLOW", ""
 	score, status := 0, 0
 	var matches []waf.Match
@@ -102,7 +114,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if !admitted {
 		action, reason, status = "OVERLOAD", overloadReason, http.StatusServiceUnavailable
 		retryAfter = time.Second
-		autoBanned, _ = h.recordViolation(client, policy, time.Now())
+		if overloadReason == "client_concurrency" {
+			autoBanned, _ = h.recordViolation(client, policy, time.Now())
+		}
 		setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
 		w.Header().Set("Retry-After", "1")
 		writeBlocked(w, status, "server_busy", requestID)
@@ -162,7 +176,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		if decision.Reason == "bucket_capacity" {
 			reason = "rate_limit_capacity"
 		}
-		autoBanned, _ = h.recordViolation(client, policy, time.Now())
+		if decision.Scope == "client" && decision.Reason == "rate_exceeded" {
+			autoBanned, _ = h.recordViolation(client, policy, time.Now())
+		}
 		setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
 		w.Header().Set("Retry-After", retrySeconds(retryAfter))
 		writeBlocked(w, status, "rate_limited", requestID)

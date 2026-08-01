@@ -54,6 +54,9 @@ func New(configPath string, logger *slog.Logger) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validateRoutePolicies(cfg, table); err != nil {
+		return nil, err
+	}
 	edge, err := edgeadmin.New(cfg.EdgeProxy.AdminURL, cfg.EdgeProxy.AdminToken, cfg.EdgeProxy.Timeout.Duration)
 	if err != nil {
 		return nil, err
@@ -205,6 +208,9 @@ func (r *Runtime) Reload() error {
 	if err != nil {
 		return err
 	}
+	if err := validateRoutePolicies(cfg, table); err != nil {
+		return err
+	}
 	edge, err := edgeadmin.New(cfg.EdgeProxy.AdminURL, cfg.EdgeProxy.AdminToken, cfg.EdgeProxy.Timeout.Duration)
 	if err != nil {
 		return err
@@ -236,6 +242,19 @@ func (r *Runtime) update(mutator func(*config.Config)) error {
 		return err
 	}
 	return r.Reload()
+}
+
+func validateRoutePolicies(cfg config.Config, table *routes.Table) error {
+	known := make(map[string]struct{})
+	for _, route := range table.Routes() {
+		known[route.Name] = struct{}{}
+	}
+	for name := range cfg.RoutePolicies {
+		if _, exists := known[name]; !exists {
+			return fmt.Errorf("route policy %q does not match any EdgeProxy route", name)
+		}
+	}
+	return nil
 }
 
 func resolveEdgeConfigPath(securityConfigPath, edgeConfigPath string) string {

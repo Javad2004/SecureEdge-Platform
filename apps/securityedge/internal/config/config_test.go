@@ -102,3 +102,78 @@ func TestExcludedPathPrefixesAreNormalizedAndValidated(t *testing.T) {
 		}
 	}
 }
+
+func TestRejectsUnsafeTimeoutAndInspectionRelationships(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{name: "negative read timeout", mutate: func(cfg *Config) { cfg.Server.ReadTimeout.Duration = -1 }},
+		{name: "zero admin poll timeout", mutate: func(cfg *Config) { cfg.Admin.PollTimeout.Duration = 0 }},
+		{name: "zero edgeproxy timeout", mutate: func(cfg *Config) { cfg.EdgeProxy.Timeout.Duration = 0 }},
+		{name: "inspection exceeds request limit", mutate: func(cfg *Config) {
+			cfg.Server.MaxRequestBodyBytes = 1024
+			cfg.DefaultPolicy.MaxInspectionBodyBytes = 2048
+		}},
+		{name: "inspection enabled with zero limit", mutate: func(cfg *Config) { cfg.DefaultPolicy.MaxInspectionBodyBytes = 0 }},
+		{name: "inspection enabled without content types", mutate: func(cfg *Config) { cfg.DefaultPolicy.BodyContentTypes = nil }},
+		{name: "rate limiter cannot allocate global and client buckets", mutate: func(cfg *Config) { cfg.DefaultPolicy.RateLimit.MaxBuckets = 1 }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Server.Mode = "embedded"
+			cfg.EdgeProxy.ConfigPath = "edge.json"
+			tc.mutate(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+}
+
+func TestConfigurationNormalizesSafeScalarAndPolicyValues(t *testing.T) {
+	cfg := Default()
+	cfg.Server.Mode = " embedded "
+	cfg.Server.ListenAddr = " 127.0.0.1:8081 "
+	cfg.Server.ForwardedForHeader = " X-Forwarded-For "
+	cfg.Server.TrustedProxyCIDRs = []string{" 127.0.0.1/8 ", "127.0.0.0/8"}
+	cfg.Admin.ListenAddr = " 127.0.0.1:9191 "
+	cfg.Admin.AuthToken = " token "
+	cfg.EdgeProxy.ConfigPath = " edge.json "
+	cfg.EdgeProxy.AdminURL = " http://127.0.0.1:9090 "
+	cfg.EdgeProxy.AdminToken = " edge-token "
+	cfg.DefaultPolicy.BodyContentTypes = []string{" Application/JSON ", "application/json"}
+	cfg.DefaultPolicy.AllowedMethods = []string{" get ", "GET"}
+	cfg.DefaultPolicy.DisabledRules = []string{" sqli-001 ", "SQLI-001"}
+	cfg.DefaultPolicy.IPAllowlist = []string{" 127.0.0.1 ", "127.0.0.1"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.ListenAddr != "127.0.0.1:8081" || cfg.Admin.ListenAddr != "127.0.0.1:9191" || cfg.EdgeProxy.ConfigPath != "edge.json" {
+		t.Fatalf("scalar values were not normalized: %#v", cfg)
+	}
+	if len(cfg.Server.TrustedProxyCIDRs) != 1 || cfg.Server.TrustedProxyCIDRs[0] != "127.0.0.0/8" {
+		t.Fatalf("trusted proxies were not normalized: %#v", cfg.Server.TrustedProxyCIDRs)
+	}
+	if len(cfg.DefaultPolicy.BodyContentTypes) != 1 || cfg.DefaultPolicy.BodyContentTypes[0] != "application/json" {
+		t.Fatalf("body types were not normalized: %#v", cfg.DefaultPolicy.BodyContentTypes)
+	}
+	if len(cfg.DefaultPolicy.AllowedMethods) != 1 || cfg.DefaultPolicy.AllowedMethods[0] != "GET" {
+		t.Fatalf("methods were not normalized: %#v", cfg.DefaultPolicy.AllowedMethods)
+	}
+	if len(cfg.DefaultPolicy.DisabledRules) != 1 || cfg.DefaultPolicy.DisabledRules[0] != "SQLI-001" {
+		t.Fatalf("disabled rules were not normalized: %#v", cfg.DefaultPolicy.DisabledRules)
+	}
+}
+
+func TestRejectsPolicyAddressInBothAllowAndDenyLists(t *testing.T) {
+	cfg := Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.DefaultPolicy.IPAllowlist = []string{"192.0.2.10"}
+	cfg.DefaultPolicy.IPDenylist = []string{"192.0.2.10"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error")
+	}
+}

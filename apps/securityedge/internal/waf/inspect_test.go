@@ -137,3 +137,25 @@ func TestExcludedPathRequiresSegmentBoundary(t *testing.T) {
 		t.Fatalf("similar path must remain inspected: %#v", got)
 	}
 }
+
+func TestExcludedPathCanonicalizationPreventsDotSegmentBypass(t *testing.T) {
+	custom := []config.CustomRuleConfig{{
+		ID: "CUSTOM-EXCLUSION-002", Name: "Excluded path traversal", Category: "custom",
+		Description: "detects the regression marker", Score: 7, Targets: []string{"path"}, Pattern: `blocked-marker`,
+	}}
+	i, err := NewInspector(custom, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := config.Default().DefaultPolicy
+	policy.ExcludedPathPrefixes = []string{"/healthz"}
+
+	req := httptest.NewRequest("GET", "http://project.test/healthz/../admin/blocked-marker", nil)
+	got, err := i.Inspect(req, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Excluded || len(got.Matches) == 0 {
+		t.Fatalf("dot-segment path must remain inspected: %#v", got)
+	}
+}

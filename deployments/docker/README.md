@@ -24,7 +24,7 @@ Published host ports:
 127.0.0.1:9191     SecurityEdge dashboard and Admin API
 ```
 
-EdgeProxy ports `8080` and `9090`, and Origin port `9000`, are exposed only to the private Compose network.
+EdgeProxy ports `8080` and `9090`, and Origin port `9000`, are exposed only to the private Compose network. The network uses `172.30.0.0/24`, and SecurityEdge is assigned `172.30.0.10` so EdgeProxy can trust client forwarding headers from one explicit peer rather than an entire dynamic subnet.
 
 ## Start from the repository root
 
@@ -101,6 +101,7 @@ The deployment:
 - drops all Linux capabilities;
 - enables `no-new-privileges`;
 - keeps EdgeProxy and Origin unpublished from the host;
+- uses an explicit private subnet and a fixed SecurityEdge address for least-privilege forwarded-header trust;
 - binds the dashboard host port to loopback;
 - uses health checks and dependency ordering.
 
@@ -126,6 +127,7 @@ The checked-in stack is a hardened project demonstration, not a complete Interne
 - replace both demonstration tokens;
 - place TLS termination, a trusted load balancer, or a CDN in front of SecurityEdge;
 - apply host firewall policy and Docker daemon hardening;
+- verify that `172.30.0.0/24` does not overlap an existing local or VPN network, or change the subnet and matching EdgeProxy trusted-proxy CIDR together;
 - define resource limits appropriate to the host;
 - export logs and metrics to managed observability systems;
 - use an external application Origin instead of the included demo Origin;

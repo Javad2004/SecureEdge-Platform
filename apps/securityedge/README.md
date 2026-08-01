@@ -54,7 +54,7 @@ SecurityEdge also calls the EdgeProxy Admin API over loopback to obtain routes, 
 - global and per-client concurrency limits;
 - bounded limiter state;
 - adaptive temporary bans;
-- trusted-proxy-aware client IP resolution;
+- trusted-proxy-aware client IP resolution and verified propagation to EdgeProxy and the Origin;
 - spoof-resistant forwarded-address handling;
 - upstream and server timeouts.
 

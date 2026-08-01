@@ -35,7 +35,7 @@ func requestCacheMode(req *http.Request, cfg config.CacheConfig) (lookup, store 
 		return false, false, "range"
 	}
 	cc := parseCacheControl(req.Header.Values("Cache-Control"))
-	if cc["no-store"] != "" {
+	if hasCacheDirective(cc, "no-store") {
 		return false, false, "request-no-store"
 	}
 	if req.Header.Get("Authorization") != "" && !cfg.CacheAuthorizedRequests {
@@ -44,7 +44,7 @@ func requestCacheMode(req *http.Request, cfg config.CacheConfig) (lookup, store 
 	if req.Header.Get("Cookie") != "" && !cfg.CacheCookieRequests {
 		return false, false, "cookie"
 	}
-	lookup = cc["no-cache"] == "" && cc["max-age"] != "0" && req.Header.Get("Pragma") != "no-cache"
+	lookup = !hasCacheDirective(cc, "no-cache") && cc["max-age"] != "0" && !headerHasToken(req.Header.Values("Pragma"), "no-cache")
 	return lookup, true, ""
 }
 
@@ -69,7 +69,7 @@ func responseCachePolicy(req *http.Request, resp *http.Response, cfg config.Cach
 	ttl := cfg.DefaultTTL.Duration
 	if cfg.RespectOriginHeaders {
 		cc := parseCacheControl(resp.Header.Values("Cache-Control"))
-		if cc["no-store"] != "" || cc["private"] != "" {
+		if hasCacheDirective(cc, "no-store") || hasCacheDirective(cc, "private") || hasCacheDirective(cc, "no-cache") || headerHasToken(resp.Header.Values("Pragma"), "no-cache") {
 			return false, time.Time{}, time.Time{}
 		}
 		if value := firstNonEmpty(cc["s-maxage"], cc["max-age"]); value != "" {
@@ -107,6 +107,22 @@ func parseCacheControl(values []string) map[string]string {
 	return out
 }
 
+func hasCacheDirective(directives map[string]string, name string) bool {
+	_, ok := directives[strings.ToLower(name)]
+	return ok
+}
+
+func headerHasToken(values []string, token string) bool {
+	for _, value := range values {
+		for _, raw := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(raw), token) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {
 		if v != "" {
@@ -118,9 +134,7 @@ func firstNonEmpty(values ...string) string {
 
 func conditionalNotModified(req *http.Request, header http.Header) bool {
 	if inm := req.Header.Get("If-None-Match"); inm != "" {
-		if weakETagMatch(inm, header.Get("ETag")) {
-			return true
-		}
+		return weakETagMatch(inm, header.Get("ETag"))
 	}
 	if ims := req.Header.Get("If-Modified-Since"); ims != "" {
 		modified, err1 := http.ParseTime(header.Get("Last-Modified"))

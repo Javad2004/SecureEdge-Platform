@@ -1,6 +1,10 @@
 {
   "server": {
     "listen_addr": "0.0.0.0:8080",
+    "trusted_proxy_cidrs": [
+      "172.30.0.10/32"
+    ],
+    "forwarded_for_header": "X-Forwarded-For",
     "read_header_timeout": "5s",
     "read_timeout": "30s",
     "write_timeout": "60s",

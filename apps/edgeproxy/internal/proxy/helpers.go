@@ -56,6 +56,9 @@ func requestID(req *http.Request) string {
 }
 
 func clientIP(req *http.Request) string {
+	if resolved := resolvedClientIP(req); resolved != "" {
+		return resolved
+	}
 	host, _, err := net.SplitHostPort(req.RemoteAddr)
 	if err == nil {
 		return host

@@ -62,7 +62,7 @@ Admin token   dev-token, normally overridden by environment
 Origin        http://origin:9000
 ```
 
-Binding to `0.0.0.0` is required inside the container, but the platform Compose file does not publish either EdgeProxy port to the host.
+Binding to `0.0.0.0` is required inside the container, but the platform Compose file does not publish either EdgeProxy port to the host. The private network uses `172.30.0.0/24`, assigns SecurityEdge `172.30.0.10`, and configures EdgeProxy to trust forwarded client addresses only from that exact container address.
 
 ### `edgeproxy-embedded-integration.patch`
 
@@ -85,6 +85,18 @@ Container:   /app/config                         + ../../../integration = /integ
 ```
 
 Do not rewrite these values as paths relative to the shell's working directory.
+
+## Client-address forwarding contract
+
+SecurityEdge resolves the client address using its own `server.trusted_proxy_cidrs` policy and forwards that resolved address to EdgeProxy. EdgeProxy independently verifies that the immediate peer is trusted before accepting `X-Forwarded-For`.
+
+```text
+Host/LAN deployment   EdgeProxy trusts loopback SecurityEdge only
+Compose deployment    EdgeProxy trusts 172.30.0.10/32 only
+Standalone EdgeProxy  forwarded client headers are not trusted
+```
+
+Do not broaden the EdgeProxy trusted-proxy list unless the data-plane listener remains inaccessible to untrusted clients. If the Compose subnet or fixed SecurityEdge address is changed, update both `deployments/docker/compose.yml` and `integration/edgeproxy-compose-behind-waf.json`.
 
 ## Credential contract
 
@@ -150,9 +162,10 @@ When changing a paired deployment profile:
 2. keep SecurityEdge `edgeproxy.admin_url` aligned with the EdgeProxy Admin listener;
 3. keep `EDGEPROXY_ADMIN_TOKEN` synchronized for both processes;
 4. keep SecurityEdge route-policy names aligned with EdgeProxy route names;
-5. verify that EdgeProxy can reach every configured Origin;
-6. validate both JSON profiles;
-7. test cache `MISS/HIT`, WAF blocking, route readiness, Origin health, and recovery after dependency restarts.
+5. keep EdgeProxy trusted-proxy CIDRs aligned with the SecurityEdge transport address;
+6. verify that EdgeProxy can reach every configured Origin;
+7. validate both JSON profiles;
+8. test cache `MISS/HIT`, WAF blocking, original client-address propagation, route readiness, Origin health, and recovery after dependency restarts.
 
 ## Security boundaries
 

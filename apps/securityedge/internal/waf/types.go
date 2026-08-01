@@ -11,9 +11,10 @@ type Match struct {
 }
 
 type Result struct {
-	Score         int     `json:"score"`
-	Matches       []Match `json:"matches"`
-	BodyInspected bool    `json:"body_inspected"`
-	BodyTruncated bool    `json:"body_truncated"`
-	Excluded      bool    `json:"excluded"`
+	Score             int     `json:"score"`
+	Matches           []Match `json:"matches"`
+	BodyInspected     bool    `json:"body_inspected"`
+	BodyTruncated     bool    `json:"body_truncated"`
+	Excluded          bool    `json:"excluded"`
+	MatchLimitReached bool    `json:"match_limit_reached"`
 }

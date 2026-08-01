@@ -1,198 +1,162 @@
-# SecurityEdge — WAF, Rate Limiting, and Operations Dashboard
+# SecurityEdge
 
-This repository implements the **last two phases** of the bachelor's project:
+SecurityEdge is the independent Phase 3 and Phase 4 implementation of the shared EdgeProxy bachelor project.
 
-- Phase 3: Web Application Firewall and rate limiting
-- Phase 4: Security configuration UI and system monitoring dashboard
+- **Phase 3:** application-layer WAF, protocol validation, hierarchical traffic protection, temporary auto-ban, privacy-preserving security telemetry.
+- **Phase 4:** authenticated operations dashboard, policy management, SecurityEdge metrics/logs, and a backend-for-frontend for the EdgeProxy Admin API.
 
-It is designed against the first two phases of the project repository (`EdgeProxy`) and consumes its existing routes, origins, Admin API, metrics schema, structured logs, health/readiness endpoints, and cache-purge endpoint. The EdgeProxy source is not modified by this repository.
+The uploaded EdgeProxy project is not modified. The active deployment is **standalone non-embedded gateway mode**.
 
-## Final request order
+## Real three-device topology
 
 ```text
-Client
-  -> EdgeProxy route-compatible request classification
-  -> SecurityEdge WAF and per-client rate limiting
-  -> EdgeProxy reverse proxy
-  -> EdgeProxy HTTP cache
-  -> healthy origin selection
-  -> origin server
+Phone / Client
+    |
+    | DNS: project.test -> 10.36.74.241
+    v
+Technitium DNS on Proxy device :53
+    |
+    v
+SecurityEdge on Proxy device 0.0.0.0:80
+    |
+    v
+EdgeProxy on the same device 127.0.0.1:8080
+    |
+    v
+Origin device 10.36.74.43:9000
 ```
 
-The recommended final integration is the exported Go middleware (`securityedge.Runtime.Wrap`) so WAF inspection occurs before the EdgeProxy cache without losing the real client address. A standalone gateway mode is also provided for independent development and demonstration.
+Expected management bindings:
 
-## Implemented security controls
+```text
+EdgeProxy Admin       127.0.0.1:9090
+SecurityEdge Admin    127.0.0.1:9191
+```
 
-- Deterministic request inspection with bounded regular-expression rules
-- SQL injection, XSS, path traversal, command injection, CRLF injection, template injection, sensitive-file probing, and scanner identification
-- Anomaly scoring with `block`, `log`, and `off` modes
-- Per-route policy overrides using the exact route names from the EdgeProxy config
-- Request body inspection only for configured media types and only up to a bounded byte limit
-- Request body restoration so the downstream EdgeProxy/origin receives the original body
-- Token-bucket rate limiting keyed by `route + client IP`
-- IP allowlist and denylist support using individual IPs or CIDR ranges
-- Allowed-method policy and excluded path prefixes
-- Rule disabling per policy
-- Correlated `X-Request-ID` propagation
-- Metadata-only security logging; request bodies, cookies, authorization headers, and raw attack payloads are never retained
+The Origin Windows Firewall allows TCP/9000 only from Proxy IP `10.36.74.241`. The phone can reach only DNS and SecurityEdge public HTTP; it cannot directly reach EdgeProxy, either Admin listener, or Origin.
 
-## Dashboard and administration
+## Security pipeline
 
-The self-contained dashboard has no Node.js or external CDN dependency. It provides:
+```text
+request ID and trusted client-IP resolution
+  -> global/per-client concurrency admission
+  -> request shape and protocol limits
+  -> allowlist / temporary-ban / denylist / method policy
+  -> route-wide global token bucket
+  -> route+client token bucket
+  -> bounded normalized WAF inspection
+  -> fail-closed inspection limit policy
+  -> anomaly score and block/log/off decision
+  -> allowed request forwarded to EdgeProxy
+  -> cache, origin health, and reverse proxy logic remain in EdgeProxy
+```
 
-- Combined EdgeProxy and SecurityEdge overview
-- EdgeProxy requests, response latency, upstream latency, errors, retries, cache counters, and cache hit ratio
-- Route readiness, origin health, cache entries/bytes/evictions
-- Security detections, blocks, rate limits, top rules, and per-route counters
-- Filterable and paginated SecurityEdge logs
-- Recent EdgeProxy access logs through its Admin API
-- Persistent default and per-route policy editing
-- Cache purge through the original EdgeProxy endpoint
-- Built-in rule catalog and dependency health
+## Professional security controls
 
-The browser authenticates to SecurityEdge. The EdgeProxy Admin token remains server-side and is never sent to browser JavaScript.
+- 32 built-in deterministic RE2 rules covering SQLi, XSS, traversal, sensitive-file probes, command injection, SSRF, XXE, NoSQLi, LDAP injection, CRLF, template injection, Log4Shell/JNDI, PHP wrappers, null bytes, scanner/exploit markers, open redirect, and cookie injection.
+- Validated custom rules with unique IDs, selected targets, score, category, description, and RE2-safe patterns.
+- Multi-stage URL decoding, HTML entity decoding, UTF-8 normalization, query decomposition, JSON flattening, form parsing, header inspection, and cookie inspection.
+- Bounded body reading and restoration; optional fail-closed behavior when the inspection prefix is exceeded.
+- Optional rejection of compressed/encoded bodies and unsupported body content types.
+- Per-route block/log/off modes, anomaly thresholds, disabled rules, excluded paths, allowlists, and denylists.
+- Hierarchical token buckets: global per-route limits plus per-client/per-route limits.
+- Bounded rate-limit state, idle cleanup, global and per-client bursts, and `Retry-After` responses.
+- Non-blocking global and per-client concurrency limits.
+- Adaptive temporary bans after repeated WAF blocks, rate limits, or overload decisions.
+- Trusted-proxy-aware client-IP resolution that prevents untrusted `X-Forwarded-For` spoofing.
+- HTTP server, upstream transport, header, path, query, body, and graceful-shutdown limits.
+- Privacy-preserving logs: raw request bodies, query values, cookies, authorization headers, suspicious paths, and User-Agent strings are not retained. Suspicious values use SHA-256 fingerprints.
+- Bounded in-memory log ring plus optional rotating NDJSON persistence.
+- Security metrics schema 2.0, percentile latency, per-route dimensions, rejection reasons, and Prometheus exposition.
+- Constant-time bearer-token comparison, admin brute-force lockout, strict JSON decoding, CSP, and audit events.
+- Atomic configuration persistence with validation, temporary file sync, rollback staging, and hot reload.
+- Build/version metadata and `-version` CLI support.
 
-## Local run
+## Dashboard and Admin API
 
-Requirements: Go 1.23 or newer.
+The dashboard is served from `http://127.0.0.1:9191` and combines:
 
-### 1. Start the demo origin from the EdgeProxy project
+- SecurityEdge overview, WAF detections, rejected requests, reasons, latency, rule/category counters.
+- Global/per-client rate-limit and concurrency state.
+- Temporary-ban listing/removal/clear operations.
+- Filtered cursor-paginated security events and CSV/NDJSON export.
+- Prometheus export.
+- Complete default and per-route policy editor.
+- EdgeProxy route readiness, origin health, cache entries/bytes/evictions, request/cache/latency metrics, access logs, and cache purge.
+
+The EdgeProxy Admin token stays in the SecurityEdge backend and is never exposed to browser JavaScript.
+
+## Run on the actual network
+
+### Origin device
 
 ```powershell
-go run ./cmd/origin-demo -listen 127.0.0.1:9000 -name origin-a
+go run ./cmd/origin-demo -listen 0.0.0.0:9000 -name origin-a
 ```
 
-### 2. Start the EdgeProxy behind the WAF
-
-From the EdgeProxy project directory:
+### Proxy device — EdgeProxy repository
 
 ```powershell
 go run ./cmd/edgeproxy `
-  -config ..\edgeproxy-go-second-member\integration\edgeproxy-local-behind-waf.json `
+  -config ..\edgeproxy-go-second-member-professional-final\integration\edgeproxy-behind-waf.json `
   -pretty-logs
 ```
 
-This copy preserves all final first-member route/cache/health settings while binding the public proxy internally to `127.0.0.1:8080`. It does not change the first-member repository.
-
-### 3. Start SecurityEdge
-
-From this repository:
+### Proxy device — this repository
 
 ```powershell
-go run ./cmd/securityedge -config .\configs\local-dev.json -pretty-logs
+go run ./cmd/securityedge `
+  -config .\configs\securityedge.json `
+  -pretty-logs
 ```
 
-Public test endpoint:
-
-```text
-http://project.test:8081
-```
-
-Dashboard:
-
-```text
-http://127.0.0.1:9191
-```
-
-Dashboard token:
-
-```text
-dev-security-token
-```
-
-Add this hosts entry for local testing:
-
-```text
-127.0.0.1 project.test
-```
-
-## Tests
-
-Clean request and cache:
+Or:
 
 ```powershell
-curl.exe -i http://project.test:8081/api/products
-curl.exe -i http://project.test:8081/api/products
+.\scripts\start-security.ps1
 ```
 
-Expected:
+### Phone
 
 ```text
-first request  -> X-Security-Action: ALLOW and X-Cache: MISS
-second request -> X-Security-Action: ALLOW and X-Cache: HIT
+http://project.test
 ```
 
-Blocked XSS:
+The phone's DNS server must be `10.36.74.241`, Private DNS must not bypass Technitium during the test, and the Technitium A records must point `project.test` and `www.project.test` to `10.36.74.241`.
+
+## Secrets
+
+Demo tokens exist only to make the academic network test reproducible. Replace them for presentation or deployment:
 
 ```powershell
-curl.exe -i "http://project.test:8081/search?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E"
-```
-
-Expected status: `403 Forbidden` with `error.code = waf_blocked`.
-
-Blocked SQL injection:
-
-```powershell
-curl.exe -i "http://project.test:8081/login?username=admin%27%20OR%201%3D1--"
-```
-
-## Admin API
-
-SecurityEdge listener: `127.0.0.1:9191`
-
-```text
-GET     /healthz
-GET     /readyz
-GET     /api/v1/session
-GET     /api/v1/status
-GET     /api/v1/metrics
-GET     /api/v1/logs
-DELETE  /api/v1/logs
-GET     /api/v1/rules
-GET     /api/v1/policies
-PUT     /api/v1/policies/default
-PUT     /api/v1/policies/{route}
-DELETE  /api/v1/policies/{route}
-POST    /api/v1/reload
-GET     /api/v1/dashboard/overview
-GET     /api/v1/edgeproxy/status
-GET     /api/v1/edgeproxy/metrics
-GET     /api/v1/edgeproxy/logs
-DELETE  /api/v1/edgeproxy/logs
-POST    /api/v1/edgeproxy/cache/purge
-```
-
-Protected endpoints require:
-
-```http
-Authorization: Bearer <SecurityEdge admin token>
-```
-
-## Secret environment overrides
-
-```powershell
-$env:SECURITYEDGE_ADMIN_TOKEN = "replace-with-a-long-random-token"
+$env:SECURITYEDGE_ADMIN_TOKEN = .\scripts\generate-admin-token.ps1
 $env:EDGEPROXY_ADMIN_TOKEN = "the-token-used-by-edgeproxy"
 ```
 
-Environment values override JSON only in memory. Policy edits never persist environment-provided tokens back to disk.
+Environment overrides are used in memory and are not written into the JSON file when policies are saved.
 
-## Build verification
+## Validation
 
-```bash
+```powershell
 gofmt -w .
 go test ./...
 go test -race ./...
 go vet ./...
-go build ./cmd/securityedge
+node --check .\internal\admin\web\app.js
+go build -trimpath ./cmd/securityedge
+go run ./cmd/securityedge -config .\configs\securityedge.json -validate
+go run ./cmd/securityedge -version
 ```
 
-No third-party Go dependency is used.
+Network scripts:
 
-## Important boundaries
+```powershell
+.\scripts\check-listeners.ps1
+.\scripts\test-current-network.ps1
+.\scripts\test-protection.ps1
+```
+## Scope statement
 
-- The built-in WAF is an educational deterministic rules engine, not a replacement for a continuously updated commercial managed WAF.
-- Request bodies are bounded for inspection and are never stored in logs.
-- Metrics and logs are process-local and reset on restart.
-- Gateway mode is for independent development. Embedded middleware mode is the preferred final architecture because it preserves the original client connection metadata.
-- The optional integration patch is provided under `integration/` but has not been applied to the uploaded first-member project.
+SecurityEdge provides strong **application-layer DoS/DDoS mitigation** for this project through global/per-client rate limiting, bounded state, admission control, request limits, timeouts, and temporary bans. It does not claim to absorb network-layer volumetric attacks such as SYN floods, UDP floods, DNS floods, or bandwidth saturation; those require operating-system/network firewalling and upstream DDoS infrastructure.
+
+The optional embedded config and patch are retained for future study only and are not used in the current run.

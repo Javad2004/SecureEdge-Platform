@@ -9,8 +9,11 @@ import (
 	"net/url"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/bachelor-project/edgeproxy-security/internal/admin"
+	"github.com/bachelor-project/edgeproxy-security/internal/admission"
+	"github.com/bachelor-project/edgeproxy-security/internal/clientip"
 	"github.com/bachelor-project/edgeproxy-security/internal/config"
 	"github.com/bachelor-project/edgeproxy-security/internal/edgeadmin"
 	"github.com/bachelor-project/edgeproxy-security/internal/gateway"
@@ -32,6 +35,9 @@ type Runtime struct {
 	logs       *securitylog.Store
 	inspector  *waf.Inspector
 	limiter    *ratelimit.Limiter
+	bans       *ratelimit.BanManager
+	admission  *admission.Limiter
+	clients    *clientip.Resolver
 }
 
 func New(configPath string, logger *slog.Logger) (*Runtime, error) {
@@ -50,23 +56,35 @@ func New(configPath string, logger *slog.Logger) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	inspector, err := waf.NewInspector(cfg.WAF.CustomRules, cfg.WAF.MaximumMatchesPerRequest)
+	if err != nil {
+		return nil, err
+	}
+	clients, err := clientip.New(cfg.Server.TrustedProxyCIDRs, cfg.Server.ForwardedForHeader)
+	if err != nil {
+		return nil, err
+	}
+	logs, err := securitylog.NewWithConfig(cfg.Admin.LogStore)
+	if err != nil {
+		return nil, err
+	}
 	return &Runtime{
-		configPath: configPath,
-		logger:     logger,
-		cfg:        cfg,
-		table:      table,
-		edge:       edge,
-		registry:   metrics.New(),
-		logs:       securitylog.New(cfg.Admin.LogStore.Capacity),
-		inspector:  waf.NewInspector(),
-		limiter:    ratelimit.New(cfg.DefaultPolicy.RateLimit.CleanupInterval.Duration, cfg.DefaultPolicy.RateLimit.IdleTTL.Duration),
+		configPath: configPath, logger: logger, cfg: cfg, table: table, edge: edge,
+		registry: metrics.New(), logs: logs, inspector: inspector,
+		limiter: ratelimit.New(cfg.DefaultPolicy.RateLimit.CleanupInterval.Duration, cfg.DefaultPolicy.RateLimit.IdleTTL.Duration),
+		bans:    ratelimit.NewBanManager(), admission: admission.New(), clients: clients,
 	}, nil
 }
 
-func (r *Runtime) Close() { r.limiter.Close() }
+func (r *Runtime) Close() {
+	r.limiter.Close()
+	if err := r.logs.Close(); err != nil {
+		r.logger.Error("close security log", "error", err)
+	}
+}
 
 func (r *Runtime) Wrap(next http.Handler) http.Handler {
-	return gateway.New(next, r, r, r.inspector, r.limiter, r.registry, r.logs, r.logger)
+	return gateway.New(next, r, r, r.inspector, r.limiter, r.bans, r.admission, r.clients, r.registry, r.logs, r.logger)
 }
 
 func (r *Runtime) AdminHandler() (http.Handler, error) {
@@ -96,20 +114,22 @@ func (r *Runtime) Config() config.Config {
 	defer r.mu.RUnlock()
 	return cloneConfig(r.cfg)
 }
-
+func (r *Runtime) ServerConfig() config.ServerConfig {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return cloneServerConfig(r.cfg.Server)
+}
 func (r *Runtime) Match(req *http.Request) (routes.Route, bool) {
 	r.mu.RLock()
 	table := r.table
 	r.mu.RUnlock()
 	return table.Match(req)
 }
-
 func (r *Runtime) Routes() []routes.Route {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.table.Routes()
 }
-
 func (r *Runtime) Policy(route string) config.Policy { return r.EffectivePolicy(route) }
 
 func (r *Runtime) EffectivePolicy(route string) config.Policy {
@@ -128,12 +148,34 @@ func (r *Runtime) EdgeJSON(ctx context.Context, method, path string, query url.V
 	return edge.JSON(ctx, method, path, query, body)
 }
 
-func (r *Runtime) LimiterSize() int { return r.limiter.Size() }
+func (r *Runtime) LimiterSize() int                      { return r.limiter.Size() }
+func (r *Runtime) ActiveBans() []ratelimit.Ban           { return r.bans.List(time.Now()) }
+func (r *Runtime) ActiveBanCount() int                   { return r.bans.ActiveCount(time.Now()) }
+func (r *Runtime) DeleteBan(client string) bool          { return r.bans.Remove(client) }
+func (r *Runtime) ClearBans() int                        { return r.bans.Clear() }
+func (r *Runtime) AdmissionSnapshot() admission.Snapshot { return r.admission.Snapshot(false) }
+
+func (r *Runtime) Audit(event, message string, fields map[string]string) {
+	entry := securitylog.Entry{Level: "INFO", Event: event, Message: message, Action: "ADMIN", Tags: []string{"security", "admin", "audit"}}
+	if v := fields["request_id"]; v != "" {
+		entry.RequestID = v
+	}
+	if v := fields["client_ip"]; v != "" {
+		entry.ClientIP = v
+	}
+	if v := fields["route"]; v != "" {
+		entry.Route = v
+	}
+	if v := fields["reason"]; v != "" {
+		entry.Reason = v
+	}
+	r.logs.Append(entry)
+	r.logger.Info(message, "event", event, "fields", fields)
+}
 
 func (r *Runtime) UpdateDefaultPolicy(p config.Policy) error {
 	return r.update(func(cfg *config.Config) { cfg.DefaultPolicy = p })
 }
-
 func (r *Runtime) UpdateRoutePolicy(route string, p config.Policy) error {
 	if !r.routeExists(route) {
 		return fmt.Errorf("route %q does not exist in edgeproxy config", route)
@@ -145,7 +187,6 @@ func (r *Runtime) UpdateRoutePolicy(route string, p config.Policy) error {
 		cfg.RoutePolicies[route] = p
 	})
 }
-
 func (r *Runtime) DeleteRoutePolicy(route string) error {
 	if route == "" {
 		return fmt.Errorf("route name is required")
@@ -164,6 +205,12 @@ func (r *Runtime) Reload() error {
 	}
 	edge, err := edgeadmin.New(cfg.EdgeProxy.AdminURL, cfg.EdgeProxy.AdminToken, cfg.EdgeProxy.Timeout.Duration)
 	if err != nil {
+		return err
+	}
+	if err := r.inspector.Replace(cfg.WAF.CustomRules, cfg.WAF.MaximumMatchesPerRequest); err != nil {
+		return err
+	}
+	if err := r.clients.Replace(cfg.Server.TrustedProxyCIDRs, cfg.Server.ForwardedForHeader); err != nil {
 		return err
 	}
 	r.mu.Lock()
@@ -195,7 +242,6 @@ func resolveEdgeConfigPath(securityConfigPath, edgeConfigPath string) string {
 	}
 	return filepath.Clean(filepath.Join(filepath.Dir(securityConfigPath), edgeConfigPath))
 }
-
 func (r *Runtime) routeExists(name string) bool {
 	for _, route := range r.Routes() {
 		if route.Name == name {
@@ -207,6 +253,8 @@ func (r *Runtime) routeExists(name string) bool {
 
 func cloneConfig(in config.Config) config.Config {
 	out := in
+	out.Server = cloneServerConfig(in.Server)
+	out.WAF.CustomRules = append([]config.CustomRuleConfig(nil), in.WAF.CustomRules...)
 	out.RoutePolicies = map[string]config.Policy{}
 	for k, v := range in.RoutePolicies {
 		out.RoutePolicies[k] = clonePolicy(v)
@@ -214,7 +262,11 @@ func cloneConfig(in config.Config) config.Config {
 	out.DefaultPolicy = clonePolicy(in.DefaultPolicy)
 	return out
 }
-
+func cloneServerConfig(in config.ServerConfig) config.ServerConfig {
+	out := in
+	out.TrustedProxyCIDRs = append([]string(nil), in.TrustedProxyCIDRs...)
+	return out
+}
 func clonePolicy(in config.Policy) config.Policy {
 	out := in
 	out.BodyContentTypes = append([]string(nil), in.BodyContentTypes...)

@@ -32,6 +32,7 @@ func Load(path string) (*Table, error) {
 	if len(cfg.Routes) == 0 {
 		return nil, fmt.Errorf("edgeproxy config has no routes")
 	}
+	seenNames := map[string]bool{}
 	for i := range cfg.Routes {
 		cfg.Routes[i].Name = strings.TrimSpace(cfg.Routes[i].Name)
 		cfg.Routes[i].PathPrefix = strings.TrimSpace(cfg.Routes[i].PathPrefix)
@@ -41,6 +42,26 @@ func Load(path string) (*Table, error) {
 		if cfg.Routes[i].Name == "" || len(cfg.Routes[i].Hosts) == 0 {
 			return nil, fmt.Errorf("edgeproxy route %d is incomplete", i)
 		}
+		if seenNames[cfg.Routes[i].Name] {
+			return nil, fmt.Errorf("edgeproxy route name %q is duplicated", cfg.Routes[i].Name)
+		}
+		seenNames[cfg.Routes[i].Name] = true
+		if !strings.HasPrefix(cfg.Routes[i].PathPrefix, "/") {
+			return nil, fmt.Errorf("edgeproxy route %q path_prefix must start with /", cfg.Routes[i].Name)
+		}
+		hosts := make([]string, 0, len(cfg.Routes[i].Hosts))
+		seenHosts := map[string]bool{}
+		for _, raw := range cfg.Routes[i].Hosts {
+			host := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(raw, ".")))
+			if host == "" {
+				return nil, fmt.Errorf("edgeproxy route %q contains an empty host", cfg.Routes[i].Name)
+			}
+			if !seenHosts[host] {
+				seenHosts[host] = true
+				hosts = append(hosts, host)
+			}
+		}
+		cfg.Routes[i].Hosts = hosts
 	}
 	return &Table{routes: cfg.Routes}, nil
 }
@@ -68,7 +89,10 @@ func (t *Table) Match(req *http.Request) (Route, bool) {
 
 func (t *Table) Routes() []Route {
 	out := make([]Route, len(t.routes))
-	copy(out, t.routes)
+	for i, route := range t.routes {
+		out[i] = route
+		out[i].Hosts = append([]string(nil), route.Hosts...)
+	}
 	return out
 }
 

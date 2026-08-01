@@ -1,46 +1,59 @@
 package securitylog
 
 import (
+	"bufio"
+	"encoding/csv"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/bachelor-project/edgeproxy-security/internal/config"
 	"github.com/bachelor-project/edgeproxy-security/internal/waf"
 )
 
 type Entry struct {
-	Sequence     uint64      `json:"sequence"`
-	Timestamp    string      `json:"timestamp"`
-	Level        string      `json:"level"`
-	Event        string      `json:"event"`
-	Message      string      `json:"message,omitempty"`
-	RequestID    string      `json:"request_id,omitempty"`
-	ClientIP     string      `json:"client_ip,omitempty"`
-	Method       string      `json:"method,omitempty"`
-	Host         string      `json:"host,omitempty"`
-	Path         string      `json:"path,omitempty"`
-	Route        string      `json:"route,omitempty"`
-	Status       int         `json:"status,omitempty"`
-	DurationMS   float64     `json:"duration_ms,omitempty"`
-	Action       string      `json:"action,omitempty"`
-	Score        int         `json:"score,omitempty"`
-	RuleIDs      []string    `json:"rule_ids,omitempty"`
-	Matches      []waf.Match `json:"matches,omitempty"`
-	RateLimitKey string      `json:"rate_limit_key,omitempty"`
-	RetryAfterMS int64       `json:"retry_after_ms,omitempty"`
-	UserAgent    string      `json:"user_agent,omitempty"`
-	Error        string      `json:"error,omitempty"`
-	Tags         []string    `json:"tags,omitempty"`
+	Sequence             uint64      `json:"sequence"`
+	Timestamp            string      `json:"timestamp"`
+	Level                string      `json:"level"`
+	Event                string      `json:"event"`
+	Message              string      `json:"message,omitempty"`
+	RequestID            string      `json:"request_id,omitempty"`
+	ClientIP             string      `json:"client_ip,omitempty"`
+	Method               string      `json:"method,omitempty"`
+	Host                 string      `json:"host,omitempty"`
+	Path                 string      `json:"path,omitempty"`
+	PathFingerprint      string      `json:"path_fingerprint,omitempty"`
+	Route                string      `json:"route,omitempty"`
+	Status               int         `json:"status,omitempty"`
+	DurationMS           float64     `json:"duration_ms,omitempty"`
+	Action               string      `json:"action,omitempty"`
+	Reason               string      `json:"reason,omitempty"`
+	Score                int         `json:"score,omitempty"`
+	RuleIDs              []string    `json:"rule_ids,omitempty"`
+	Matches              []waf.Match `json:"matches,omitempty"`
+	RetryAfterMS         int64       `json:"retry_after_ms,omitempty"`
+	UserAgentFingerprint string      `json:"user_agent_fingerprint,omitempty"`
+	Error                string      `json:"error,omitempty"`
+	AutoBanned           bool        `json:"auto_banned,omitempty"`
+	MatchLimitReached    bool        `json:"match_limit_reached,omitempty"`
+	Tags                 []string    `json:"tags,omitempty"`
 }
 
 type Filter struct {
-	Route, RequestID, Method, Event, Level, Action, RuleID, Search string
-	Status                                                         int
-	Since, Until                                                   time.Time
-	BeforeSequence                                                 uint64
-	Limit                                                          int
+	Route, RequestID, ClientIP, Method, Event, Level, Action, Reason, RuleID, Search string
+	Status                                                                           int
+	Since, Until                                                                     time.Time
+	BeforeSequence                                                                   uint64
+	Limit                                                                            int
 }
+
 type QueryResult struct {
 	GeneratedAt        string         `json:"generated_at"`
 	Capacity           int            `json:"capacity"`
@@ -54,6 +67,7 @@ type QueryResult struct {
 	AppliedFilters     map[string]any `json:"applied_filters,omitempty"`
 	Entries            []Entry        `json:"entries"`
 }
+
 type Stats struct {
 	Enabled        bool   `json:"enabled"`
 	Capacity       int    `json:"capacity"`
@@ -61,6 +75,10 @@ type Stats struct {
 	Dropped        uint64 `json:"dropped"`
 	OldestSequence uint64 `json:"oldest_sequence,omitempty"`
 	NewestSequence uint64 `json:"newest_sequence,omitempty"`
+	FileEnabled    bool   `json:"file_enabled"`
+	FilePath       string `json:"file_path,omitempty"`
+	FileBytes      int64  `json:"file_bytes,omitempty"`
+	FileErrors     uint64 `json:"file_errors"`
 }
 
 type Store struct {
@@ -68,14 +86,56 @@ type Store struct {
 	entries               []Entry
 	capacity, head, count int
 	nextSeq, dropped      uint64
+	file                  *os.File
+	filePath              string
+	fileBytes             int64
+	maxFileBytes          int64
+	maxBackups            int
+	fileErrors            uint64
 }
 
 func New(capacity int) *Store {
-	if capacity <= 0 {
-		capacity = 1
-	}
-	return &Store{entries: make([]Entry, capacity), capacity: capacity, nextSeq: 1}
+	s, _ := NewWithConfig(config.LogStoreConfig{Capacity: capacity})
+	return s
 }
+
+func NewWithConfig(cfg config.LogStoreConfig) (*Store, error) {
+	if cfg.Capacity <= 0 {
+		cfg.Capacity = 1
+	}
+	s := &Store{entries: make([]Entry, cfg.Capacity), capacity: cfg.Capacity, nextSeq: 1, filePath: strings.TrimSpace(cfg.FilePath), maxFileBytes: cfg.MaxFileBytes, maxBackups: cfg.MaxBackups}
+	if s.filePath == "" {
+		return s, nil
+	}
+	if s.maxFileBytes <= 0 {
+		s.maxFileBytes = 20 << 20
+	}
+	if err := os.MkdirAll(filepath.Dir(s.filePath), 0o750); err != nil {
+		return nil, fmt.Errorf("create security log directory: %w", err)
+	}
+	file, err := os.OpenFile(s.filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+	if err != nil {
+		return nil, fmt.Errorf("open security log file: %w", err)
+	}
+	info, _ := file.Stat()
+	if info != nil {
+		s.fileBytes = info.Size()
+	}
+	s.file = file
+	return s, nil
+}
+
+func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.file == nil {
+		return nil
+	}
+	err := s.file.Close()
+	s.file = nil
+	return err
+}
+
 func (s *Store) Append(e Entry) Entry {
 	if e.Timestamp == "" {
 		e.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
@@ -91,9 +151,11 @@ func (s *Store) Append(e Entry) Entry {
 	e.Method = strings.ToUpper(trim(e.Method, 32))
 	e.Host = trim(e.Host, 512)
 	e.Path = trim(e.Path, 2048)
+	e.PathFingerprint = trim(e.PathFingerprint, 128)
 	e.Route = trim(e.Route, 256)
 	e.Action = strings.ToUpper(trim(e.Action, 32))
-	e.UserAgent = trim(e.UserAgent, 512)
+	e.Reason = strings.ToLower(trim(e.Reason, 128))
+	e.UserAgentFingerprint = trim(e.UserAgentFingerprint, 128)
 	e.Error = trim(e.Error, 2048)
 	e.RuleIDs = uniqueUpper(e.RuleIDs)
 	e.Tags = uniqueLower(e.Tags)
@@ -105,13 +167,61 @@ func (s *Store) Append(e Entry) Entry {
 		idx := (s.head + s.count) % s.capacity
 		s.entries[idx] = e
 		s.count++
-		return e
+	} else {
+		s.entries[s.head] = e
+		s.head = (s.head + 1) % s.capacity
+		s.dropped++
 	}
-	s.entries[s.head] = e
-	s.head = (s.head + 1) % s.capacity
-	s.dropped++
+	s.writeFileLocked(e)
 	return e
 }
+
+func (s *Store) writeFileLocked(e Entry) {
+	if s.file == nil {
+		return
+	}
+	data, err := json.Marshal(e)
+	if err != nil {
+		s.fileErrors++
+		return
+	}
+	data = append(data, '\n')
+	if s.fileBytes+int64(len(data)) > s.maxFileBytes {
+		if err := s.rotateLocked(); err != nil {
+			s.fileErrors++
+			return
+		}
+	}
+	n, err := s.file.Write(data)
+	if err != nil {
+		s.fileErrors++
+		return
+	}
+	s.fileBytes += int64(n)
+}
+
+func (s *Store) rotateLocked() error {
+	if s.file != nil {
+		_ = s.file.Close()
+		s.file = nil
+	}
+	if s.maxBackups > 0 {
+		_ = os.Remove(fmt.Sprintf("%s.%d", s.filePath, s.maxBackups))
+		for i := s.maxBackups - 1; i >= 1; i-- {
+			_ = os.Rename(fmt.Sprintf("%s.%d", s.filePath, i), fmt.Sprintf("%s.%d", s.filePath, i+1))
+		}
+		_ = os.Rename(s.filePath, s.filePath+".1")
+	} else {
+		_ = os.Remove(s.filePath)
+	}
+	file, err := os.OpenFile(s.filePath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
+	if err != nil {
+		return err
+	}
+	s.file, s.fileBytes = file, 0
+	return nil
+}
+
 func (s *Store) Query(f Filter) QueryResult {
 	if f.Limit <= 0 {
 		f.Limit = 100
@@ -145,6 +255,40 @@ func (s *Store) Query(f Filter) QueryResult {
 	}
 	return r
 }
+
+func (s *Store) Export(w io.Writer, f Filter, format string) error {
+	if f.Limit <= 0 || f.Limit > s.capacity {
+		f.Limit = s.capacity
+	}
+	entries := s.Query(f).Entries
+	switch strings.ToLower(format) {
+	case "csv":
+		cw := csv.NewWriter(w)
+		defer cw.Flush()
+		if err := cw.Write([]string{"sequence", "timestamp", "level", "event", "request_id", "client_ip", "method", "host", "path", "path_fingerprint", "route", "status", "action", "reason", "score", "rule_ids", "duration_ms", "auto_banned"}); err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if err := cw.Write([]string{strconv.FormatUint(e.Sequence, 10), e.Timestamp, e.Level, e.Event, e.RequestID, e.ClientIP, e.Method, e.Host, e.Path, e.PathFingerprint, e.Route, strconv.Itoa(e.Status), e.Action, e.Reason, strconv.Itoa(e.Score), strings.Join(e.RuleIDs, "|"), strconv.FormatFloat(e.DurationMS, 'f', 3, 64), strconv.FormatBool(e.AutoBanned)}); err != nil {
+				return err
+			}
+		}
+		return cw.Error()
+	case "ndjson", "jsonl":
+		bw := bufio.NewWriter(w)
+		defer bw.Flush()
+		enc := json.NewEncoder(bw)
+		for _, e := range entries {
+			if err := enc.Encode(e); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported export format %q", format)
+	}
+}
+
 func (s *Store) Clear() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -157,18 +301,22 @@ func (s *Store) Clear() int {
 func (s *Store) Stats() Stats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	r := Stats{Enabled: true, Capacity: s.capacity, Retained: s.count, Dropped: s.dropped}
+	r := Stats{Enabled: true, Capacity: s.capacity, Retained: s.count, Dropped: s.dropped, FileEnabled: s.filePath != "", FilePath: s.filePath, FileBytes: s.fileBytes, FileErrors: s.fileErrors}
 	if s.count > 0 {
 		r.OldestSequence = s.entries[s.head].Sequence
 		r.NewestSequence = s.entries[(s.head+s.count-1)%s.capacity].Sequence
 	}
 	return r
 }
+
 func matches(e Entry, f Filter) bool {
 	if f.Route != "" && !strings.EqualFold(e.Route, f.Route) {
 		return false
 	}
 	if f.RequestID != "" && e.RequestID != f.RequestID {
+		return false
+	}
+	if f.ClientIP != "" && !strings.EqualFold(e.ClientIP, f.ClientIP) {
 		return false
 	}
 	if f.Method != "" && !strings.EqualFold(e.Method, f.Method) {
@@ -181,6 +329,9 @@ func matches(e Entry, f Filter) bool {
 		return false
 	}
 	if f.Action != "" && !strings.EqualFold(e.Action, f.Action) {
+		return false
+	}
+	if f.Reason != "" && !strings.EqualFold(e.Reason, f.Reason) {
 		return false
 	}
 	if f.Status > 0 && e.Status != f.Status {
@@ -199,13 +350,14 @@ func matches(e Entry, f Filter) bool {
 		}
 	}
 	if f.Search != "" {
-		h := strings.ToLower(strings.Join([]string{e.Event, e.Message, e.RequestID, e.ClientIP, e.Method, e.Host, e.Path, e.Route, e.Action, strings.Join(e.RuleIDs, " "), e.UserAgent, e.Error}, " "))
+		h := strings.ToLower(strings.Join([]string{e.Event, e.Message, e.RequestID, e.ClientIP, e.Method, e.Host, e.Path, e.Route, e.Action, e.Reason, strings.Join(e.RuleIDs, " "), e.PathFingerprint, e.UserAgentFingerprint, e.Error}, " "))
 		if !strings.Contains(h, strings.ToLower(f.Search)) {
 			return false
 		}
 	}
 	return true
 }
+
 func filters(f Filter) map[string]any {
 	m := map[string]any{"limit": f.Limit}
 	if f.Route != "" {
@@ -213,6 +365,9 @@ func filters(f Filter) map[string]any {
 	}
 	if f.RequestID != "" {
 		m["request_id"] = f.RequestID
+	}
+	if f.ClientIP != "" {
+		m["client_ip"] = f.ClientIP
 	}
 	if f.Method != "" {
 		m["method"] = strings.ToUpper(f.Method)
@@ -225,6 +380,9 @@ func filters(f Filter) map[string]any {
 	}
 	if f.Action != "" {
 		m["action"] = strings.ToUpper(f.Action)
+	}
+	if f.Reason != "" {
+		m["reason"] = strings.ToLower(f.Reason)
 	}
 	if f.RuleID != "" {
 		m["rule_id"] = strings.ToUpper(f.RuleID)
@@ -240,6 +398,7 @@ func filters(f Filter) map[string]any {
 	}
 	return m
 }
+
 func clone(e Entry) Entry {
 	e.RuleIDs = append([]string(nil), e.RuleIDs...)
 	e.Tags = append([]string(nil), e.Tags...)

@@ -10,16 +10,21 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/bachelor-project/edgeproxy-security/internal/admission"
 	"github.com/bachelor-project/edgeproxy-security/internal/config"
 	"github.com/bachelor-project/edgeproxy-security/internal/metrics"
+	"github.com/bachelor-project/edgeproxy-security/internal/ratelimit"
 	"github.com/bachelor-project/edgeproxy-security/internal/routes"
 	"github.com/bachelor-project/edgeproxy-security/internal/securitylog"
+	"github.com/bachelor-project/edgeproxy-security/internal/version"
 	"github.com/bachelor-project/edgeproxy-security/internal/waf"
 )
 
@@ -35,7 +40,18 @@ type Runtime interface {
 	DeleteRoutePolicy(string) error
 	Reload() error
 	LimiterSize() int
+	ActiveBans() []ratelimit.Ban
+	ActiveBanCount() int
+	DeleteBan(string) bool
+	ClearBans() int
+	AdmissionSnapshot() admission.Snapshot
+	Audit(string, string, map[string]string)
 	EdgeJSON(context.Context, string, string, url.Values, any) (json.RawMessage, int, error)
+}
+
+type authFailure struct {
+	count                    int
+	windowStart, lockedUntil time.Time
 }
 
 type Server struct {
@@ -45,6 +61,8 @@ type Server struct {
 	logs      *securitylog.Store
 	inspector *waf.Inspector
 	http      *http.Server
+	authMu    sync.Mutex
+	authFails map[string]*authFailure
 }
 
 func New(cfg config.AdminConfig, runtime Runtime, registry *metrics.Registry, logs *securitylog.Store, inspector *waf.Inspector) (*Server, error) {
@@ -52,7 +70,7 @@ func New(cfg config.AdminConfig, runtime Runtime, registry *metrics.Registry, lo
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{cfg: cfg, runtime: runtime, registry: registry, logs: logs, inspector: inspector}
+	s := &Server{cfg: cfg, runtime: runtime, registry: registry, logs: logs, inspector: inspector, authFails: map[string]*authFailure{}}
 	mux := http.NewServeMux()
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", secureStatic(http.FileServer(http.FS(sub)))))
 	mux.HandleFunc("GET /", s.index)
@@ -60,37 +78,81 @@ func New(cfg config.AdminConfig, runtime Runtime, registry *metrics.Registry, lo
 	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("GET /api/v1/session", s.auth(s.session))
 	mux.HandleFunc("GET /api/v1/status", s.auth(s.status))
+	mux.HandleFunc("GET /api/v1/info", s.auth(s.info))
 	mux.HandleFunc("GET /api/v1/metrics", s.auth(s.securityMetrics))
+	mux.HandleFunc("GET /api/v1/metrics/prometheus", s.auth(s.prometheusMetrics))
 	mux.HandleFunc("GET /api/v1/logs", s.auth(s.logsHandler))
 	mux.HandleFunc("DELETE /api/v1/logs", s.auth(s.clearLogs))
+	mux.HandleFunc("GET /api/v1/logs/export", s.auth(s.exportLogs))
 	mux.HandleFunc("GET /api/v1/rules", s.auth(s.rules))
 	mux.HandleFunc("GET /api/v1/policies", s.auth(s.policies))
 	mux.HandleFunc("PUT /api/v1/policies/default", s.auth(s.updateDefaultPolicy))
 	mux.HandleFunc("PUT /api/v1/policies/{route}", s.auth(s.updateRoutePolicy))
 	mux.HandleFunc("DELETE /api/v1/policies/{route}", s.auth(s.deleteRoutePolicy))
 	mux.HandleFunc("POST /api/v1/reload", s.auth(s.reload))
+	mux.HandleFunc("GET /api/v1/bans", s.auth(s.bans))
+	mux.HandleFunc("DELETE /api/v1/bans/{client}", s.auth(s.deleteBan))
+	mux.HandleFunc("DELETE /api/v1/bans", s.auth(s.clearBans))
 	mux.HandleFunc("GET /api/v1/dashboard/overview", s.auth(s.overview))
 	mux.HandleFunc("GET /api/v1/edgeproxy/status", s.auth(s.edgeStatus))
 	mux.HandleFunc("GET /api/v1/edgeproxy/metrics", s.auth(s.edgeMetrics))
 	mux.HandleFunc("GET /api/v1/edgeproxy/logs", s.auth(s.edgeLogs))
 	mux.HandleFunc("DELETE /api/v1/edgeproxy/logs", s.auth(s.edgeClearLogs))
 	mux.HandleFunc("POST /api/v1/edgeproxy/cache/purge", s.auth(s.edgePurge))
-	s.http = &http.Server{Addr: cfg.ListenAddr, Handler: securityHeaders(mux), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 20}
+	s.http = &http.Server{Addr: cfg.ListenAddr, Handler: securityHeaders(requestIDMiddleware(mux)), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 20}
 	return s, nil
 }
 func (s *Server) HTTPServer() *http.Server { return s.http }
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		client := remoteIP(r.RemoteAddr)
+		now := time.Now()
+		if locked, retry := s.authLocked(client, now); locked {
+			w.Header().Set("Retry-After", strconv.Itoa(maxInt(1, int(retry.Round(time.Second).Seconds()))))
+			writeError(w, http.StatusTooManyRequests, "admin_auth_locked", "too many failed authentication attempts")
+			return
+		}
 		if s.cfg.AuthToken != "" {
 			parts := strings.Fields(r.Header.Get("Authorization"))
-			if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || subtle.ConstantTimeCompare([]byte(parts[1]), []byte(s.cfg.AuthToken)) != 1 {
+			valid := len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && subtle.ConstantTimeCompare([]byte(parts[1]), []byte(s.cfg.AuthToken)) == 1
+			if !valid {
+				s.recordAuthFailure(client, now)
 				w.Header().Set("WWW-Authenticate", `Bearer realm="securityedge-admin"`)
 				writeError(w, http.StatusUnauthorized, "unauthorized", "a valid Bearer token is required")
 				return
 			}
 		}
+		s.clearAuthFailures(client)
 		next(w, r)
 	}
+}
+
+func (s *Server) authLocked(client string, now time.Time) (bool, time.Duration) {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	v := s.authFails[client]
+	if v == nil || !now.Before(v.lockedUntil) {
+		return false, 0
+	}
+	return true, v.lockedUntil.Sub(now)
+}
+func (s *Server) recordAuthFailure(client string, now time.Time) {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	v := s.authFails[client]
+	if v == nil || now.Sub(v.windowStart) >= time.Minute {
+		v = &authFailure{windowStart: now}
+		s.authFails[client] = v
+	}
+	v.count++
+	if v.count >= s.cfg.AuthFailuresPerMinute {
+		v.lockedUntil = now.Add(s.cfg.AuthLockoutDuration.Duration)
+	}
+}
+func (s *Server) clearAuthFailures(client string) {
+	s.authMu.Lock()
+	delete(s.authFails, client)
+	s.authMu.Unlock()
 }
 func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
@@ -125,10 +187,13 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 func (s *Server) session(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{"authenticated": true, "generated_at": now()})
 }
+func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, 200, map[string]any{"generated_at": now(), "build": version.Info()})
+}
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	edgeRaw, edgeStatus, edgeErr := s.runtime.EdgeJSON(r.Context(), http.MethodGet, "/api/v1/status", nil, nil)
 	cfg := s.runtime.Config()
-	out := map[string]any{"generated_at": now(), "mode": cfg.Server.Mode, "routes": s.runtime.Routes(), "log_store": s.logs.Stats(), "rate_limit_buckets": s.runtime.LimiterSize(), "edgeproxy": map[string]any{"reachable": edgeErr == nil, "http_status": edgeStatus}}
+	out := map[string]any{"generated_at": now(), "build": version.Info(), "mode": cfg.Server.Mode, "routes": s.runtime.Routes(), "log_store": s.logs.Stats(), "rate_limit_buckets": s.runtime.LimiterSize(), "active_bans": s.runtime.ActiveBanCount(), "admission": s.runtime.AdmissionSnapshot(), "edgeproxy": map[string]any{"reachable": edgeErr == nil, "http_status": edgeStatus}}
 	if edgeErr != nil {
 		out["edgeproxy"].(map[string]any)["error"] = edgeErr.Error()
 	} else {
@@ -138,6 +203,11 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) securityMetrics(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, s.registry.Snapshot())
+}
+func (s *Server) prometheusMetrics(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = io.WriteString(w, s.registry.Prometheus())
 }
 func (s *Server) rules(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{"generated_at": now(), "rules": s.inspector.Rules()})
@@ -152,7 +222,7 @@ func (s *Server) policies(w http.ResponseWriter, _ *http.Request) {
 }
 func (s *Server) updateDefaultPolicy(w http.ResponseWriter, r *http.Request) {
 	var p config.Policy
-	if err := decodeJSON(r, &p); err != nil {
+	if err := s.decodeJSON(r, &p); err != nil {
 		writeError(w, 400, "invalid_body", err.Error())
 		return
 	}
@@ -160,6 +230,7 @@ func (s *Server) updateDefaultPolicy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid_policy", err.Error())
 		return
 	}
+	s.runtime.Audit("policy_updated", "default security policy updated", auditFields(r, "default"))
 	writeJSON(w, 200, map[string]any{"updated": true, "scope": "default", "policy": s.runtime.EffectivePolicy("")})
 }
 func (s *Server) updateRoutePolicy(w http.ResponseWriter, r *http.Request) {
@@ -169,7 +240,7 @@ func (s *Server) updateRoutePolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var p config.Policy
-	if err := decodeJSON(r, &p); err != nil {
+	if err := s.decodeJSON(r, &p); err != nil {
 		writeError(w, 400, "invalid_body", err.Error())
 		return
 	}
@@ -177,6 +248,7 @@ func (s *Server) updateRoutePolicy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid_policy", err.Error())
 		return
 	}
+	s.runtime.Audit("policy_updated", "route security policy updated", auditFields(r, route))
 	writeJSON(w, 200, map[string]any{"updated": true, "route": route, "policy": s.runtime.EffectivePolicy(route)})
 }
 func (s *Server) deleteRoutePolicy(w http.ResponseWriter, r *http.Request) {
@@ -185,6 +257,7 @@ func (s *Server) deleteRoutePolicy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "delete_failed", err.Error())
 		return
 	}
+	s.runtime.Audit("policy_override_deleted", "route policy override deleted", auditFields(r, route))
 	writeJSON(w, 200, map[string]any{"deleted": true, "route": route, "effective_policy": s.runtime.EffectivePolicy(route)})
 }
 func (s *Server) reload(w http.ResponseWriter, _ *http.Request) {
@@ -192,6 +265,7 @@ func (s *Server) reload(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, 500, "reload_failed", err.Error())
 		return
 	}
+	s.runtime.Audit("configuration_reloaded", "security configuration reloaded", auditFields(nil, ""))
 	writeJSON(w, 200, map[string]any{"reloaded": true, "reloaded_at": now()})
 }
 func (s *Server) logsHandler(w http.ResponseWriter, r *http.Request) {
@@ -209,7 +283,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	edgeStatus, ss, se := s.runtime.EdgeJSON(ctx, http.MethodGet, "/api/v1/status", nil, nil)
 	edgeMetrics, ms, me := s.runtime.EdgeJSON(ctx, http.MethodGet, "/api/v1/metrics", nil, nil)
-	out := map[string]any{"generated_at": now(), "security_metrics": s.registry.Snapshot(), "security_logs": s.logs.Query(securitylog.Filter{Limit: 10}), "edgeproxy_status_code": ss, "edgeproxy_metrics_status_code": ms}
+	out := map[string]any{"generated_at": now(), "build": version.Info(), "security_metrics": s.registry.Snapshot(), "security_logs": s.logs.Query(securitylog.Filter{Limit: 10}), "security_status": map[string]any{"rate_limit_buckets": s.runtime.LimiterSize(), "active_bans": s.runtime.ActiveBanCount(), "admission": s.runtime.AdmissionSnapshot()}, "edgeproxy_status_code": ss, "edgeproxy_metrics_status_code": ms}
 	if se != nil {
 		out["edgeproxy_status_error"] = se.Error()
 	} else {
@@ -221,6 +295,47 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		out["edgeproxy_metrics"] = json.RawMessage(edgeMetrics)
 	}
 	writeJSON(w, 200, out)
+}
+func (s *Server) exportLogs(w http.ResponseWriter, r *http.Request) {
+	f, err := s.parseLogFilter(r)
+	if err != nil {
+		writeError(w, 400, "invalid_query", err.Error())
+		return
+	}
+	f.Limit = s.cfg.LogStore.Capacity
+	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+	if format == "" {
+		format = "ndjson"
+	}
+	if format == "csv" {
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="security-events.csv"`)
+	} else {
+		w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="security-events.ndjson"`)
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	if err := s.logs.Export(w, f, format); err != nil {
+		writeError(w, 400, "export_failed", err.Error())
+	}
+}
+func (s *Server) bans(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, 200, map[string]any{"generated_at": now(), "bans": s.runtime.ActiveBans()})
+}
+func (s *Server) deleteBan(w http.ResponseWriter, r *http.Request) {
+	client := strings.TrimSpace(r.PathValue("client"))
+	if client == "" {
+		writeError(w, 400, "invalid_client", "client is required")
+		return
+	}
+	removed := s.runtime.DeleteBan(client)
+	s.runtime.Audit("ban_removed", "temporary client ban removed", map[string]string{"client_ip": client, "request_id": r.Header.Get("X-Request-ID")})
+	writeJSON(w, 200, map[string]any{"removed": removed, "client": client})
+}
+func (s *Server) clearBans(w http.ResponseWriter, r *http.Request) {
+	removed := s.runtime.ClearBans()
+	s.runtime.Audit("bans_cleared", "all temporary client bans cleared", auditFields(r, ""))
+	writeJSON(w, 200, map[string]any{"removed": removed})
 }
 func (s *Server) edgeStatus(w http.ResponseWriter, r *http.Request) {
 	s.forward(w, r, http.MethodGet, "/api/v1/status", nil)
@@ -258,7 +373,7 @@ func (s *Server) parseLogFilter(r *http.Request) (securitylog.Filter, error) {
 	if limit > s.cfg.LogStore.MaxPageSize {
 		return securitylog.Filter{}, fmt.Errorf("limit cannot exceed %d", s.cfg.LogStore.MaxPageSize)
 	}
-	f := securitylog.Filter{Route: strings.TrimSpace(q.Get("route")), RequestID: strings.TrimSpace(q.Get("request_id")), Method: strings.TrimSpace(q.Get("method")), Event: strings.TrimSpace(q.Get("event")), Level: strings.TrimSpace(q.Get("level")), Action: strings.TrimSpace(q.Get("action")), RuleID: strings.TrimSpace(q.Get("rule_id")), Search: strings.TrimSpace(q.Get("q")), Limit: limit}
+	f := securitylog.Filter{Route: strings.TrimSpace(q.Get("route")), ClientIP: strings.TrimSpace(q.Get("client_ip")), Reason: strings.TrimSpace(q.Get("reason")), RequestID: strings.TrimSpace(q.Get("request_id")), Method: strings.TrimSpace(q.Get("method")), Event: strings.TrimSpace(q.Get("event")), Level: strings.TrimSpace(q.Get("level")), Action: strings.TrimSpace(q.Get("action")), RuleID: strings.TrimSpace(q.Get("rule_id")), Search: strings.TrimSpace(q.Get("q")), Limit: limit}
 	if raw := strings.TrimSpace(q.Get("status")); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 100 || n > 599 {
@@ -288,15 +403,15 @@ func (s *Server) parseLogFilter(r *http.Request) (securitylog.Filter, error) {
 	}
 	return f, nil
 }
-func decodeJSON(r *http.Request, v any) error {
+func (s *Server) decodeJSON(r *http.Request, v any) error {
 	defer r.Body.Close()
-	const maxBody = 1 << 20
+	maxBody := s.cfg.MaxRequestBodyBytes
 	data, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
 	if err != nil {
 		return err
 	}
-	if len(data) > maxBody {
-		return errors.New("request body exceeds 1048576 bytes")
+	if int64(len(data)) > maxBody {
+		return fmt.Errorf("request body exceeds %d bytes", maxBody)
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -310,6 +425,38 @@ func decodeJSON(r *http.Request, v any) error {
 		return err
 	}
 	return nil
+}
+func requestIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimSpace(r.Header.Get("X-Request-ID"))
+		if id == "" || len(id) > 128 {
+			id = strconv.FormatInt(time.Now().UnixNano(), 36)
+		}
+		r.Header.Set("X-Request-ID", id)
+		w.Header().Set("X-Request-ID", id)
+		next.ServeHTTP(w, r)
+	})
+}
+func remoteIP(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err == nil {
+		return host
+	}
+	return addr
+}
+func auditFields(r *http.Request, route string) map[string]string {
+	out := map[string]string{"route": route}
+	if r != nil {
+		out["request_id"] = r.Header.Get("X-Request-ID")
+		out["client_ip"] = remoteIP(r.RemoteAddr)
+	}
+	return out
+}
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})

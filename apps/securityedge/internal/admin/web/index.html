@@ -3,27 +3,29 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>EdgeProxy Security Console</title>
+  <meta name="color-scheme" content="dark">
+  <title>SecurityEdge Operations Console</title>
   <link rel="stylesheet" href="/assets/styles.css">
 </head>
 <body>
   <div id="login" class="modal visible" role="dialog" aria-modal="true" aria-labelledby="login-title">
     <form id="login-form" class="login-card">
-      <div class="brand-mark">EP</div>
-      <h1 id="login-title">Security Console</h1>
-      <p>Enter the SecurityEdge admin token. It is kept only in this browser tab.</p>
+      <div class="brand-mark">SE</div>
+      <h1 id="login-title">SecurityEdge Console</h1>
+      <p>Enter the admin bearer token. It is retained only in this browser tab.</p>
       <label>Admin token<input id="token" type="password" autocomplete="current-password" required></label>
-      <button type="submit">Open dashboard</button>
+      <button type="submit">Open operations console</button>
       <p id="login-error" class="error-text" aria-live="polite"></p>
     </form>
   </div>
 
   <div class="shell">
     <aside class="sidebar">
-      <div class="brand"><div class="brand-mark small">EP</div><div><strong>SecurityEdge</strong><span>WAF & observability</span></div></div>
+      <div class="brand"><div class="brand-mark small">SE</div><div><strong>SecurityEdge</strong><span>WAF · DDoS mitigation · Observability</span></div></div>
       <nav id="nav">
         <button class="nav-item active" data-view="overview">Overview</button>
         <button class="nav-item" data-view="security">Security events</button>
+        <button class="nav-item" data-view="protection">Traffic protection</button>
         <button class="nav-item" data-view="traffic">Traffic & cache</button>
         <button class="nav-item" data-view="routes">Routes & origins</button>
         <button class="nav-item" data-view="policies">Policies</button>
@@ -34,42 +36,58 @@
 
     <main>
       <header class="topbar">
-        <div><p class="eyebrow">Bachelor's Project · Phase 3 & 4</p><h1 id="page-title">Overview</h1></div>
+        <div><p class="eyebrow">Bachelor's Project · Security & Operations</p><h1 id="page-title">Overview</h1></div>
         <div class="top-actions"><span id="last-updated">Never updated</span><button id="refresh">Refresh</button></div>
       </header>
 
       <section id="view-overview" class="view active">
         <div class="kpi-grid">
-          <article class="kpi"><span>Requests</span><strong id="kpi-requests">—</strong><small id="kpi-rps">— req/s</small></article>
-          <article class="kpi"><span>Blocked</span><strong id="kpi-blocked">—</strong><small id="kpi-block-rate">— block rate</small></article>
+          <article class="kpi"><span>EdgeProxy requests</span><strong id="kpi-requests">—</strong><small id="kpi-rps">— req/s</small></article>
+          <article class="kpi"><span>Security rejections</span><strong id="kpi-blocked">—</strong><small id="kpi-block-rate">— block rate</small></article>
           <article class="kpi"><span>WAF detections</span><strong id="kpi-detections">—</strong><small id="kpi-detection-rate">— detection rate</small></article>
           <article class="kpi"><span>Cache hit ratio</span><strong id="kpi-cache">—</strong><small id="kpi-cache-counts">—</small></article>
-          <article class="kpi"><span>P95 latency</span><strong id="kpi-p95">—</strong><small id="kpi-upstream">— upstream</small></article>
+          <article class="kpi"><span>Security P95</span><strong id="kpi-p95">—</strong><small id="kpi-upstream">— upstream</small></article>
           <article class="kpi"><span>Origins healthy</span><strong id="kpi-origins">—</strong><small id="kpi-routes">— routes</small></article>
         </div>
         <div class="grid two">
-          <article class="panel"><div class="panel-head"><div><h2>Request trend</h2><p>Cumulative request and block counts sampled by the dashboard.</p></div></div><canvas id="trend-chart" height="240"></canvas></article>
-          <article class="panel"><div class="panel-head"><div><h2>Top security rules</h2><p>Rules that matched most often.</p></div></div><div id="rule-bars" class="bar-list empty">No detections yet.</div></article>
+          <article class="panel"><div class="panel-head"><div><h2>Request trend</h2><p>Cumulative EdgeProxy requests and SecurityEdge rejections.</p></div></div><canvas id="trend-chart" height="240"></canvas></article>
+          <article class="panel"><div class="panel-head"><div><h2>Top security rules</h2><p>Most frequently matched built-in and custom rules.</p></div></div><div id="rule-bars" class="bar-list empty">No detections yet.</div></article>
         </div>
-        <article class="panel"><div class="panel-head"><div><h2>Recent security decisions</h2><p>Payloads are never stored; only rule metadata and fingerprints are retained.</p></div><button data-go="security">Open event explorer</button></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Action</th><th>Route</th><th>Client</th><th>Request</th><th>Rules</th><th>Score</th></tr></thead><tbody id="recent-security"></tbody></table></div></article>
+        <article class="panel"><div class="panel-head"><div><h2>Recent security decisions</h2><p>Payloads are not retained. Only bounded metadata and SHA-256 fingerprints are stored.</p></div><button data-go="security">Open event explorer</button></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Action</th><th>Reason</th><th>Route</th><th>Client</th><th>Request</th><th>Rules</th><th>Score</th></tr></thead><tbody id="recent-security"></tbody></table></div></article>
       </section>
 
       <section id="view-security" class="view">
         <article class="panel">
-          <div class="panel-head"><div><h2>Security event explorer</h2><p>Filter WAF detections, blocks, inspection errors, and rate-limit decisions.</p></div><button id="clear-security" class="danger ghost">Clear retained events</button></div>
-          <form id="security-filters" class="filters"><input name="q" placeholder="Search"><select name="action"><option value="">All actions</option><option>BLOCK</option><option>LOG</option><option>RATE_LIMIT</option></select><input name="route" placeholder="Route"><input name="rule_id" placeholder="Rule ID"><button type="submit">Apply</button></form>
-          <div class="table-wrap"><table><thead><tr><th>Sequence</th><th>Timestamp</th><th>Action</th><th>Route</th><th>Client IP</th><th>Method</th><th>Path</th><th>Rules</th><th>Score</th></tr></thead><tbody id="security-table"></tbody></table></div>
+          <div class="panel-head"><div><h2>Security event explorer</h2><p>Search WAF, rate-limit, overload, temporary-ban, and administrative audit events.</p></div><div class="top-actions"><button id="export-ndjson" class="ghost">Export NDJSON</button><button id="export-csv" class="ghost">Export CSV</button><button id="clear-security" class="danger ghost">Clear memory</button></div></div>
+          <form id="security-filters" class="filters"><input name="q" placeholder="Search"><select name="action"><option value="">All actions</option><option>BLOCK</option><option>LOG</option><option>RATE_LIMIT</option><option>OVERLOAD</option><option>BANNED</option><option>ADMIN</option></select><input name="reason" placeholder="Reason"><input name="client_ip" placeholder="Client IP"><input name="route" placeholder="Route"><input name="rule_id" placeholder="Rule ID"><button type="submit">Apply</button></form>
+          <div class="table-wrap"><table><thead><tr><th>Sequence</th><th>Timestamp</th><th>Action</th><th>Reason</th><th>Route</th><th>Client IP</th><th>Request</th><th>Rules</th><th>Score</th></tr></thead><tbody id="security-table"></tbody></table></div>
           <div class="pager"><button id="older-security" disabled>Load older</button><span id="security-count"></span></div>
         </article>
       </section>
 
+      <section id="view-protection" class="view">
+        <div class="kpi-grid">
+          <article class="kpi"><span>Client rate limits</span><strong id="protect-client-rate">—</strong><small>Per route + IP</small></article>
+          <article class="kpi"><span>Global rate limits</span><strong id="protect-global-rate">—</strong><small>Distributed flood control</small></article>
+          <article class="kpi"><span>Overload rejections</span><strong id="protect-overload">—</strong><small>Concurrency admission</small></article>
+          <article class="kpi"><span>Active bans</span><strong id="protect-bans">—</strong><small>Adaptive temporary bans</small></article>
+          <article class="kpi"><span>Rate buckets</span><strong id="protect-buckets">—</strong><small>Bounded state</small></article>
+          <article class="kpi"><span>In-flight requests</span><strong id="protect-inflight">—</strong><small id="protect-tracked">— tracked clients</small></article>
+        </div>
+        <div class="grid two">
+          <article class="panel"><div class="panel-head"><div><h2>Security latency</h2><p>Bounded histogram percentiles for the full security decision path.</p></div></div><div id="security-latency" class="metric-list"></div></article>
+          <article class="panel"><div class="panel-head"><div><h2>Rejection reasons</h2><p>Breakdown of rate, capacity, protocol, and WAF decisions.</p></div></div><div id="reason-bars" class="bar-list empty">No rejections yet.</div></article>
+        </div>
+        <article class="panel"><div class="panel-head"><div><h2>Temporary bans</h2><p>Clients automatically banned after repeated policy violations.</p></div><button id="clear-bans" class="danger ghost">Clear all bans</button></div><div class="table-wrap"><table><thead><tr><th>Client</th><th>Banned until</th><th>Pending violations</th><th></th></tr></thead><tbody id="ban-table"></tbody></table></div></article>
+      </section>
+
       <section id="view-traffic" class="view">
         <div class="grid two">
-          <article class="panel"><div class="panel-head"><div><h2>Cache</h2><p>Current cache counters from the first member's API.</p></div></div><div id="cache-stats" class="metric-list"></div></article>
-          <article class="panel"><div class="panel-head"><div><h2>Latency</h2><p>Bounded histogram estimates from EdgeProxy.</p></div></div><div id="latency-stats" class="metric-list"></div></article>
+          <article class="panel"><div class="panel-head"><div><h2>Cache</h2><p>Cache counters from the first member's Admin API.</p></div></div><div id="cache-stats" class="metric-list"></div></article>
+          <article class="panel"><div class="panel-head"><div><h2>EdgeProxy latency</h2><p>Bounded histogram estimates from EdgeProxy.</p></div></div><div id="latency-stats" class="metric-list"></div></article>
         </div>
-        <article class="panel"><div class="panel-head"><div><h2>Cache purge</h2><p>Calls the original <code>POST /api/v1/cache/purge</code> endpoint through the backend.</p></div></div><form id="purge-form" class="filters"><select id="purge-route" required></select><input id="purge-host" placeholder="Optional host"><input id="purge-path" placeholder="Optional path prefix"><button type="submit" class="danger">Purge cache</button></form><p id="purge-result" class="result-text"></p></article>
-        <article class="panel"><div class="panel-head"><div><h2>EdgeProxy access logs</h2><p>Recent request-completed events from the first member's log store.</p></div></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Status</th><th>Cache</th><th>Route</th><th>Request</th><th>Duration</th><th>Upstream</th></tr></thead><tbody id="edge-log-table"></tbody></table></div></article>
+        <article class="panel"><div class="panel-head"><div><h2>Cache purge</h2><p>Calls the original <code>POST /api/v1/cache/purge</code> endpoint through the protected backend.</p></div></div><form id="purge-form" class="filters"><select id="purge-route" required></select><input id="purge-host" placeholder="Optional host"><input id="purge-path" placeholder="Optional path prefix"><button type="submit" class="danger">Purge cache</button></form><p id="purge-result" class="result-text"></p></article>
+        <article class="panel"><div class="panel-head"><div><h2>EdgeProxy access logs</h2><p>Recent request-completed events from the first member's bounded log store.</p></div></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Status</th><th>Cache</th><th>Route</th><th>Request</th><th>Duration</th><th>Upstream</th></tr></thead><tbody id="edge-log-table"></tbody></table></div></article>
       </section>
 
       <section id="view-routes" class="view"><div id="route-cards" class="route-grid"></div></section>
@@ -77,25 +95,32 @@
       <section id="view-policies" class="view">
         <div class="grid policy-grid">
           <article class="panel policy-list"><div class="panel-head"><div><h2>Policy scope</h2><p>Select the default policy or a route override.</p></div></div><div id="policy-scopes"></div></article>
-          <article class="panel"><div class="panel-head"><div><h2 id="policy-title">Default policy</h2><p>Changes are validated and atomically persisted to the security configuration.</p></div><button id="delete-override" class="danger ghost hidden">Delete override</button></div>
+          <article class="panel"><div class="panel-head"><div><h2 id="policy-title">Default policy</h2><p>Changes are strictly validated, atomically persisted, audited, and hot-reloaded.</p></div><button id="delete-override" class="danger ghost hidden">Delete override</button></div>
             <form id="policy-form" class="policy-form">
-              <label class="switch-row"><span><strong>Protection enabled</strong><small>Disable all security controls for this scope.</small></span><input name="enabled" type="checkbox"></label>
+              <label class="switch-row"><span><strong>Protection enabled</strong><small>Disables policy controls for this scope; server admission limits still apply.</small></span><input name="enabled" type="checkbox"></label>
               <label>Enforcement mode<select name="mode"><option value="block">Block above threshold</option><option value="log">Log only</option><option value="off">Off</option></select></label>
-              <div class="form-grid"><label>Anomaly threshold<input name="anomaly_threshold" type="number" min="1" max="100"></label><label>Maximum body bytes<input name="max_inspection_body_bytes" type="number" min="0" max="16777216"></label></div>
-              <label class="switch-row"><span><strong>Inspect request bodies</strong><small>Only configured content types and a bounded prefix are inspected.</small></span><input name="inspect_request_body" type="checkbox"></label>
+              <div class="form-grid"><label>Anomaly threshold<input name="anomaly_threshold" type="number" min="1" max="1000"></label><label>Inspection body bytes<input name="max_inspection_body_bytes" type="number" min="0" max="16777216"></label></div>
+              <label class="switch-row"><span><strong>Inspect request bodies</strong><small>Inspects only configured content types and a bounded prefix.</small></span><input name="inspect_request_body" type="checkbox"></label>
+              <label class="switch-row"><span><strong>Reject encoded bodies</strong><small>Rejects compressed bodies that cannot be safely inspected.</small></span><input name="reject_encoded_request_bodies" type="checkbox"></label>
+              <label class="switch-row"><span><strong>Reject unsupported body types</strong><small>Fail closed when a request body uses a content type outside the inspection allowlist.</small></span><input name="reject_unsupported_body_types" type="checkbox"></label>
+              <label class="switch-row"><span><strong>Block truncated inspections</strong><small>Rejects bodies larger than the inspection limit instead of forwarding an uninspected suffix.</small></span><input name="block_on_inspection_limit" type="checkbox"></label>
+              <div class="subsection"><h3>Protocol limits</h3><div class="form-grid"><label>Maximum path bytes<input name="max_path_bytes" type="number" min="1"></label><label>Maximum query bytes<input name="max_query_bytes" type="number" min="1"></label><label>Maximum header count<input name="max_header_count" type="number" min="1"></label><label>Maximum header value bytes<input name="max_header_value_bytes" type="number" min="1"></label></div></div>
               <label>Allowed methods<input name="allowed_methods" placeholder="GET, HEAD, POST"></label>
               <label>Excluded path prefixes<input name="excluded_path_prefixes" placeholder="/healthz, /static"></label>
               <label>Disabled rule IDs<input name="disabled_rules" placeholder="SCAN-001"></label>
-              <div class="subsection"><h3>Rate limiting</h3><label class="switch-row"><span><strong>Enabled</strong><small>Per route and client IP token bucket.</small></span><input name="rate_enabled" type="checkbox"></label><div class="form-grid"><label>Requests / second<input name="requests_per_second" type="number" step="0.1" min="0.1"></label><label>Burst<input name="burst" type="number" min="1"></label></div></div>
-              <button type="submit">Save policy</button><p id="policy-result" class="result-text"></p>
+              <label>IP allowlist<input name="ip_allowlist" placeholder="10.36.74.241, 192.168.1.0/24"></label>
+              <label>IP denylist<input name="ip_denylist" placeholder="203.0.113.5, 198.51.100.0/24"></label>
+              <div class="subsection"><h3>Hierarchical rate limiting</h3><label class="switch-row"><span><strong>Enabled</strong><small>Client bucket plus route-wide global bucket.</small></span><input name="rate_enabled" type="checkbox"></label><div class="form-grid"><label>Per-client requests / second<input name="requests_per_second" type="number" step="0.1" min="0.1"></label><label>Per-client burst<input name="burst" type="number" min="1"></label><label>Global requests / second<input name="global_requests_per_second" type="number" step="0.1" min="0.1"></label><label>Global burst<input name="global_burst" type="number" min="1"></label><label>Maximum buckets<input name="max_buckets" type="number" min="2"></label></div></div>
+              <div class="subsection"><h3>Adaptive temporary ban</h3><label class="switch-row"><span><strong>Enabled</strong><small>Temporarily bans clients after repeated blocks, rate limits, or overload decisions.</small></span><input name="auto_ban_enabled" type="checkbox"></label><div class="form-grid"><label>Violation threshold<input name="violation_threshold" type="number" min="1"></label><label>Violation window<input name="ban_window" placeholder="1m"></label><label>Ban duration<input name="ban_duration" placeholder="10m"></label><label>Maximum tracked clients<input name="max_tracked_clients" type="number" min="1"></label></div></div>
+              <button type="submit">Validate and save policy</button><p id="policy-result" class="result-text"></p>
             </form>
           </article>
         </div>
       </section>
 
       <section id="view-system" class="view">
-        <div class="grid two"><article class="panel"><div class="panel-head"><div><h2>SecurityEdge</h2></div></div><div id="security-system" class="metric-list"></div></article><article class="panel"><div class="panel-head"><div><h2>EdgeProxy dependency</h2></div></div><div id="edge-system" class="metric-list"></div></article></div>
-        <article class="panel"><div class="panel-head"><div><h2>Built-in rules</h2><p>Rules are deterministic, bounded, and use metadata-only logging.</p></div><button id="reload-config">Reload configuration</button></div><div class="table-wrap"><table><thead><tr><th>ID</th><th>Name</th><th>Category</th><th>Score</th><th>Description</th></tr></thead><tbody id="rules-table"></tbody></table></div></article>
+        <div class="grid two"><article class="panel"><div class="panel-head"><div><h2>SecurityEdge runtime</h2></div><button id="export-prometheus" class="ghost">Export Prometheus</button></div><div id="security-system" class="metric-list"></div></article><article class="panel"><div class="panel-head"><div><h2>EdgeProxy dependency</h2></div></div><div id="edge-system" class="metric-list"></div></article></div>
+        <article class="panel"><div class="panel-head"><div><h2>WAF rule catalog</h2><p>Deterministic RE2 rules, bounded matching, custom rule support, and metadata-only logging.</p></div><button id="reload-config">Reload configuration</button></div><div class="table-wrap"><table><thead><tr><th>ID</th><th>Name</th><th>Category</th><th>Source</th><th>Score</th><th>Description</th></tr></thead><tbody id="rules-table"></tbody></table></div></article>
       </section>
     </main>
   </div>

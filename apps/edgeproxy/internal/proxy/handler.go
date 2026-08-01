@@ -351,7 +351,8 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 	w.Header().Set("X-Cache", cacheStatus)
 	w.Header().Set("X-Upstream-Response-Time", formatDuration(result.upstreamDuration))
 
-	cacheable, expiresAt, staleUntil := responseCachePolicy(req, resp, rt.cfg.Cache, time.Now())
+	policyNow := time.Now()
+	cacheable, expiresAt, staleUntil, initialAge := responseCachePolicy(req, resp, rt.cfg.Cache, policyNow)
 	if !cacheable || req.Method == http.MethodHead || rt.cache == nil {
 		if !cacheable {
 			result.cacheStatus = "BYPASS"
@@ -370,7 +371,7 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 			StatusCode: resp.StatusCode,
 			Header:     resp.Header.Clone(),
 			Body:       append([]byte(nil), capture.Bytes()...),
-			StoredAt:   time.Now(),
+			StoredAt:   policyNow.Add(-initialAge),
 			ExpiresAt:  expiresAt,
 			StaleUntil: staleUntil,
 		}

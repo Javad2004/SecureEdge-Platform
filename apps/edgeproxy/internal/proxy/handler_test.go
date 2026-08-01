@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -565,5 +566,83 @@ func TestIfNoneMatchTakesPrecedenceOverIfModifiedSince(t *testing.T) {
 	req.Header.Set("If-Modified-Since", time.Now().UTC().Format(http.TimeFormat))
 	if conditionalNotModified(req, header) {
 		t.Fatal("If-Modified-Since must be ignored when If-None-Match is present and does not match")
+	}
+}
+
+func TestResponseCachePolicyAccountsForAgeAndDate(t *testing.T) {
+	now := time.Date(2026, time.August, 2, 12, 0, 0, 0, time.UTC)
+	cfg := testConfig("http://127.0.0.1").Routes[0].Cache
+
+	resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}
+	resp.Header.Set("Cache-Control", "public, max-age=60")
+	resp.Header.Set("Age", "40")
+	resp.Header.Set("Date", now.Add(-30*time.Second).Format(http.TimeFormat))
+
+	cacheable, expiresAt, staleUntil, initialAge := responseCachePolicy(
+		httptest.NewRequest(http.MethodGet, "http://proxy.test/aged", nil),
+		resp,
+		cfg,
+		now,
+	)
+	if !cacheable {
+		t.Fatal("response with remaining freshness should be cacheable")
+	}
+	if initialAge != 40*time.Second {
+		t.Fatalf("initial age=%s, want 40s", initialAge)
+	}
+	if got := expiresAt.Sub(now); got != 20*time.Second {
+		t.Fatalf("remaining freshness=%s, want 20s", got)
+	}
+	if got := staleUntil.Sub(expiresAt); got != cfg.StaleIfError.Duration {
+		t.Fatalf("stale window=%s, want %s", got, cfg.StaleIfError.Duration)
+	}
+
+	resp.Header.Del("Age")
+	resp.Header.Set("Date", now.Add(-50*time.Second).Format(http.TimeFormat))
+	cacheable, expiresAt, _, initialAge = responseCachePolicy(
+		httptest.NewRequest(http.MethodGet, "http://proxy.test/dated", nil),
+		resp,
+		cfg,
+		now,
+	)
+	if !cacheable || initialAge != 50*time.Second || expiresAt.Sub(now) != 10*time.Second {
+		t.Fatalf("date-derived age not applied: cacheable=%v age=%s remaining=%s", cacheable, initialAge, expiresAt.Sub(now))
+	}
+}
+
+func TestCachedResponsePreservesUpstreamAge(t *testing.T) {
+	var calls atomic.Int64
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Age", "30")
+		w.Header().Set("Date", time.Now().Add(-20*time.Second).UTC().Format(http.TimeFormat))
+		_, _ = io.WriteString(w, "aged-body")
+	}))
+	defer origin.Close()
+
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	first := httptest.NewRecorder()
+	h.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "http://proxy.test/aged", nil))
+	if first.Code != http.StatusOK || first.Header().Get("X-Cache") != "MISS" {
+		t.Fatalf("first response code=%d cache=%q", first.Code, first.Header().Get("X-Cache"))
+	}
+
+	second := httptest.NewRecorder()
+	h.ServeHTTP(second, httptest.NewRequest(http.MethodGet, "http://proxy.test/aged", nil))
+	if second.Code != http.StatusOK || second.Header().Get("X-Cache") != "HIT" {
+		t.Fatalf("second response code=%d cache=%q", second.Code, second.Header().Get("X-Cache"))
+	}
+	age, err := strconv.Atoi(second.Header().Get("Age"))
+	if err != nil || age < 30 {
+		t.Fatalf("cached Age=%q, want at least 30", second.Header().Get("Age"))
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("origin calls=%d, want 1", calls.Load())
 	}
 }

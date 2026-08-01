@@ -48,7 +48,7 @@ func requestCacheMode(req *http.Request, cfg config.CacheConfig) (lookup, store 
 	return lookup, true, ""
 }
 
-func responseCachePolicy(req *http.Request, resp *http.Response, cfg config.CacheConfig, now time.Time) (cacheable bool, expiresAt, staleUntil time.Time) {
+func responseCachePolicy(req *http.Request, resp *http.Response, cfg config.CacheConfig, now time.Time) (cacheable bool, expiresAt, staleUntil time.Time, initialAge time.Duration) {
 	statusAllowed := false
 	for _, status := range cfg.CacheableStatusCodes {
 		if resp.StatusCode == status {
@@ -57,20 +57,20 @@ func responseCachePolicy(req *http.Request, resp *http.Response, cfg config.Cach
 		}
 	}
 	if !statusAllowed {
-		return false, time.Time{}, time.Time{}
+		return false, time.Time{}, time.Time{}, 0
 	}
 	if resp.Header.Get("Set-Cookie") != "" && !cfg.CacheSetCookieResponses {
-		return false, time.Time{}, time.Time{}
+		return false, time.Time{}, time.Time{}, 0
 	}
 	if !varyIsSupported(resp.Header.Values("Vary"), cfg.VaryRequestHeaders) {
-		return false, time.Time{}, time.Time{}
+		return false, time.Time{}, time.Time{}, 0
 	}
 
 	ttl := cfg.DefaultTTL.Duration
 	if cfg.RespectOriginHeaders {
 		cc := parseCacheControl(resp.Header.Values("Cache-Control"))
 		if hasCacheDirective(cc, "no-store") || hasCacheDirective(cc, "private") || hasCacheDirective(cc, "no-cache") || headerHasToken(resp.Header.Values("Pragma"), "no-cache") {
-			return false, time.Time{}, time.Time{}
+			return false, time.Time{}, time.Time{}, 0
 		}
 		if value := firstNonEmpty(cc["s-maxage"], cc["max-age"]); value != "" {
 			seconds, err := strconv.Atoi(value)
@@ -83,12 +83,39 @@ func responseCachePolicy(req *http.Request, resp *http.Response, cfg config.Cach
 			}
 		}
 	}
+	if cfg.RespectOriginHeaders {
+		initialAge = responseInitialAge(resp.Header, now)
+		ttl -= initialAge
+	}
 	if ttl <= 0 {
-		return false, time.Time{}, time.Time{}
+		return false, time.Time{}, time.Time{}, 0
 	}
 	expiresAt = now.Add(ttl)
 	staleUntil = expiresAt.Add(cfg.StaleIfError.Duration)
-	return true, expiresAt, staleUntil
+	return true, expiresAt, staleUntil, initialAge
+}
+
+// responseInitialAge applies the shared-cache Age/Date correction needed when
+// a response has already spent time in another cache before reaching EdgeProxy.
+// Invalid or negative values are ignored rather than extending freshness.
+func responseInitialAge(header http.Header, now time.Time) time.Duration {
+	var age time.Duration
+	if raw := strings.TrimSpace(header.Get("Age")); raw != "" {
+		if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil && seconds >= 0 {
+			const maxAgeSeconds = int64(100 * 365 * 24 * 60 * 60)
+			if seconds > maxAgeSeconds {
+				seconds = maxAgeSeconds
+			}
+			age = time.Duration(seconds) * time.Second
+		}
+	}
+	if date, err := http.ParseTime(header.Get("Date")); err == nil && now.After(date) {
+		apparent := now.Sub(date)
+		if apparent > age {
+			age = apparent
+		}
+	}
+	return age
 }
 
 func parseCacheControl(values []string) map[string]string {

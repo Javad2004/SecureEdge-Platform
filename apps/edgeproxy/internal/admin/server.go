@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -55,7 +56,7 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 		if s.cfg.AuthToken != "" {
 			parts := strings.Fields(r.Header.Get("Authorization"))
 			if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") ||
-				subtle.ConstantTimeCompare([]byte(parts[1]), []byte(s.cfg.AuthToken)) != 1 {
+				!secureTokenEqual(parts[1], s.cfg.AuthToken) {
 				w.Header().Set("WWW-Authenticate", `Bearer realm="edgeproxy-admin"`)
 				writeAPIError(w, http.StatusUnauthorized, "unauthorized", "a valid Bearer token is required")
 				return
@@ -63,6 +64,12 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+func secureTokenEqual(got, want string) bool {
+	gotHash := sha256.Sum256([]byte(got))
+	wantHash := sha256.Sum256([]byte(want))
+	return subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {

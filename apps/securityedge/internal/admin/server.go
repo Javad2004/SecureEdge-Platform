@@ -3,6 +3,7 @@ package admin
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
 	"encoding/json"
@@ -50,6 +51,8 @@ type Runtime interface {
 	Audit(string, string, map[string]string)
 	EdgeJSON(context.Context, string, string, url.Values, any) (json.RawMessage, int, error)
 }
+
+const maxTrackedAuthClients = 4096
 
 type authFailure struct {
 	count                    int
@@ -121,7 +124,7 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		if s.cfg.AuthToken != "" {
 			parts := strings.Fields(r.Header.Get("Authorization"))
-			valid := len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && subtle.ConstantTimeCompare([]byte(parts[1]), []byte(s.cfg.AuthToken)) == 1
+			valid := len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && secureTokenEqual(parts[1], s.cfg.AuthToken)
 			if !valid {
 				s.recordAuthFailure(client, now)
 				w.Header().Set("WWW-Authenticate", `Bearer realm="securityedge-admin"`)
@@ -138,16 +141,26 @@ func (s *Server) authLocked(client string, now time.Time) (bool, time.Duration) 
 	s.authMu.Lock()
 	defer s.authMu.Unlock()
 	v := s.authFails[client]
-	if v == nil || !now.Before(v.lockedUntil) {
+	if v == nil {
 		return false, 0
 	}
-	return true, v.lockedUntil.Sub(now)
+	if now.Before(v.lockedUntil) {
+		return true, v.lockedUntil.Sub(now)
+	}
+	if now.Sub(v.windowStart) >= time.Minute {
+		delete(s.authFails, client)
+	}
+	return false, 0
 }
 func (s *Server) recordAuthFailure(client string, now time.Time) {
 	s.authMu.Lock()
 	defer s.authMu.Unlock()
+	s.pruneAuthFailuresLocked(now)
 	v := s.authFails[client]
 	if v == nil || now.Sub(v.windowStart) >= time.Minute {
+		if v == nil && len(s.authFails) >= maxTrackedAuthClients {
+			s.evictOldestAuthFailureLocked()
+		}
 		v = &authFailure{windowStart: now}
 		s.authFails[client] = v
 	}
@@ -156,6 +169,36 @@ func (s *Server) recordAuthFailure(client string, now time.Time) {
 		v.lockedUntil = now.Add(s.cfg.AuthLockoutDuration.Duration)
 	}
 }
+func (s *Server) pruneAuthFailuresLocked(now time.Time) {
+	for client, failure := range s.authFails {
+		if !now.Before(failure.lockedUntil) && now.Sub(failure.windowStart) >= time.Minute {
+			delete(s.authFails, client)
+		}
+	}
+}
+func (s *Server) evictOldestAuthFailureLocked() {
+	var oldestClient string
+	var oldest time.Time
+	for client, failure := range s.authFails {
+		reference := failure.windowStart
+		if failure.lockedUntil.After(reference) {
+			reference = failure.lockedUntil
+		}
+		if oldestClient == "" || reference.Before(oldest) {
+			oldestClient = client
+			oldest = reference
+		}
+	}
+	if oldestClient != "" {
+		delete(s.authFails, oldestClient)
+	}
+}
+func secureTokenEqual(got, want string) bool {
+	gotHash := sha256.Sum256([]byte(got))
+	wantHash := sha256.Sum256([]byte(want))
+	return subtle.ConstantTimeCompare(gotHash[:], wantHash[:]) == 1
+}
+
 func (s *Server) clearAuthFailures(client string) {
 	s.authMu.Lock()
 	delete(s.authFails, client)
@@ -353,13 +396,23 @@ func (s *Server) connectivityCheck(w http.ResponseWriter, r *http.Request) {
 func (s *Server) exportLogs(w http.ResponseWriter, r *http.Request) {
 	f, err := s.parseLogFilter(r)
 	if err != nil {
-		writeError(w, 400, "invalid_query", err.Error())
+		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
 		return
 	}
 	f.Limit = s.cfg.LogStore.Capacity
 	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
 	if format == "" {
 		format = "ndjson"
+	}
+	if format != "csv" && format != "ndjson" && format != "jsonl" {
+		writeError(w, http.StatusBadRequest, "invalid_format", "format must be csv, ndjson, or jsonl")
+		return
+	}
+
+	var payload bytes.Buffer
+	if err := s.logs.Export(&payload, f, format); err != nil {
+		writeError(w, http.StatusInternalServerError, "export_failed", "security event export failed")
+		return
 	}
 	if format == "csv" {
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
@@ -369,9 +422,8 @@ func (s *Server) exportLogs(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", `attachment; filename="security-events.ndjson"`)
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	if err := s.logs.Export(w, f, format); err != nil {
-		writeError(w, 400, "export_failed", err.Error())
-	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(payload.Bytes())
 }
 func (s *Server) bans(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{"generated_at": now(), "bans": s.runtime.ActiveBans()})

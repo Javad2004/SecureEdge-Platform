@@ -92,3 +92,12 @@ func TestAuthAcceptsCaseInsensitiveBearerAndReturnsChallenge(t *testing.T) {
 		t.Fatalf("expected lowercase bearer scheme to work, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestSecureTokenEqualHandlesDifferentLengths(t *testing.T) {
+	if !secureTokenEqual("test-token", "test-token") {
+		t.Fatal("equal tokens did not match")
+	}
+	if secureTokenEqual("short", "a-much-longer-token") {
+		t.Fatal("different tokens matched")
+	}
+}

@@ -3,9 +3,11 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"testing"
 	"time"
 
@@ -178,5 +180,62 @@ func TestRecentTrafficEndpointReturnsPassiveObservedTraffic(t *testing.T) {
 	}
 	if body.Status != "traffic_observed" || body.LastRequest == nil || body.LastRequest.ClientIP != "10.0.0.8" {
 		t.Fatalf("body=%#v", body)
+	}
+}
+
+func TestLogExportRejectsUnsupportedFormatBeforeWritingHeaders(t *testing.T) {
+	ts := newAdminTestServer(t, 10)
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/logs/export?format=xml", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Fatalf("content type=%q, want JSON error", got)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var apiError struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &apiError); err != nil {
+		t.Fatalf("decode error response: %v body=%q", err, body)
+	}
+	if apiError.Error.Code != "invalid_format" {
+		t.Fatalf("error code=%q, want invalid_format", apiError.Error.Code)
+	}
+}
+
+func TestAuthFailureTrackingIsBounded(t *testing.T) {
+	cfg := config.Default().Admin
+	cfg.AuthFailuresPerMinute = 10
+	cfg.AuthLockoutDuration = config.Duration{Duration: time.Minute}
+	s := &Server{cfg: cfg, authFails: make(map[string]*authFailure)}
+	now := time.Now()
+	for i := 0; i < maxTrackedAuthClients+128; i++ {
+		s.recordAuthFailure("198.51.100."+strconv.Itoa(i), now.Add(time.Duration(i)*time.Microsecond))
+	}
+	if got := len(s.authFails); got > maxTrackedAuthClients {
+		t.Fatalf("tracked auth clients=%d, max=%d", got, maxTrackedAuthClients)
+	}
+}
+
+func TestSecureTokenEqualHandlesDifferentLengths(t *testing.T) {
+	if !secureTokenEqual("secret-token", "secret-token") {
+		t.Fatal("equal tokens did not match")
+	}
+	if secureTokenEqual("short", "a-much-longer-token") {
+		t.Fatal("different tokens matched")
 	}
 }

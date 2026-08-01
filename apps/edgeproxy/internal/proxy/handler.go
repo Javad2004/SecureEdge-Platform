@@ -367,9 +367,13 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 	capture := &cappedBuffer{max: rt.cfg.Cache.MaxObjectBytes}
 	_, copyErr := io.Copy(io.MultiWriter(w, capture), resp.Body)
 	if copyErr == nil && !capture.overflow {
+		cacheHeader := resp.Header.Clone()
+		// A response may be explicitly eligible for body caching even when it
+		// sets a cookie. Never replay that per-client cookie from shared cache.
+		cacheHeader.Del("Set-Cookie")
 		entry := cache.Entry{
 			StatusCode: resp.StatusCode,
-			Header:     resp.Header.Clone(),
+			Header:     cacheHeader,
 			Body:       append([]byte(nil), capture.Bytes()...),
 			StoredAt:   policyNow.Add(-initialAge),
 			ExpiresAt:  expiresAt,

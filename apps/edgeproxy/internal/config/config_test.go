@@ -2,7 +2,9 @@ package config
 
 import (
 	"encoding/json"
+	"net/http"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -235,5 +237,44 @@ func TestValidateRejectsNonCanonicalRoutePaths(t *testing.T) {
 		if err := cfg.Validate(); err == nil {
 			t.Fatalf("expected path_prefix %q to be rejected", value)
 		}
+	}
+}
+
+func TestValidateNormalizesCacheVaryHeadersAndAddsSensitivePartitions(t *testing.T) {
+	cfg := Default()
+	route := validRouteForValidation()
+	route.Cache.Enabled = true
+	route.Cache.DefaultTTL = Duration{Duration: time.Minute}
+	route.Cache.MaxEntries = 10
+	route.Cache.MaxBytes = 1 << 20
+	route.Cache.MaxObjectBytes = 1 << 16
+	route.Cache.CacheableStatusCodes = []int{http.StatusOK}
+	route.Cache.VaryRequestHeaders = []string{" accept-language ", "Accept-Language"}
+	route.Cache.CacheAuthorizedRequests = true
+	route.Cache.CacheCookieRequests = true
+	cfg.Routes = []RouteConfig{route}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.Routes[0].Cache.VaryRequestHeaders
+	want := []string{"Accept-Language", "Authorization", "Cookie"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("vary headers=%#v, want %#v", got, want)
+	}
+}
+
+func TestValidateRejectsInvalidCacheVaryHeader(t *testing.T) {
+	cfg := Default()
+	route := validRouteForValidation()
+	route.Cache.Enabled = true
+	route.Cache.DefaultTTL = Duration{Duration: time.Minute}
+	route.Cache.MaxEntries = 10
+	route.Cache.MaxBytes = 1 << 20
+	route.Cache.MaxObjectBytes = 1 << 16
+	route.Cache.CacheableStatusCodes = []int{http.StatusOK}
+	route.Cache.VaryRequestHeaders = []string{"X Invalid Header"}
+	cfg.Routes = []RouteConfig{route}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "vary_request_headers") {
+		t.Fatalf("expected invalid vary-header error, got %v", err)
 	}
 }

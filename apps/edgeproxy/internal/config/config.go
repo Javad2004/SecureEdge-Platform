@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path"
@@ -323,6 +324,31 @@ func (c *Config) Validate() error {
 		}
 
 		if r.Cache.Enabled {
+			varied := make([]string, 0, len(r.Cache.VaryRequestHeaders)+2)
+			seenVary := map[string]struct{}{}
+			addVary := func(raw string) {
+				name := http.CanonicalHeaderKey(strings.TrimSpace(raw))
+				if !validHTTPToken(name) {
+					errs = append(errs, fmt.Errorf("route %q cache.vary_request_headers contains invalid header %q", r.Name, raw))
+					return
+				}
+				key := strings.ToLower(name)
+				if _, exists := seenVary[key]; exists {
+					return
+				}
+				seenVary[key] = struct{}{}
+				varied = append(varied, name)
+			}
+			for _, name := range r.Cache.VaryRequestHeaders {
+				addVary(name)
+			}
+			if r.Cache.CacheAuthorizedRequests {
+				addVary("Authorization")
+			}
+			if r.Cache.CacheCookieRequests {
+				addVary("Cookie")
+			}
+			r.Cache.VaryRequestHeaders = varied
 			if r.Cache.DefaultTTL.Duration <= 0 {
 				errs = append(errs, fmt.Errorf("route %q cache.default_ttl must be positive", r.Name))
 			}

@@ -19,14 +19,26 @@ type Client struct {
 }
 
 func New(rawURL, token string, timeout time.Duration) (*Client, error) {
-	u, err := url.Parse(strings.TrimRight(rawURL, "/"))
-	if err != nil || u.Scheme == "" || u.Host == "" {
+	u, err := url.Parse(strings.TrimRight(strings.TrimSpace(rawURL), "/"))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return nil, fmt.Errorf("invalid edgeproxy admin URL")
 	}
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
-	return &Client{base: u, token: token, http: &http.Client{Timeout: timeout}}, nil
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// The Admin API is an internal control-plane dependency. Never send its
+	// bearer token through an ambient HTTP(S)_PROXY, and do not follow redirects
+	// that could move credentials to an unexpected endpoint.
+	transport.Proxy = nil
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	return &Client{base: u, token: token, http: client}, nil
 }
 func (c *Client) JSON(ctx context.Context, method, path string, query url.Values, body any) (json.RawMessage, int, error) {
 	u := *c.base
@@ -55,9 +67,13 @@ func (c *Client) JSON(ctx context.Context, method, path string, query url.Values
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	const maxResponseBytes = 16 << 20
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return nil, resp.StatusCode, err
+	}
+	if len(data) > maxResponseBytes {
+		return nil, resp.StatusCode, fmt.Errorf("edgeproxy response exceeds %d bytes", maxResponseBytes)
 	}
 	if !json.Valid(data) {
 		return nil, resp.StatusCode, fmt.Errorf("edgeproxy returned non-JSON response")

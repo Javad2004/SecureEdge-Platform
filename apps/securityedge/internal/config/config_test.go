@@ -202,3 +202,11 @@ func TestApplyEnvironmentOverridesDoesNotRequireFileMutation(t *testing.T) {
 		t.Fatalf("environment overrides were not applied: admin=%q edge=%q", cfg.Admin.AuthToken, cfg.EdgeProxy.AdminToken)
 	}
 }
+
+func TestValidateRejectsAdminURLQuery(t *testing.T) {
+	cfg := Default()
+	cfg.EdgeProxy.AdminURL = "http://127.0.0.1:9090?token=unsafe"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "admin_url") {
+		t.Fatalf("expected admin URL query to be rejected, got %v", err)
+	}
+}

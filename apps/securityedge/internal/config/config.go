@@ -374,8 +374,8 @@ func (c *Config) Validate() error {
 	}
 	if c.EdgeProxy.AdminURL != "" {
 		u, err := url.Parse(c.EdgeProxy.AdminURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Fragment != "" {
-			errs = append(errs, errors.New("edgeproxy.admin_url must be an absolute http(s) URL without credentials or fragments"))
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			errs = append(errs, errors.New("edgeproxy.admin_url must be an absolute http(s) URL without credentials, queries, or fragments"))
 		}
 	}
 	if c.EdgeProxy.Timeout.Duration <= 0 || c.EdgeProxy.Timeout.Duration > 5*time.Minute {

@@ -96,7 +96,10 @@ func FuzzInspectorNeverPanics(f *testing.F) {
 		if !strings.HasPrefix(path, "/") {
 			path = "/" + path
 		}
-		req := httptest.NewRequest("POST", "http://project.test"+path+"?"+query, strings.NewReader(body))
+		req := httptest.NewRequest("POST", "http://project.test/", strings.NewReader(body))
+		req.URL.Path = path
+		req.URL.RawPath = ""
+		req.URL.RawQuery = query
 		req.Header.Set("Content-Type", "text/plain")
 		_, _ = inspector(t).Inspect(req, config.Default().DefaultPolicy)
 	})

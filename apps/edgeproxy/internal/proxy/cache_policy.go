@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"net"
 	"net/http"
@@ -18,8 +19,36 @@ func cacheKey(req *http.Request, cfg config.CacheConfig) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "method=%s|host=%s|uri=%s", method, cacheHost(req.Host), req.URL.RequestURI())
+	seen := make(map[string]struct{}, len(cfg.VaryRequestHeaders)+2)
+	appendHeader := func(name string) {
+		canonical := http.CanonicalHeaderKey(strings.TrimSpace(name))
+		key := strings.ToLower(canonical)
+		if canonical == "" {
+			return
+		}
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		values := req.Header.Values(canonical)
+		digest := sha256.New()
+		for _, value := range values {
+			_, _ = digest.Write([]byte(value))
+			_, _ = digest.Write([]byte{0})
+		}
+		fmt.Fprintf(&b, "|h:%s=%x", key, digest.Sum(nil))
+	}
 	for _, name := range cfg.VaryRequestHeaders {
-		fmt.Fprintf(&b, "|h:%s=%s", strings.ToLower(name), req.Header.Get(name))
+		appendHeader(name)
+	}
+	// Opting in to caching authenticated or cookie-bearing requests must also
+	// partition the cache by those credentials. Hashing keeps sensitive values
+	// out of cache keys while preserving deterministic separation.
+	if cfg.CacheAuthorizedRequests {
+		appendHeader("Authorization")
+	}
+	if cfg.CacheCookieRequests {
+		appendHeader("Cookie")
 	}
 	return b.String()
 }
@@ -62,7 +91,7 @@ func responseCachePolicy(req *http.Request, resp *http.Response, cfg config.Cach
 	if resp.Header.Get("Set-Cookie") != "" && !cfg.CacheSetCookieResponses {
 		return false, time.Time{}, time.Time{}, 0
 	}
-	if !varyIsSupported(resp.Header.Values("Vary"), cfg.VaryRequestHeaders) {
+	if !varyIsSupported(resp.Header.Values("Vary"), cfg) {
 		return false, time.Time{}, time.Time{}, 0
 	}
 
@@ -211,10 +240,16 @@ func cacheHost(hostport string) string {
 	return strings.TrimSuffix(hostport, ".")
 }
 
-func varyIsSupported(varyValues, configured []string) bool {
-	allowed := make(map[string]struct{}, len(configured))
-	for _, name := range configured {
+func varyIsSupported(varyValues []string, cfg config.CacheConfig) bool {
+	allowed := make(map[string]struct{}, len(cfg.VaryRequestHeaders)+2)
+	for _, name := range cfg.VaryRequestHeaders {
 		allowed[strings.ToLower(strings.TrimSpace(name))] = struct{}{}
+	}
+	if cfg.CacheAuthorizedRequests {
+		allowed["authorization"] = struct{}{}
+	}
+	if cfg.CacheCookieRequests {
+		allowed["cookie"] = struct{}{}
 	}
 	for _, value := range varyValues {
 		for _, raw := range strings.Split(value, ",") {

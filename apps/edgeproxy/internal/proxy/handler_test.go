@@ -695,3 +695,97 @@ func TestRequestIDAcceptsOnlySafeCorrelationTokens(t *testing.T) {
 		}
 	}
 }
+
+func TestCachePartitionsAuthorizedAndCookieRequests(t *testing.T) {
+	var calls atomic.Int64
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Vary", "Authorization, Cookie")
+		_, _ = fmt.Fprintf(w, "%s|%s", r.Header.Get("Authorization"), r.Header.Get("Cookie"))
+	}))
+	defer origin.Close()
+
+	cfg := testConfig(origin.URL)
+	cfg.Routes[0].Cache.CacheAuthorizedRequests = true
+	cfg.Routes[0].Cache.CacheCookieRequests = true
+	h, err := NewHandler(cfg, slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	do := func(auth, cookie string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "http://proxy.test/account", nil)
+		req.Header.Set("Authorization", auth)
+		req.Header.Set("Cookie", cookie)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	first := do("Bearer user-a-secret", "session=user-a")
+	if first.Header().Get("X-Cache") != "MISS" {
+		t.Fatalf("first cache status=%q, want MISS", first.Header().Get("X-Cache"))
+	}
+	repeat := do("Bearer user-a-secret", "session=user-a")
+	if repeat.Header().Get("X-Cache") != "HIT" || repeat.Body.String() != first.Body.String() {
+		t.Fatalf("repeat response cache=%q body=%q", repeat.Header().Get("X-Cache"), repeat.Body.String())
+	}
+	otherAuth := do("Bearer user-b-secret", "session=user-a")
+	if otherAuth.Header().Get("X-Cache") != "MISS" || strings.Contains(otherAuth.Body.String(), "user-a-secret") {
+		t.Fatalf("authorization identities shared a cache entry: cache=%q body=%q", otherAuth.Header().Get("X-Cache"), otherAuth.Body.String())
+	}
+	otherCookie := do("Bearer user-a-secret", "session=user-b")
+	if otherCookie.Header().Get("X-Cache") != "MISS" || strings.Contains(otherCookie.Body.String(), "session=user-a") {
+		t.Fatalf("cookie identities shared a cache entry: cache=%q body=%q", otherCookie.Header().Get("X-Cache"), otherCookie.Body.String())
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("origin calls=%d, want 3", calls.Load())
+	}
+
+	keyReq := httptest.NewRequest(http.MethodGet, "http://proxy.test/account", nil)
+	keyReq.Header.Set("Authorization", "Bearer user-a-secret")
+	keyReq.Header.Set("Cookie", "session=user-a")
+	key := cacheKey(keyReq, cfg.Routes[0].Cache)
+	if strings.Contains(key, "user-a-secret") || strings.Contains(key, "session=user-a") {
+		t.Fatalf("sensitive header value leaked into cache key: %q", key)
+	}
+}
+
+func TestCachedResponseNeverReplaysSetCookie(t *testing.T) {
+	var calls atomic.Int64
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Set-Cookie", "session=origin-secret; Path=/; HttpOnly")
+		_, _ = io.WriteString(w, "cacheable-body")
+	}))
+	defer origin.Close()
+
+	cfg := testConfig(origin.URL)
+	cfg.Routes[0].Cache.CacheSetCookieResponses = true
+	h, err := NewHandler(cfg, slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	first := httptest.NewRecorder()
+	h.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "http://proxy.test/cookie", nil))
+	if first.Header().Get("X-Cache") != "MISS" || first.Header().Get("Set-Cookie") == "" {
+		t.Fatalf("live response cache=%q set-cookie=%q", first.Header().Get("X-Cache"), first.Header().Get("Set-Cookie"))
+	}
+
+	second := httptest.NewRecorder()
+	h.ServeHTTP(second, httptest.NewRequest(http.MethodGet, "http://proxy.test/cookie", nil))
+	if second.Header().Get("X-Cache") != "HIT" {
+		t.Fatalf("second cache status=%q, want HIT", second.Header().Get("X-Cache"))
+	}
+	if got := second.Header().Values("Set-Cookie"); len(got) != 0 {
+		t.Fatalf("cached response replayed Set-Cookie: %#v", got)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("origin calls=%d, want 1", calls.Load())
+	}
+}

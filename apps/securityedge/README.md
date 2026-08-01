@@ -410,7 +410,7 @@ The Dockerfile copies files from both `apps/securityedge` and the repository-lev
 ```powershell
 docker build `
   -f ./Dockerfile `
-  -t securityedge:3.3.0 `
+  -t securityedge:latest `
   ../..
 ```
 

@@ -1,6 +1,6 @@
 FROM golang:1.23-alpine AS build
 
-ARG VERSION=3.3.0-professional-traffic
+ARG VERSION=development
 ARG COMMIT=container
 ARG BUILD_TIME=unknown
 
@@ -19,7 +19,7 @@ RUN CGO_ENABLED=0 go test ./... \
 
 FROM alpine:3.21
 
-ARG VERSION=3.3.0-professional-traffic
+ARG VERSION=development
 
 LABEL org.opencontainers.image.title="SecurityEdge" \
       org.opencontainers.image.description="Application-layer WAF, traffic protection, and EdgeProxy operations dashboard" \

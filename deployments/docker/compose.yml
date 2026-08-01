@@ -46,7 +46,7 @@ services:
       context: ../..
       dockerfile: apps/securityedge/Dockerfile
       args:
-        VERSION: "${SECURITYEDGE_VERSION:-3.3.0-professional-traffic}"
+        VERSION: "development"
         COMMIT: "${SECURITYEDGE_COMMIT:-container}"
         BUILD_TIME: "${SECURITYEDGE_BUILD_TIME:-unknown}"
     depends_on:

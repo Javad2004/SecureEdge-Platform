@@ -311,7 +311,7 @@ SecurityEdge's Dockerfile requires the repository root as its build context beca
 ```powershell
 docker build `
   -f ./apps/securityedge/Dockerfile `
-  -t securityedge:3.3.0 `
+  -t securityedge:latest `
   .
 ```
 

@@ -16,6 +16,7 @@ import (
 	"github.com/bachelor-project/edgeproxy-security/internal/ratelimit"
 	"github.com/bachelor-project/edgeproxy-security/internal/routes"
 	"github.com/bachelor-project/edgeproxy-security/internal/securitylog"
+	"github.com/bachelor-project/edgeproxy-security/internal/traffic"
 	"github.com/bachelor-project/edgeproxy-security/internal/waf"
 )
 
@@ -28,6 +29,11 @@ func (p policies) Policy(string) config.Policy       { return p.p }
 func (p policies) ServerConfig() config.ServerConfig { return p.s }
 
 func newTestHandler(t *testing.T, next http.Handler, p config.Policy) *Handler {
+	handler, _ := newTestHandlerWithTraffic(t, next, p)
+	return handler
+}
+
+func newTestHandlerWithTraffic(t *testing.T, next http.Handler, p config.Policy) (*Handler, *traffic.Tracker) {
 	t.Helper()
 	tableFile := t.TempDir() + "/edge.json"
 	if err := os.WriteFile(tableFile, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0600); err != nil {
@@ -47,7 +53,8 @@ func newTestHandler(t *testing.T, next http.Handler, p config.Policy) *Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(next, table, policies{p: p, s: config.Default().Server}, i, l, ratelimit.NewBanManager(), admission.New(), resolver, metrics.New(), securitylog.New(100), slog.Default())
+	tracker := traffic.New(100, time.Minute)
+	return New(next, table, policies{p: p, s: config.Default().Server}, i, l, ratelimit.NewBanManager(), admission.New(), resolver, metrics.New(), securitylog.New(100), tracker, slog.Default()), tracker
 }
 func TestBlocksXSSBeforeNext(t *testing.T) {
 	called := false
@@ -154,5 +161,25 @@ func TestSuspiciousPathAndUserAgentAreFingerprintOnly(t *testing.T) {
 	uaFP := fingerprint("sqlmap/1.8 malicious-payload")
 	if uaFP == "" || strings.Contains(uaFP, "sqlmap") {
 		t.Fatalf("unsafe user-agent fingerprint %q", uaFP)
+	}
+}
+
+func TestRecentTrafficCapturesFinalDownstreamStatusAndCacheResult(t *testing.T) {
+	p := config.Default().DefaultPolicy
+	p.RateLimit.Enabled = false
+	h, tracker := newTestHandlerWithTraffic(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Cache", "MISS")
+		w.WriteHeader(http.StatusBadGateway)
+	}), p)
+	req := httptest.NewRequest(http.MethodGet, "http://project.test/api/products", nil)
+	req.RemoteAddr = "10.0.0.15:1234"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	snapshot := tracker.Snapshot(time.Now())
+	if snapshot.LastRequest == nil || snapshot.LastRequest.Status != http.StatusBadGateway || snapshot.LastRequest.CacheStatus != "MISS" || snapshot.LastRequest.ClientIP != "10.0.0.15" {
+		t.Fatalf("snapshot=%#v", snapshot)
 	}
 }

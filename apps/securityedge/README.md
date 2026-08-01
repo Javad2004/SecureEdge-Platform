@@ -22,7 +22,7 @@ EdgeProxy loopback data plane
 Application origin
 ```
 
-An external client can be a browser, mobile application, desktop application, service, API client, automated test, or another network endpoint. Name resolution can be provided by any standards-compliant DNS service, an enterprise resolver, a router DNS service, or a controlled static host mapping. The dashboard never assumes a particular client type or DNS product.
+Clients may be browsers, mobile or desktop applications, API tools, services, or other HTTP endpoints. Name resolution may be provided by any standards-compliant resolver or a controlled static host mapping. These deployment choices are deliberately kept out of the product-level UI.
 
 ## Reference deployment profile
 
@@ -76,8 +76,9 @@ The authenticated console is served at `http://127.0.0.1:9191` in the reference 
 - EdgeProxy Admin API health and readiness;
 - route readiness;
 - origin health;
-- metrics and cache observability;
-- external-client reachability, which is explicitly marked as an out-of-band acceptance test rather than guessed from the server.
+- metrics and cache observability.
+
+A separate **Recent Client Traffic** panel is driven by requests that actually reach the SecurityEdge ingress. It shows the latest bounded request metadata, recent request volume, unique clients, policy decision, downstream HTTP status, and cache result. No external reporting test is required, and inactivity is shown as informational rather than as a service failure.
 
 The console also includes:
 
@@ -134,7 +135,7 @@ From the EdgeProxy repository on the gateway host:
 
 ```powershell
 go run ./cmd/edgeproxy `
-  -config ..\edgeproxy-go-second-member-professional-operations-final\integration\edgeproxy-behind-waf.json `
+  -config ..\securityedge\integration\edgeproxy-behind-waf.json `
   -pretty-logs
 ```
 
@@ -156,7 +157,7 @@ go run ./cmd/securityedge `
 .\scripts\test-deployment.ps1 -Config .\configs\securityedge.json
 ```
 
-The external acceptance test can be run from any client endpoint that uses the configured DNS and network path.
+To verify a client path, simply send a normal request to the public hostname. When it reaches SecurityEdge, the **Recent Client Traffic** panel updates automatically. No client-side reporting script is required.
 
 ## Expected listener exposure
 
@@ -189,30 +190,6 @@ go vet ./...
 # Build
 make build
 ```
-
-## Documentation
-
-Start with:
-
-- `DELIVERY_INDEX_FA.md`
-- `docs/fa/00_START_HERE.md`
-- `docs/ARCHITECTURE.md`
-- `docs/CONNECTIVITY_MONITOR_FA.md`
-- `docs/DASHBOARD_GUIDE_FA.md`
-- `docs/PRODUCT_NAMING_AND_UX_FA.md`
-- `docs/assets/dashboard-overview-desktop.png`
-- `docs/assets/dashboard-overview-mobile.png`
-- `docs/DEPLOYMENT_RUNBOOK_FA.md`
-- `docs/CONFIG_REFERENCE_FA.md`
-- `docs/THREAT_MODEL_FA.md`
-- `docs/DDOS_SCOPE_FA.md`
-- `BUILD_VERIFICATION.txt`
-- `PROJECT_FILE_MANIFEST_SHA256.txt`
-
-Generated line-numbered source and Persian line-by-line explanations are under:
-
-- `docs/fa/source_with_line_numbers/`
-- `docs/fa/line_by_line/`
 
 ## Embedded mode
 

@@ -25,6 +25,7 @@ import (
 	"github.com/bachelor-project/edgeproxy-security/internal/ratelimit"
 	"github.com/bachelor-project/edgeproxy-security/internal/routes"
 	"github.com/bachelor-project/edgeproxy-security/internal/securitylog"
+	"github.com/bachelor-project/edgeproxy-security/internal/traffic"
 	"github.com/bachelor-project/edgeproxy-security/internal/version"
 	"github.com/bachelor-project/edgeproxy-security/internal/waf"
 )
@@ -60,6 +61,7 @@ type Server struct {
 	runtime      Runtime
 	registry     *metrics.Registry
 	logs         *securitylog.Store
+	traffic      *traffic.Tracker
 	inspector    *waf.Inspector
 	connectivity *connectivity.Monitor
 	http         *http.Server
@@ -67,12 +69,12 @@ type Server struct {
 	authFails    map[string]*authFailure
 }
 
-func New(cfg config.AdminConfig, runtime Runtime, registry *metrics.Registry, logs *securitylog.Store, inspector *waf.Inspector) (*Server, error) {
+func New(cfg config.AdminConfig, runtime Runtime, registry *metrics.Registry, logs *securitylog.Store, trafficTracker *traffic.Tracker, inspector *waf.Inspector) (*Server, error) {
 	sub, err := fs.Sub(webAssets, "web")
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{cfg: cfg, runtime: runtime, registry: registry, logs: logs, inspector: inspector, connectivity: connectivity.New(runtime), authFails: map[string]*authFailure{}}
+	s := &Server{cfg: cfg, runtime: runtime, registry: registry, logs: logs, traffic: trafficTracker, inspector: inspector, connectivity: connectivity.New(runtime), authFails: map[string]*authFailure{}}
 	mux := http.NewServeMux()
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", secureStatic(http.FileServer(http.FS(sub)))))
 	mux.HandleFunc("GET /", s.index)
@@ -96,6 +98,7 @@ func New(cfg config.AdminConfig, runtime Runtime, registry *metrics.Registry, lo
 	mux.HandleFunc("DELETE /api/v1/bans/{client}", s.auth(s.deleteBan))
 	mux.HandleFunc("DELETE /api/v1/bans", s.auth(s.clearBans))
 	mux.HandleFunc("GET /api/v1/dashboard/overview", s.auth(s.overview))
+	mux.HandleFunc("GET /api/v1/traffic/recent", s.auth(s.recentTraffic))
 	mux.HandleFunc("GET /api/v1/connectivity", s.auth(s.connectivityStatus))
 	mux.HandleFunc("POST /api/v1/connectivity/check", s.auth(s.connectivityCheck))
 	mux.HandleFunc("GET /api/v1/edgeproxy/status", s.auth(s.edgeStatus))
@@ -198,7 +201,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	edgeRaw, edgeStatus, edgeErr := s.runtime.EdgeJSON(r.Context(), http.MethodGet, "/api/v1/status", nil, nil)
 	cfg := s.runtime.Config()
 	connection := s.connectivity.Snapshot(r.Context(), false)
-	out := map[string]any{"generated_at": now(), "build": version.Info(), "mode": cfg.Server.Mode, "routes": s.runtime.Routes(), "log_store": s.logs.Stats(), "rate_limit_buckets": s.runtime.LimiterSize(), "active_bans": s.runtime.ActiveBanCount(), "admission": s.runtime.AdmissionSnapshot(), "connectivity": connection, "edgeproxy": map[string]any{"reachable": edgeErr == nil, "http_status": edgeStatus}}
+	out := map[string]any{"generated_at": now(), "build": version.Info(), "mode": cfg.Server.Mode, "routes": s.runtime.Routes(), "log_store": s.logs.Stats(), "rate_limit_buckets": s.runtime.LimiterSize(), "active_bans": s.runtime.ActiveBanCount(), "admission": s.runtime.AdmissionSnapshot(), "recent_client_traffic": s.trafficSnapshot(), "connectivity": connection, "edgeproxy": map[string]any{"reachable": edgeErr == nil, "http_status": edgeStatus}}
 	if edgeErr != nil {
 		out["edgeproxy"].(map[string]any)["error"] = edgeErr.Error()
 	} else {
@@ -309,7 +312,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	connection := <-connectionCh
 	edgeStatus, ss, se := statusResult.raw, statusResult.status, statusResult.err
 	edgeMetrics, ms, me := metricsResult.raw, metricsResult.status, metricsResult.err
-	out := map[string]any{"generated_at": now(), "build": version.Info(), "connectivity": connection, "security_metrics": s.registry.Snapshot(), "security_logs": s.logs.Query(securitylog.Filter{Limit: 10}), "security_status": map[string]any{"rate_limit_buckets": s.runtime.LimiterSize(), "active_bans": s.runtime.ActiveBanCount(), "admission": s.runtime.AdmissionSnapshot()}, "edgeproxy_status_code": ss, "edgeproxy_metrics_status_code": ms}
+	out := map[string]any{"generated_at": now(), "build": version.Info(), "connectivity": connection, "recent_client_traffic": s.trafficSnapshot(), "security_metrics": s.registry.Snapshot(), "security_logs": s.logs.Query(securitylog.Filter{Limit: 10}), "security_status": map[string]any{"rate_limit_buckets": s.runtime.LimiterSize(), "active_bans": s.runtime.ActiveBanCount(), "admission": s.runtime.AdmissionSnapshot()}, "edgeproxy_status_code": ss, "edgeproxy_metrics_status_code": ms}
 	if se != nil {
 		out["edgeproxy_status_error"] = se.Error()
 	} else {
@@ -321,6 +324,17 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		out["edgeproxy_metrics"] = json.RawMessage(edgeMetrics)
 	}
 	writeJSON(w, 200, out)
+}
+
+func (s *Server) trafficSnapshot() traffic.Snapshot {
+	if s.traffic == nil {
+		return traffic.Snapshot{GeneratedAt: now(), Status: "no_recent_traffic", Summary: "No client traffic tracker is configured."}
+	}
+	return s.traffic.Snapshot(time.Now())
+}
+
+func (s *Server) recentTraffic(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.trafficSnapshot())
 }
 
 func (s *Server) connectivityStatus(w http.ResponseWriter, r *http.Request) {

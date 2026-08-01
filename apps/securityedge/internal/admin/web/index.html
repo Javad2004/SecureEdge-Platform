@@ -57,17 +57,33 @@
             <div class="connection-summary"><span>Routes / origins</span><strong id="connectivity-routes">—</strong><small id="connectivity-origins">— origins</small></div>
           </div>
           <div id="connectivity-topology" class="connectivity-topology" aria-label="Live service topology"></div>
-          <p class="monitoring-scope-note"><strong>Monitoring scope:</strong> DNS and service dependencies are probed from the SecurityEdge host. Reachability from client networks is validated separately with an external acceptance test.</p>
           <div class="status-legend" aria-label="Service status legend">
             <span><i class="legend-dot healthy"></i>Operational</span>
             <span><i class="legend-dot degraded"></i>Degraded</span>
             <span><i class="legend-dot down"></i>Unavailable</span>
-            <span><i class="legend-dot not-applicable"></i>Not monitored</span>
+            <span><i class="legend-dot not-applicable"></i>Not configured</span>
           </div>
           <div class="grid two connectivity-details">
             <div><div class="subhead"><h3>Live component checks</h3><span id="connectivity-health-count" class="muted">—</span></div><div id="connectivity-components" class="component-list"></div></div>
             <div><div class="subhead"><h3>Recent status transitions</h3><span class="muted">Newest first</span></div><div id="connectivity-history" class="transition-list"></div></div>
           </div>
+        </article>
+        <article id="recent-traffic-panel" class="panel recent-traffic-panel traffic-idle">
+          <div class="recent-traffic-head">
+            <div class="recent-traffic-heading">
+              <span id="recent-traffic-dot" class="activity-dot" aria-hidden="true"></span>
+              <div><p class="eyebrow">Observed ingress activity</p><h2 id="recent-traffic-title">No recent client traffic</h2><p id="recent-traffic-summary">Waiting for requests at the SecurityEdge ingress.</p></div>
+            </div>
+            <div class="recent-traffic-meta"><span id="recent-traffic-window" class="muted">5-minute window</span><span id="recent-traffic-last" class="muted">No requests observed</span></div>
+          </div>
+          <div class="recent-traffic-grid">
+            <div><span>Last request</span><strong id="recent-traffic-request">—</strong><small id="recent-traffic-host">—</small></div>
+            <div><span>Client IP</span><strong id="recent-traffic-client">—</strong><small id="recent-traffic-route">— route</small></div>
+            <div><span>Decision</span><strong id="recent-traffic-action">—</strong><small id="recent-traffic-reason">—</small></div>
+            <div><span>HTTP result</span><strong id="recent-traffic-status">—</strong><small id="recent-traffic-cache">— cache</small></div>
+            <div><span>Recent volume</span><strong id="recent-traffic-count">0</strong><small id="recent-traffic-clients">0 unique clients</small></div>
+          </div>
+          <p class="recent-traffic-note">Passive telemetry from requests that reached SecurityEdge. Inactivity is informational and does not indicate a service failure.</p>
         </article>
         <div class="kpi-grid">
           <article class="kpi"><span>EdgeProxy requests</span><strong id="kpi-requests">—</strong><small id="kpi-rps">— req/s</small></article>

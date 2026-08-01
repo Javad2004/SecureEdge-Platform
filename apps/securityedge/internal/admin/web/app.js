@@ -192,8 +192,6 @@ function renderConnectivity() {
   const routeStatus = counts.total_routes ? (counts.ready_routes === counts.total_routes ? 'healthy' : counts.ready_routes > 0 ? 'degraded' : 'down') : 'unknown';
   const originStatus = counts.total_origins ? (counts.healthy_origins === counts.total_origins ? 'healthy' : counts.healthy_origins > 0 ? 'degraded' : 'down') : 'unknown';
   const topology = [
-    topologyNode('not_applicable', 'Client networks', 'Browser, API client, service, or device', 'Validated by an external acceptance test'),
-    '<span class="topology-arrow">→</span>',
     topologyNode(dns?.status || 'not_applicable', 'DNS resolution', dns ? 'Configured hostname resolution' : 'DNS probe disabled', dns?.latency_ms ? `${compactLatency(dns.latency_ms)} · ${dns.endpoint || 'configured resolver'}` : 'Optional server-side probe'),
     '<span class="topology-arrow">→</span>',
     topologyNode(ingress?.status, 'SecurityEdge', 'Public application-security ingress', ingress?.endpoint || '—'),
@@ -218,8 +216,33 @@ function renderConnectivity() {
   $('connectivity-history').innerHTML = history.length ? history.map(item => `<div class="transition-item"><span class="transition-time">${esc(dateText(item.timestamp))}</span><div><strong>${esc(item.component)}</strong><p>${statusBadge(item.from)} <span class="transition-arrow">→</span> ${statusBadge(item.to)}</p><small>${esc(item.message || '')}</small></div></div>`).join('') : '<div class="empty-state">No status transition has occurred during this process lifetime.</div>';
 }
 
+function renderRecentTraffic() {
+  const traffic = state.overview?.recent_client_traffic || {};
+  const active = traffic.status === 'traffic_observed' && Boolean(traffic.last_request);
+  const panel = $('recent-traffic-panel');
+  panel.classList.toggle('traffic-active', active);
+  panel.classList.toggle('traffic-idle', !active);
+  $('recent-traffic-title').textContent = active ? 'Recent client traffic observed' : 'No recent client traffic';
+  $('recent-traffic-summary').textContent = traffic.summary || (active ? 'Requests are reaching the SecurityEdge ingress.' : 'Waiting for requests at the SecurityEdge ingress.');
+  const windowMinutes = Math.max(1, Math.round(Number(traffic.window_seconds || 300) / 60));
+  $('recent-traffic-window').textContent = `${windowMinutes}-minute activity window`;
+  $('recent-traffic-last').textContent = active ? `Last observed ${dateText(traffic.last_observed_at)}` : `No requests in the last ${windowMinutes} minutes`;
+  const request = traffic.last_request || {};
+  $('recent-traffic-request').textContent = active ? `${request.method || '—'} ${request.path || '—'}` : '—';
+  $('recent-traffic-host').textContent = active ? (request.host || 'Host unavailable') : 'No request metadata';
+  $('recent-traffic-client').textContent = active ? (request.client_ip || 'Unknown') : '—';
+  $('recent-traffic-route').textContent = active ? `${request.route || '__unmatched__'} route` : '— route';
+  $('recent-traffic-action').innerHTML = active ? `<span class="badge ${actionClass(request.action)}">${esc(request.action || '—')}</span>` : '—';
+  $('recent-traffic-reason').textContent = active ? (request.reason || 'Policy allowed') : '—';
+  $('recent-traffic-status').textContent = active ? String(request.status || '—') : '—';
+  $('recent-traffic-cache').textContent = active ? `${request.cache_status || 'Not reported'} cache` : '— cache';
+  $('recent-traffic-count').textContent = fmt(traffic.requests_in_window);
+  $('recent-traffic-clients').textContent = `${fmt(traffic.unique_clients)} unique clients · ${fmt(traffic.allowed)} allowed · ${fmt(traffic.rejected)} rejected`;
+}
+
 function renderOverview() {
   renderConnectivity();
+  renderRecentTraffic();
   const overview = state.overview || {};
   const security = overview.security_metrics || {};
   const total = security.total || {};

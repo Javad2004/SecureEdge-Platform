@@ -420,7 +420,7 @@ func probeDNS(ctx context.Context, cfg config.DNSProbeConfig) probeResult {
 		status = StatusDegraded
 		message = "The DNS resolver responded, but one or more monitored hostnames did not resolve to an expected ingress address"
 	}
-	return probeResult{id: "dns_resolution", name: "DNS resolution", layer: "dns", status: status, critical: cfg.Critical, endpoint: endpoint, message: message, latency: time.Since(started), details: map[string]any{"resolved": resolved, "expected_addresses": cfg.ExpectedAddresses, "external_client_path_verified": false, "probe_scope": "server-side DNS resolution"}}
+	return probeResult{id: "dns_resolution", name: "DNS resolution", layer: "dns", status: status, critical: cfg.Critical, endpoint: endpoint, message: message, latency: time.Since(started), details: map[string]any{"resolved": resolved, "expected_addresses": cfg.ExpectedAddresses, "probe_scope": "server-side DNS resolution"}}
 }
 
 func updateComponent(previous Component, result probeResult, now time.Time) Component {

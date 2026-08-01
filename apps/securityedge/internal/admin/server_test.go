@@ -15,6 +15,7 @@ import (
 	"github.com/bachelor-project/edgeproxy-security/internal/ratelimit"
 	"github.com/bachelor-project/edgeproxy-security/internal/routes"
 	"github.com/bachelor-project/edgeproxy-security/internal/securitylog"
+	"github.com/bachelor-project/edgeproxy-security/internal/traffic"
 	"github.com/bachelor-project/edgeproxy-security/internal/waf"
 )
 
@@ -41,6 +42,11 @@ func (f *fakeRuntime) EdgeJSON(context.Context, string, string, url.Values, any)
 }
 
 func newAdminTestServer(t *testing.T, failures int) *httptest.Server {
+	ts, _ := newAdminTestServerWithTraffic(t, failures)
+	return ts
+}
+
+func newAdminTestServerWithTraffic(t *testing.T, failures int) (*httptest.Server, *traffic.Tracker) {
 	t.Helper()
 	cfg := config.Default()
 	cfg.Server.Mode = "embedded"
@@ -52,11 +58,12 @@ func newAdminTestServer(t *testing.T, failures int) *httptest.Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(cfg.Admin, &fakeRuntime{cfg: cfg}, metrics.New(), securitylog.New(100), inspector)
+	tracker := traffic.New(100, time.Minute)
+	s, err := New(cfg.Admin, &fakeRuntime{cfg: cfg}, metrics.New(), securitylog.New(100), tracker, inspector)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return httptest.NewServer(s.HTTPServer().Handler)
+	return httptest.NewServer(s.HTTPServer().Handler), tracker
 }
 
 func TestAdminRequiresBearerTokenAndServesBuildInfo(t *testing.T) {
@@ -147,6 +154,29 @@ func TestConnectivityEndpointRequiresAuthAndReturnsSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	if body.GeneratedAt == "" || body.OverallStatus == "" || len(body.Components) == 0 {
+		t.Fatalf("body=%#v", body)
+	}
+}
+
+func TestRecentTrafficEndpointReturnsPassiveObservedTraffic(t *testing.T) {
+	ts, tracker := newAdminTestServerWithTraffic(t, 10)
+	defer ts.Close()
+	tracker.Observe(traffic.Event{ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), ClientIP: "10.0.0.8", Method: http.MethodGet, Path: "/", Route: "demo-app", Action: "ALLOW", Status: http.StatusOK})
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/traffic/recent", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var body traffic.Snapshot
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Status != "traffic_observed" || body.LastRequest == nil || body.LastRequest.ClientIP != "10.0.0.8" {
 		t.Fatalf("body=%#v", body)
 	}
 }

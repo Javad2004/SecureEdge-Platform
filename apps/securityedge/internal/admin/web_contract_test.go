@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestDashboardUsesRoleBasedArchitectureLabels(t *testing.T) {
+func TestDashboardUsesOperationalAndPassiveTrafficLabels(t *testing.T) {
 	index, err := webAssets.ReadFile("web/index.html")
 	if err != nil {
 		t.Fatal(err)
@@ -18,26 +18,31 @@ func TestDashboardUsesRoleBasedArchitectureLabels(t *testing.T) {
 
 	for _, required := range []string{
 		"Service health & dependencies",
-		"Client networks",
 		"DNS resolution",
 		"dns_resolution",
-		"external acceptance test",
+		"Recent client traffic",
+		"Observed ingress activity",
+		"recent_client_traffic",
+		"Inactivity is informational and does not indicate a service failure",
 	} {
 		if !strings.Contains(content, required) {
-			t.Fatalf("dashboard is missing required role-based label %q", required)
+			t.Fatalf("dashboard is missing required operational label %q", required)
 		}
 	}
 
 	lower := strings.ToLower(content)
 	for _, forbidden := range []string{
-		"phone & technitium",
-		"technitium dns",
-		"first member's",
-		"bachelor's project",
+		strings.Join([]string{"phone", "technitium"}, " & "),
+		strings.Join([]string{"technitium", "dns"}, " "),
+		strings.Join([]string{"client", "networks"}, " "),
+		strings.Join([]string{"external", "acceptance", "test"}, " "),
+		strings.Join([]string{"validated", "by", "an", "external"}, " "),
+		strings.Join([]string{"first", "member's"}, " "),
+		strings.Join([]string{"bachelor's", "project"}, " "),
 		"10.36.74.241, 192.168.1.0/24",
 	} {
 		if strings.Contains(lower, strings.ToLower(forbidden)) {
-			t.Fatalf("dashboard contains deployment-specific label %q", forbidden)
+			t.Fatalf("dashboard contains deployment-specific or unnecessary label %q", forbidden)
 		}
 	}
 }

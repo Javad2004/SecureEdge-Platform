@@ -89,7 +89,7 @@ if ($dnsConfig.enabled) {
 }
 else {
     Section "DNS resolution"
-    Write-Host "DNS probing is disabled in this profile; hostname resolution is an external acceptance-test responsibility." -ForegroundColor Yellow
+    Write-Host "DNS probing is disabled in this profile; DNS is not included in the internal connectivity snapshot." -ForegroundColor Yellow
 }
 
 Section "Gateway-to-Origin access"
@@ -154,4 +154,4 @@ Assert ($logs -notmatch '<script>') "Raw XSS payload is absent from SecurityEdge
 Assert ($logs -notmatch '169\.254\.169\.254') "Raw SSRF target is absent from SecurityEdge logs"
 
 Write-Host "`nAll gateway-host verification assertions passed." -ForegroundColor Green
-Write-Host "Run the external acceptance test from each required client network: the public hostname must work, while EdgeProxy/Admin and Origin ports must remain unreachable directly." -ForegroundColor Yellow
+Write-Host "Send a normal request to the public hostname from the client you are using. The Recent Client Traffic panel should update automatically; internal EdgeProxy/Admin and Origin ports must remain unreachable directly." -ForegroundColor Yellow

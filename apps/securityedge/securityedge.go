@@ -21,6 +21,7 @@ import (
 	"github.com/bachelor-project/edgeproxy-security/internal/ratelimit"
 	"github.com/bachelor-project/edgeproxy-security/internal/routes"
 	"github.com/bachelor-project/edgeproxy-security/internal/securitylog"
+	"github.com/bachelor-project/edgeproxy-security/internal/traffic"
 	"github.com/bachelor-project/edgeproxy-security/internal/waf"
 )
 
@@ -33,6 +34,7 @@ type Runtime struct {
 	edge       *edgeadmin.Client
 	registry   *metrics.Registry
 	logs       *securitylog.Store
+	traffic    *traffic.Tracker
 	inspector  *waf.Inspector
 	limiter    *ratelimit.Limiter
 	bans       *ratelimit.BanManager
@@ -70,7 +72,7 @@ func New(configPath string, logger *slog.Logger) (*Runtime, error) {
 	}
 	return &Runtime{
 		configPath: configPath, logger: logger, cfg: cfg, table: table, edge: edge,
-		registry: metrics.New(), logs: logs, inspector: inspector,
+		registry: metrics.New(), logs: logs, traffic: traffic.New(traffic.DefaultCapacity, traffic.DefaultWindow), inspector: inspector,
 		limiter: ratelimit.New(cfg.DefaultPolicy.RateLimit.CleanupInterval.Duration, cfg.DefaultPolicy.RateLimit.IdleTTL.Duration),
 		bans:    ratelimit.NewBanManager(), admission: admission.New(), clients: clients,
 	}, nil
@@ -84,14 +86,14 @@ func (r *Runtime) Close() {
 }
 
 func (r *Runtime) Wrap(next http.Handler) http.Handler {
-	return gateway.New(next, r, r, r.inspector, r.limiter, r.bans, r.admission, r.clients, r.registry, r.logs, r.logger)
+	return gateway.New(next, r, r, r.inspector, r.limiter, r.bans, r.admission, r.clients, r.registry, r.logs, r.traffic, r.logger)
 }
 
 func (r *Runtime) AdminHandler() (http.Handler, error) {
 	r.mu.RLock()
 	cfg := r.cfg
 	r.mu.RUnlock()
-	srv, err := admin.New(cfg.Admin, r, r.registry, r.logs, r.inspector)
+	srv, err := admin.New(cfg.Admin, r, r.registry, r.logs, r.traffic, r.inspector)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +104,7 @@ func (r *Runtime) AdminServer() (*http.Server, error) {
 	r.mu.RLock()
 	cfg := r.cfg
 	r.mu.RUnlock()
-	srv, err := admin.New(cfg.Admin, r, r.registry, r.logs, r.inspector)
+	srv, err := admin.New(cfg.Admin, r, r.registry, r.logs, r.traffic, r.inspector)
 	if err != nil {
 		return nil, err
 	}

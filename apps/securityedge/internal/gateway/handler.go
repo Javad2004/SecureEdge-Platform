@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"mime"
 	"net"
@@ -20,6 +21,7 @@ import (
 	"github.com/bachelor-project/edgeproxy-security/internal/ratelimit"
 	"github.com/bachelor-project/edgeproxy-security/internal/routes"
 	"github.com/bachelor-project/edgeproxy-security/internal/securitylog"
+	"github.com/bachelor-project/edgeproxy-security/internal/traffic"
 	"github.com/bachelor-project/edgeproxy-security/internal/waf"
 )
 
@@ -43,11 +45,12 @@ type Handler struct {
 	clients   *clientip.Resolver
 	metrics   *metrics.Registry
 	logs      *securitylog.Store
+	traffic   *traffic.Tracker
 	logger    *slog.Logger
 }
 
-func New(next http.Handler, table RouteMatcher, policies PolicyProvider, inspector *waf.Inspector, limiter *ratelimit.Limiter, bans *ratelimit.BanManager, admissionLimiter *admission.Limiter, clients *clientip.Resolver, registry *metrics.Registry, logs *securitylog.Store, logger *slog.Logger) *Handler {
-	return &Handler{next: next, routes: table, policies: policies, inspector: inspector, limiter: limiter, bans: bans, admission: admissionLimiter, clients: clients, metrics: registry, logs: logs, logger: logger}
+func New(next http.Handler, table RouteMatcher, policies PolicyProvider, inspector *waf.Inspector, limiter *ratelimit.Limiter, bans *ratelimit.BanManager, admissionLimiter *admission.Limiter, clients *clientip.Resolver, registry *metrics.Registry, logs *securitylog.Store, trafficTracker *traffic.Tracker, logger *slog.Logger) *Handler {
+	return &Handler{next: next, routes: table, policies: policies, inspector: inspector, limiter: limiter, bans: bans, admission: admissionLimiter, clients: clients, metrics: registry, logs: logs, traffic: trafficTracker, logger: logger}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -69,14 +72,31 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var processingErr error
 	var retryAfter time.Duration
 	autoBanned := false
+	cacheStatus := ""
+	securityDuration := time.Duration(0)
 
 	complete := func() {
+		fullDuration := time.Since(started)
+		metricDuration := securityDuration
+		if metricDuration <= 0 {
+			metricDuration = fullDuration
+		}
 		ruleIDs, categories := ruleData(matches)
-		finish(metrics.Observation{Route: routeName, Method: req.Method, Action: action, Reason: reason, Duration: time.Since(started), Score: score, RuleIDs: ruleIDs, Categories: categories, BodyInspected: bodyInspected, BodyTruncated: bodyTruncated, Error: processingErr != nil, AutoBan: autoBanned})
+		finish(metrics.Observation{Route: routeName, Method: req.Method, Action: action, Reason: reason, Duration: metricDuration, Score: score, RuleIDs: ruleIDs, Categories: categories, BodyInspected: bodyInspected, BodyTruncated: bodyTruncated, Error: processingErr != nil, AutoBan: autoBanned})
 		if action != "ALLOW" || len(matches) > 0 || processingErr != nil {
-			h.appendLog(req, requestID, client, routeName, status, action, reason, score, matches, processingErr, time.Since(started), retryAfter, autoBanned, matchLimit)
+			h.appendLog(req, requestID, client, routeName, status, action, reason, score, matches, processingErr, metricDuration, retryAfter, autoBanned, matchLimit)
+		}
+		if h.traffic != nil {
+			path, pathFingerprint := logSafePath(req.URL.EscapedPath(), action, reason, len(matches) > 0)
+			h.traffic.Observe(traffic.Event{
+				ObservedAt: time.Now().UTC().Format(time.RFC3339Nano), RequestID: requestID, ClientIP: client,
+				Method: req.Method, Host: req.Host, Path: path, PathFingerprint: pathFingerprint, Route: routeName,
+				Action: action, Reason: reason, Status: status, DurationMS: float64(fullDuration) / float64(time.Millisecond),
+				CacheStatus: cacheStatus,
+			})
 		}
 	}
+	defer complete()
 
 	release, admitted, overloadReason := h.admission.Acquire(client, serverCfg.MaxConcurrentRequests, serverCfg.MaxConcurrentPerClient)
 	if !admitted {
@@ -85,7 +105,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		autoBanned, _ = h.recordViolation(client, policy, time.Now())
 		setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
 		w.Header().Set("Retry-After", "1")
-		complete()
 		writeBlocked(w, status, "server_busy", requestID)
 		return
 	}
@@ -95,7 +114,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		action, reason, status = "BLOCK", rejectReason, code
 		autoBanned, _ = h.recordViolation(client, policy, time.Now())
 		setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
-		complete()
 		writeBlocked(w, status, rejectReason, requestID)
 		return
 	}
@@ -106,22 +124,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			action, reason, status, retryAfter = "BANNED", "temporary_auto_ban", http.StatusTooManyRequests, retry
 			setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
 			w.Header().Set("Retry-After", retrySeconds(retry))
-			complete()
 			writeBlocked(w, status, "temporarily_banned", requestID)
 			return
 		}
 	}
 	if !policy.Enabled || policy.Mode == "off" || allowlisted {
 		setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
-		complete()
-		h.next.ServeHTTP(&decisionWriter{ResponseWriter: w, requestID: requestID, addSecurityHeaders: serverCfg.AddSecurityHeaders}, req)
+		securityDuration = time.Since(started)
+		writer := &decisionWriter{ResponseWriter: w, requestID: requestID, addSecurityHeaders: serverCfg.AddSecurityHeaders}
+		h.next.ServeHTTP(writer, req)
+		status = writer.Status()
+		cacheStatus = writer.Header().Get("X-Cache")
 		return
 	}
 	if ipMatches(client, policy.IPDenylist) {
 		action, reason, status = "BLOCK", "ip_denied", http.StatusForbidden
 		autoBanned, _ = h.recordViolation(client, policy, time.Now())
 		setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
-		complete()
 		writeBlocked(w, status, "ip_denied", requestID)
 		return
 	}
@@ -129,7 +148,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		action, reason, status = "BLOCK", "method_not_allowed", http.StatusMethodNotAllowed
 		setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
 		w.Header().Set("Allow", strings.Join(policy.AllowedMethods, ", "))
-		complete()
 		writeBlocked(w, status, "method_not_allowed", requestID)
 		return
 	}
@@ -147,7 +165,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		autoBanned, _ = h.recordViolation(client, policy, time.Now())
 		setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
 		w.Header().Set("Retry-After", retrySeconds(retryAfter))
-		complete()
 		writeBlocked(w, status, "rate_limited", requestID)
 		return
 	}
@@ -157,7 +174,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		processingErr = err
 		action, reason, status = "BLOCK", "inspection_failed", http.StatusBadRequest
 		setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
-		complete()
 		writeBlocked(w, status, "inspection_failed", requestID)
 		return
 	}
@@ -167,7 +183,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		action, reason, status = "BLOCK", "inspection_limit_exceeded", http.StatusRequestEntityTooLarge
 		autoBanned, _ = h.recordViolation(client, policy, time.Now())
 		setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
-		complete()
 		writeBlocked(w, status, "inspection_limit_exceeded", requestID)
 		return
 	}
@@ -176,15 +191,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			action, reason, status = "BLOCK", "waf_threshold", http.StatusForbidden
 			autoBanned, _ = h.recordViolation(client, policy, time.Now())
 			setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
-			complete()
 			writeBlocked(w, status, "waf_blocked", requestID)
 			return
 		}
 		action, reason = "LOG", "waf_detection"
 	}
 	setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
-	complete()
-	h.next.ServeHTTP(&decisionWriter{ResponseWriter: w, requestID: requestID, addSecurityHeaders: serverCfg.AddSecurityHeaders}, req)
+	securityDuration = time.Since(started)
+	writer := &decisionWriter{ResponseWriter: w, requestID: requestID, addSecurityHeaders: serverCfg.AddSecurityHeaders}
+	h.next.ServeHTTP(writer, req)
+	status = writer.Status()
+	cacheStatus = writer.Header().Get("X-Cache")
 }
 
 func validateRequestShape(req *http.Request, policy config.Policy, server config.ServerConfig) (int, string) {
@@ -283,16 +300,38 @@ type decisionWriter struct {
 	http.ResponseWriter
 	requestID          string
 	addSecurityHeaders bool
+	status             int
 }
 
 func (w *decisionWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w *decisionWriter) Status() int {
+	if w.status == 0 {
+		return http.StatusOK
+	}
+	return w.status
+}
 func (w *decisionWriter) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = status
 	setBaseHeaders(w.Header(), w.requestID, w.addSecurityHeaders)
 	w.ResponseWriter.WriteHeader(status)
 }
 func (w *decisionWriter) Write(data []byte) (int, error) {
-	setBaseHeaders(w.Header(), w.requestID, w.addSecurityHeaders)
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
 	return w.ResponseWriter.Write(data)
+}
+func (w *decisionWriter) ReadFrom(reader io.Reader) (int64, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	if target, ok := w.ResponseWriter.(io.ReaderFrom); ok {
+		return target.ReadFrom(reader)
+	}
+	return io.Copy(struct{ io.Writer }{w.ResponseWriter}, reader)
 }
 func (w *decisionWriter) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {

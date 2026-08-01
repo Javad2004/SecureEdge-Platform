@@ -1,9 +1,11 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -220,7 +222,15 @@ func LoadFile(path string) (Config, error) {
 		return Config{}, fmt.Errorf("read security config: %w", err)
 	}
 	cfg := Default()
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&cfg); err != nil {
+		return Config{}, fmt.Errorf("parse security config: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return Config{}, errors.New("parse security config: expected exactly one JSON value")
+		}
 		return Config{}, fmt.Errorf("parse security config: %w", err)
 	}
 	if err := cfg.Validate(); err != nil {

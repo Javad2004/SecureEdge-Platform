@@ -1,6 +1,6 @@
 param(
-    [string]$Listen = "0.0.0.0:9000",
-    [string]$Name = "origin-a"
+    [string]$Listen = "127.0.0.1:9000",
+    [string]$Name = "origin-local"
 )
 
 $ErrorActionPreference = "Stop"

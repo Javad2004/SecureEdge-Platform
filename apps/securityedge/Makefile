@@ -3,10 +3,13 @@ COMMIT ?= $$(git rev-parse --short HEAD 2>/dev/null || echo development)
 BUILD_TIME ?= $$(date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS = -s -w -X github.com/bachelor-project/edgeproxy-security/internal/version.Version=$(VERSION) -X github.com/bachelor-project/edgeproxy-security/internal/version.Commit=$(COMMIT) -X github.com/bachelor-project/edgeproxy-security/internal/version.BuildTime=$(BUILD_TIME)
 
-.PHONY: fmt test race vet js build verify run run-network validate validate-network clean
+.PHONY: fmt fmt-check test race vet js build verify run run-network validate validate-network validate-compose clean
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -type f)
+
+fmt-check:
+	@test -z "$$(gofmt -l $$(find . -name '*.go' -type f))" || (echo "Go files require gofmt:"; gofmt -l $$(find . -name '*.go' -type f); exit 1)
 
 test:
 	go test ./...
@@ -30,7 +33,10 @@ validate:
 validate-network:
 	go run ./cmd/securityedge -config configs/securityedge.json -validate
 
-verify: fmt test race vet js build validate validate-network
+validate-compose:
+	go run ./cmd/securityedge -config configs/compose.json -validate
+
+verify: fmt-check test race vet js build validate validate-network validate-compose
 
 run:
 	go run ./cmd/securityedge -config configs/local-dev.json -pretty-logs
@@ -39,4 +45,5 @@ run-network:
 	go run ./cmd/securityedge -config configs/securityedge.json -pretty-logs
 
 clean:
-	rm -rf bin logs
+	rm -rf bin
+	@if [ -d logs ]; then find logs -type f ! -name .gitkeep -delete; fi

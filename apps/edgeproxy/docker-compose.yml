@@ -24,7 +24,7 @@ services:
     environment:
       EDGEPROXY_ADMIN_TOKEN: "${EDGEPROXY_ADMIN_TOKEN:-dev-token}"
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
       - "127.0.0.1:9090:9090"
     init: true
     read_only: true

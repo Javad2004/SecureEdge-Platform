@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"log/slog"
@@ -337,6 +338,29 @@ func TestRetryUsesAnotherOriginAndCorrelatesLogs(t *testing.T) {
 	}
 	if attempts.Entries[0].RequestID == "" || attempts.Entries[0].RequestID != attempts.Entries[1].RequestID {
 		t.Fatalf("attempt logs are not correlated: %#v", attempts.Entries)
+	}
+}
+
+func TestProcessLogRedactsSensitiveQueryValues(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer origin.Close()
+
+	var output bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&output, nil))
+	h, err := NewHandler(testConfig(origin.URL), logger, metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/data?token=super-secret&normal=value", nil)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	logged := output.String()
+	if strings.Contains(logged, "super-secret") || !strings.Contains(logged, "normal=value") || !strings.Contains(logged, "%5BREDACTED%5D") {
+		t.Fatalf("process log did not safely redact the query: %s", logged)
 	}
 }
 

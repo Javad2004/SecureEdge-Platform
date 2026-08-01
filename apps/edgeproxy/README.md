@@ -269,6 +269,8 @@ Run from `apps/edgeproxy`:
 .\scripts\test-proxy.ps1 -ProxyUrl http://127.0.0.1:8080 -Token dev-token
 ```
 
+`start-origin.ps1` binds to `127.0.0.1:9000` by default. For a deliberate LAN deployment, pass `-Listen 0.0.0.0:9000` and protect the Origin port with the host firewall.
+
 For the integrated LAN profile, supply the public SecurityEdge URL to traffic-generation scripts rather than connecting clients directly to EdgeProxy.
 
 ## Build and verification
@@ -362,6 +364,7 @@ docker build `
 - Do not expose the Admin API to untrusted networks.
 - Use `EDGEPROXY_ADMIN_TOKEN` for real credentials.
 - Restrict the Origin application port to the gateway host.
+- Sensitive query-parameter values are redacted from both retained request logs and process logs.
 - Treat `configs/edgeproxy.json` and the checked-in tokens as demonstration values.
 
 ## Related documentation

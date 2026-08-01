@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -147,5 +148,32 @@ func TestValidateRejectsAmbiguousDuplicateRouteSelector(t *testing.T) {
 
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected duplicate host/path route selector to be rejected")
+	}
+}
+
+func TestLoadRejectsUnknownConfigurationField(t *testing.T) {
+	cfg := Default()
+	cfg.Routes = []RouteConfig{validRouteForValidation()}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var object map[string]any
+	if err := json.Unmarshal(data, &object); err != nil {
+		t.Fatal(err)
+	}
+	server := object["server"].(map[string]any)
+	server["listen_adrr"] = server["listen_addr"]
+	delete(server, "listen_addr")
+	data, err = json.Marshal(object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := t.TempDir() + "/config.json"
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("expected unknown-field error, got %v", err)
 	}
 }

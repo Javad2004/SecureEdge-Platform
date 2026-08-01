@@ -24,10 +24,10 @@ function Port-FromListen([string]$Address) {
     return [int]$Matches[1]
 }
 function Host-FromEndpoint([string]$Endpoint) {
-    $value = $Endpoint -replace '^\[|\]$',''
-    if ($value -match '^\[(.+)\]:(\d+)$') { return $Matches[1] }
+    $value = $Endpoint.Trim()
+    if ($value -match '^\[([^\]]+)\]:(\d+)$') { return $Matches[1] }
     if ($value -match '^(.+):(\d+)$') { return $Matches[1] }
-    return $value
+    return $value.Trim('[', ']')
 }
 function Local-UrlFromListen([string]$Address) {
     $port = Port-FromListen $Address

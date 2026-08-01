@@ -42,6 +42,20 @@
       "file_path": "logs/security-events-local.ndjson",
       "max_file_bytes": 20971520,
       "max_backups": 3
+    },
+    "connectivity": {
+      "enabled": true,
+      "check_interval": "5s",
+      "timeout": "3s",
+      "stale_after": "15s",
+      "history_capacity": 50,
+      "dns": {
+        "enabled": false,
+        "critical": false,
+        "server": "127.0.0.1:53",
+        "names": [],
+        "expected_addresses": []
+      }
     }
   },
   "edgeproxy": {

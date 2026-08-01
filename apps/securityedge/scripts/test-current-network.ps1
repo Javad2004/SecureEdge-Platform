@@ -84,6 +84,14 @@ $info = Invoke-RestMethod "$AdminUrl/api/v1/info" -Headers $headers
 Assert ($info.build.name -eq "SecurityEdge") "Admin API exposes build identity"
 $status = Invoke-RestMethod "$AdminUrl/api/v1/status" -Headers $headers
 Assert ($status.edgeproxy.reachable -eq $true) "Dashboard backend can reach EdgeProxy Admin API"
+$connectivity = Invoke-RestMethod "$AdminUrl/api/v1/connectivity/check" -Headers $headers -Method Post
+Assert ($connectivity.overall_status -eq "healthy") "Connectivity monitor reports overall Healthy"
+Assert ($connectivity.traffic_path_status -eq "healthy") "Connectivity monitor reports a healthy traffic path"
+Assert ($connectivity.edgeproxy_connection_status -eq "healthy") "Connectivity monitor reports EdgeProxy fully connected"
+Assert ($connectivity.counts.ready_routes -eq $connectivity.counts.total_routes) "All EdgeProxy routes are ready"
+Assert ($connectivity.counts.healthy_origins -eq $connectivity.counts.total_origins) "All configured origins are healthy"
+$dnsComponent = @($connectivity.components | Where-Object id -eq "technitium_dns")
+Assert ($dnsComponent.Count -eq 1 -and $dnsComponent[0].status -eq "healthy") "Technitium connectivity probe is healthy"
 $metrics = Invoke-RestMethod "$AdminUrl/api/v1/metrics" -Headers $headers
 Assert ($metrics.schema_version -eq "2.0") "Security metrics schema is 2.0"
 $prometheus = Invoke-RestMethod "$AdminUrl/api/v1/metrics/prometheus" -Headers $headers

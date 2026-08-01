@@ -123,3 +123,30 @@ func TestAdminAuthenticationLockout(t *testing.T) {
 		t.Fatal("Retry-After missing")
 	}
 }
+
+func TestConnectivityEndpointRequiresAuthAndReturnsSnapshot(t *testing.T) {
+	ts := newAdminTestServer(t, 10)
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/connectivity/check", nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var body struct {
+		OverallStatus string `json:"overall_status"`
+		Components    []any  `json:"components"`
+		GeneratedAt   string `json:"generated_at"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.GeneratedAt == "" || body.OverallStatus == "" || len(body.Components) == 0 {
+		t.Fatalf("body=%#v", body)
+	}
+}

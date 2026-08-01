@@ -20,6 +20,7 @@ import (
 
 	"github.com/bachelor-project/edgeproxy-security/internal/admission"
 	"github.com/bachelor-project/edgeproxy-security/internal/config"
+	"github.com/bachelor-project/edgeproxy-security/internal/connectivity"
 	"github.com/bachelor-project/edgeproxy-security/internal/metrics"
 	"github.com/bachelor-project/edgeproxy-security/internal/ratelimit"
 	"github.com/bachelor-project/edgeproxy-security/internal/routes"
@@ -55,14 +56,15 @@ type authFailure struct {
 }
 
 type Server struct {
-	cfg       config.AdminConfig
-	runtime   Runtime
-	registry  *metrics.Registry
-	logs      *securitylog.Store
-	inspector *waf.Inspector
-	http      *http.Server
-	authMu    sync.Mutex
-	authFails map[string]*authFailure
+	cfg          config.AdminConfig
+	runtime      Runtime
+	registry     *metrics.Registry
+	logs         *securitylog.Store
+	inspector    *waf.Inspector
+	connectivity *connectivity.Monitor
+	http         *http.Server
+	authMu       sync.Mutex
+	authFails    map[string]*authFailure
 }
 
 func New(cfg config.AdminConfig, runtime Runtime, registry *metrics.Registry, logs *securitylog.Store, inspector *waf.Inspector) (*Server, error) {
@@ -70,7 +72,7 @@ func New(cfg config.AdminConfig, runtime Runtime, registry *metrics.Registry, lo
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{cfg: cfg, runtime: runtime, registry: registry, logs: logs, inspector: inspector, authFails: map[string]*authFailure{}}
+	s := &Server{cfg: cfg, runtime: runtime, registry: registry, logs: logs, inspector: inspector, connectivity: connectivity.New(runtime), authFails: map[string]*authFailure{}}
 	mux := http.NewServeMux()
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", secureStatic(http.FileServer(http.FS(sub)))))
 	mux.HandleFunc("GET /", s.index)
@@ -94,6 +96,8 @@ func New(cfg config.AdminConfig, runtime Runtime, registry *metrics.Registry, lo
 	mux.HandleFunc("DELETE /api/v1/bans/{client}", s.auth(s.deleteBan))
 	mux.HandleFunc("DELETE /api/v1/bans", s.auth(s.clearBans))
 	mux.HandleFunc("GET /api/v1/dashboard/overview", s.auth(s.overview))
+	mux.HandleFunc("GET /api/v1/connectivity", s.auth(s.connectivityStatus))
+	mux.HandleFunc("POST /api/v1/connectivity/check", s.auth(s.connectivityCheck))
 	mux.HandleFunc("GET /api/v1/edgeproxy/status", s.auth(s.edgeStatus))
 	mux.HandleFunc("GET /api/v1/edgeproxy/metrics", s.auth(s.edgeMetrics))
 	mux.HandleFunc("GET /api/v1/edgeproxy/logs", s.auth(s.edgeLogs))
@@ -193,7 +197,8 @@ func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	edgeRaw, edgeStatus, edgeErr := s.runtime.EdgeJSON(r.Context(), http.MethodGet, "/api/v1/status", nil, nil)
 	cfg := s.runtime.Config()
-	out := map[string]any{"generated_at": now(), "build": version.Info(), "mode": cfg.Server.Mode, "routes": s.runtime.Routes(), "log_store": s.logs.Stats(), "rate_limit_buckets": s.runtime.LimiterSize(), "active_bans": s.runtime.ActiveBanCount(), "admission": s.runtime.AdmissionSnapshot(), "edgeproxy": map[string]any{"reachable": edgeErr == nil, "http_status": edgeStatus}}
+	connection := s.connectivity.Snapshot(r.Context(), false)
+	out := map[string]any{"generated_at": now(), "build": version.Info(), "mode": cfg.Server.Mode, "routes": s.runtime.Routes(), "log_store": s.logs.Stats(), "rate_limit_buckets": s.runtime.LimiterSize(), "active_bans": s.runtime.ActiveBanCount(), "admission": s.runtime.AdmissionSnapshot(), "connectivity": connection, "edgeproxy": map[string]any{"reachable": edgeErr == nil, "http_status": edgeStatus}}
 	if edgeErr != nil {
 		out["edgeproxy"].(map[string]any)["error"] = edgeErr.Error()
 	} else {
@@ -280,10 +285,31 @@ func (s *Server) clearLogs(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{"removed_entries": s.logs.Clear(), "cleared_at": now()})
 }
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	edgeStatus, ss, se := s.runtime.EdgeJSON(ctx, http.MethodGet, "/api/v1/status", nil, nil)
-	edgeMetrics, ms, me := s.runtime.EdgeJSON(ctx, http.MethodGet, "/api/v1/metrics", nil, nil)
-	out := map[string]any{"generated_at": now(), "build": version.Info(), "security_metrics": s.registry.Snapshot(), "security_logs": s.logs.Query(securitylog.Filter{Limit: 10}), "security_status": map[string]any{"rate_limit_buckets": s.runtime.LimiterSize(), "active_bans": s.runtime.ActiveBanCount(), "admission": s.runtime.AdmissionSnapshot()}, "edgeproxy_status_code": ss, "edgeproxy_metrics_status_code": ms}
+	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.PollTimeout.Duration)
+	defer cancel()
+	type edgeResult struct {
+		raw    json.RawMessage
+		status int
+		err    error
+	}
+	statusCh := make(chan edgeResult, 1)
+	metricsCh := make(chan edgeResult, 1)
+	connectionCh := make(chan connectivity.Snapshot, 1)
+	go func() {
+		raw, status, err := s.runtime.EdgeJSON(ctx, http.MethodGet, "/api/v1/status", nil, nil)
+		statusCh <- edgeResult{raw: raw, status: status, err: err}
+	}()
+	go func() {
+		raw, status, err := s.runtime.EdgeJSON(ctx, http.MethodGet, "/api/v1/metrics", nil, nil)
+		metricsCh <- edgeResult{raw: raw, status: status, err: err}
+	}()
+	go func() { connectionCh <- s.connectivity.Snapshot(ctx, false) }()
+	statusResult := <-statusCh
+	metricsResult := <-metricsCh
+	connection := <-connectionCh
+	edgeStatus, ss, se := statusResult.raw, statusResult.status, statusResult.err
+	edgeMetrics, ms, me := metricsResult.raw, metricsResult.status, metricsResult.err
+	out := map[string]any{"generated_at": now(), "build": version.Info(), "connectivity": connection, "security_metrics": s.registry.Snapshot(), "security_logs": s.logs.Query(securitylog.Filter{Limit: 10}), "security_status": map[string]any{"rate_limit_buckets": s.runtime.LimiterSize(), "active_bans": s.runtime.ActiveBanCount(), "admission": s.runtime.AdmissionSnapshot()}, "edgeproxy_status_code": ss, "edgeproxy_metrics_status_code": ms}
 	if se != nil {
 		out["edgeproxy_status_error"] = se.Error()
 	} else {
@@ -296,6 +322,15 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, out)
 }
+
+func (s *Server) connectivityStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.connectivity.Snapshot(r.Context(), false))
+}
+
+func (s *Server) connectivityCheck(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.connectivity.Snapshot(r.Context(), true))
+}
+
 func (s *Server) exportLogs(w http.ResponseWriter, r *http.Request) {
 	f, err := s.parseLogFilter(r)
 	if err != nil {

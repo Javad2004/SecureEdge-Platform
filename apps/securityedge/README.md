@@ -1,11 +1,11 @@
-# SecurityEdge
+# SecurityEdge 3.1 Professional Connectivity
 
-SecurityEdge is the independent Phase 3 and Phase 4 implementation of the shared EdgeProxy bachelor project.
+SecurityEdge is the independent Phase 3 and Phase 4 implementation for the second member of the shared EdgeProxy bachelor project.
 
 - **Phase 3:** application-layer WAF, protocol validation, hierarchical traffic protection, temporary auto-ban, privacy-preserving security telemetry.
-- **Phase 4:** authenticated operations dashboard, policy management, SecurityEdge metrics/logs, and a backend-for-frontend for the EdgeProxy Admin API.
+- **Phase 4:** authenticated operations dashboard, policy management, SecurityEdge metrics/logs, live dependency monitoring, and a backend-for-frontend for the first member's Admin API.
 
-The uploaded EdgeProxy project is not modified. The active deployment is **standalone non-embedded gateway mode**.
+The uploaded first-member project is not modified. The active deployment is **standalone non-embedded gateway mode**.
 
 ## Real three-device topology
 
@@ -72,9 +72,11 @@ request ID and trusted client-IP resolution
 - Atomic configuration persistence with validation, temporary file sync, rollback staging, and hot reload.
 - Build/version metadata and `-version` CLI support.
 
-## Dashboard and Admin API
+## Dashboard, connectivity monitoring, and Admin API
 
-The dashboard is served from `http://127.0.0.1:9191` and combines:
+The dashboard is served from `http://127.0.0.1:9191`. Its Overview begins with a live dependency console that independently checks Technitium DNS, SecurityEdge ingress, EdgeProxy TCP/HTTP data plane, EdgeProxy Admin health/readiness, route readiness, origin health, metrics, and cache telemetry. It records latency, last success/failure, consecutive failures, process-lifetime availability, stale state, and bounded status transitions.
+
+The dashboard combines:
 
 - SecurityEdge overview, WAF detections, rejected requests, reasons, latency, rule/category counters.
 - Global/per-client rate-limit and concurrency state.
@@ -82,7 +84,7 @@ The dashboard is served from `http://127.0.0.1:9191` and combines:
 - Filtered cursor-paginated security events and CSV/NDJSON export.
 - Prometheus export.
 - Complete default and per-route policy editor.
-- EdgeProxy route readiness, origin health, cache entries/bytes/evictions, request/cache/latency metrics, access logs, and cache purge.
+- First-member route readiness, origin health, cache entries/bytes/evictions, request/cache/latency metrics, access logs, and cache purge.
 
 The EdgeProxy Admin token stays in the SecurityEdge backend and is never exposed to browser JavaScript.
 
@@ -94,7 +96,7 @@ The EdgeProxy Admin token stays in the SecurityEdge backend and is never exposed
 go run ./cmd/origin-demo -listen 0.0.0.0:9000 -name origin-a
 ```
 
-### Proxy device — EdgeProxy repository
+### Proxy device — first-member repository
 
 ```powershell
 go run ./cmd/edgeproxy `
@@ -155,6 +157,17 @@ Network scripts:
 .\scripts\test-current-network.ps1
 .\scripts\test-protection.ps1
 ```
+
+## Documentation
+
+Start with `docs/fa/00_START_HERE.md`. The delivery contains:
+
+- complete Persian beginner-to-advanced guide;
+- architecture, threat model, DDoS scope, deployment hardening, configuration reference, API contract, dashboard guide, test plan, and presentation guide;
+- exact file and Go symbol line maps;
+- numbered copies of every relevant source/config/script file;
+- a separate Persian line-by-line explanation for every relevant file.
+
 ## Scope statement
 
 SecurityEdge provides strong **application-layer DoS/DDoS mitigation** for this project through global/per-client rate limiting, bounded state, admission control, request limits, timeouts, and temporary bans. It does not claim to absorb network-layer volumetric attacks such as SYN floods, UDP floods, DNS floods, or bandwidth saturation; those require operating-system/network firewalling and upstream DDoS infrastructure.

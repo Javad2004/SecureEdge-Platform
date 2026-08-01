@@ -54,14 +54,32 @@ type TransportConfig struct {
 }
 
 type AdminConfig struct {
-	Enabled               bool           `json:"enabled"`
-	ListenAddr            string         `json:"listen_addr"`
-	AuthToken             string         `json:"auth_token"`
-	LogStore              LogStoreConfig `json:"log_store"`
-	PollTimeout           Duration       `json:"poll_timeout"`
-	MaxRequestBodyBytes   int64          `json:"max_request_body_bytes"`
-	AuthFailuresPerMinute int            `json:"auth_failures_per_minute"`
-	AuthLockoutDuration   Duration       `json:"auth_lockout_duration"`
+	Enabled               bool               `json:"enabled"`
+	ListenAddr            string             `json:"listen_addr"`
+	AuthToken             string             `json:"auth_token"`
+	LogStore              LogStoreConfig     `json:"log_store"`
+	Connectivity          ConnectivityConfig `json:"connectivity"`
+	PollTimeout           Duration           `json:"poll_timeout"`
+	MaxRequestBodyBytes   int64              `json:"max_request_body_bytes"`
+	AuthFailuresPerMinute int                `json:"auth_failures_per_minute"`
+	AuthLockoutDuration   Duration           `json:"auth_lockout_duration"`
+}
+
+type ConnectivityConfig struct {
+	Enabled         bool           `json:"enabled"`
+	CheckInterval   Duration       `json:"check_interval"`
+	Timeout         Duration       `json:"timeout"`
+	StaleAfter      Duration       `json:"stale_after"`
+	HistoryCapacity int            `json:"history_capacity"`
+	DNS             DNSProbeConfig `json:"dns"`
+}
+
+type DNSProbeConfig struct {
+	Enabled           bool     `json:"enabled"`
+	Critical          bool     `json:"critical"`
+	Server            string   `json:"server"`
+	Names             []string `json:"names"`
+	ExpectedAddresses []string `json:"expected_addresses"`
 }
 
 type LogStoreConfig struct {
@@ -155,7 +173,8 @@ func Default() Config {
 		Admin: AdminConfig{
 			Enabled: true, ListenAddr: "127.0.0.1:9191", PollTimeout: Duration{5 * time.Second},
 			MaxRequestBodyBytes: 1 << 20, AuthFailuresPerMinute: 10, AuthLockoutDuration: Duration{5 * time.Minute},
-			LogStore: LogStoreConfig{Capacity: 10000, DefaultPageSize: 100, MaxPageSize: 500, MaxFileBytes: 20 << 20, MaxBackups: 3},
+			LogStore:     LogStoreConfig{Capacity: 10000, DefaultPageSize: 100, MaxPageSize: 500, MaxFileBytes: 20 << 20, MaxBackups: 3},
+			Connectivity: ConnectivityConfig{Enabled: true, CheckInterval: Duration{5 * time.Second}, Timeout: Duration{3 * time.Second}, StaleAfter: Duration{15 * time.Second}, HistoryCapacity: 50},
 		},
 		EdgeProxy: EdgeProxyConfig{AdminURL: "http://127.0.0.1:9090", Timeout: Duration{5 * time.Second}},
 		WAF:       WAFConfig{MaximumMatchesPerRequest: 32},
@@ -265,6 +284,33 @@ func (c *Config) Validate() error {
 		}
 		if c.Admin.LogStore.FilePath != "" && (c.Admin.LogStore.MaxFileBytes <= 0 || c.Admin.LogStore.MaxBackups < 0) {
 			errs = append(errs, errors.New("file logging requires positive max_file_bytes and non-negative max_backups"))
+		}
+		if c.Admin.Connectivity.Enabled {
+			if c.Admin.Connectivity.CheckInterval.Duration < time.Second || c.Admin.Connectivity.CheckInterval.Duration > time.Hour {
+				errs = append(errs, errors.New("admin.connectivity.check_interval must be between 1s and 1h"))
+			}
+			if c.Admin.Connectivity.Timeout.Duration <= 0 || c.Admin.Connectivity.Timeout.Duration > c.Admin.Connectivity.CheckInterval.Duration {
+				errs = append(errs, errors.New("admin.connectivity.timeout must be positive and cannot exceed check_interval"))
+			}
+			if c.Admin.Connectivity.StaleAfter.Duration < c.Admin.Connectivity.CheckInterval.Duration {
+				errs = append(errs, errors.New("admin.connectivity.stale_after cannot be shorter than check_interval"))
+			}
+			if c.Admin.Connectivity.HistoryCapacity < 1 || c.Admin.Connectivity.HistoryCapacity > 10000 {
+				errs = append(errs, errors.New("admin.connectivity.history_capacity must be between 1 and 10000"))
+			}
+			if c.Admin.Connectivity.DNS.Enabled {
+				if _, _, err := net.SplitHostPort(strings.TrimSpace(c.Admin.Connectivity.DNS.Server)); err != nil {
+					errs = append(errs, errors.New("admin.connectivity.dns.server must be host:port"))
+				}
+				if len(c.Admin.Connectivity.DNS.Names) == 0 {
+					errs = append(errs, errors.New("admin.connectivity.dns.names must contain at least one domain when DNS probing is enabled"))
+				}
+				for _, address := range c.Admin.Connectivity.DNS.ExpectedAddresses {
+					if net.ParseIP(strings.TrimSpace(address)) == nil {
+						errs = append(errs, fmt.Errorf("invalid admin.connectivity.dns.expected_addresses entry %q", address))
+					}
+				}
+			}
 		}
 		if c.Admin.MaxRequestBodyBytes <= 0 || c.Admin.MaxRequestBodyBytes > 16<<20 {
 			errs = append(errs, errors.New("admin.max_request_body_bytes must be between 1 and 16777216"))

@@ -28,3 +28,15 @@ func TestDefaultConfigurationValid(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRejectsInvalidConnectivityDNSConfiguration(t *testing.T) {
+	cfg := Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Admin.Connectivity.DNS.Enabled = true
+	cfg.Admin.Connectivity.DNS.Server = "missing-port"
+	cfg.Admin.Connectivity.DNS.Names = []string{"project.test"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error")
+	}
+}

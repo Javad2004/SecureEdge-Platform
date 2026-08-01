@@ -56,8 +56,8 @@ function toast(message) {
 
 function lock() {
   $('login').classList.add('visible');
-  $('live-dot').classList.remove('live');
-  $('connection-label').textContent = 'Not connected';
+  $('live-dot').classList.remove('live','degraded','down');
+  $('connection-label').textContent = 'Console locked';
   sessionStorage.removeItem('securityedge_token');
   state.token = '';
 }
@@ -68,7 +68,7 @@ async function login(token) {
   sessionStorage.setItem('securityedge_token', token);
   $('login').classList.remove('visible');
   $('live-dot').classList.add('live');
-  $('connection-label').textContent = 'Connected';
+  $('connection-label').textContent = 'Checking dependencies';
   await refreshAll();
 }
 
@@ -98,7 +98,9 @@ async function refreshAll() {
     $('live-dot').classList.add('live');
   } catch (error) {
     toast(error.message);
-    $('live-dot').classList.remove('live');
+    $('live-dot').classList.remove('live','degraded');
+    $('live-dot').classList.add('down');
+    $('connection-label').textContent = 'Dashboard disconnected';
   }
 }
 
@@ -118,21 +120,114 @@ function rejectedCount(total) {
   return Number(total.blocked || 0) + Number(total.rate_limited || 0) + Number(total.overload_rejected || 0) + Number(total.banned_rejected || 0);
 }
 
+function normalizedStatus(value) {
+  const status = String(value || 'unknown').toLowerCase();
+  return ['healthy','degraded','down','unknown','not_applicable'].includes(status) ? status : 'unknown';
+}
+
+function statusLabel(value) {
+  return ({healthy:'Healthy',degraded:'Degraded',down:'Down',unknown:'Unknown',not_applicable:'N/A'})[normalizedStatus(value)];
+}
+
+function statusBadge(value) {
+  const status = normalizedStatus(value);
+  return `<span class="status-pill ${status}">${esc(statusLabel(status).toUpperCase())}</span>`;
+}
+
+function dateText(value, fallback = 'Never') {
+  if (!value) return fallback;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? fallback : date.toLocaleString();
+}
+
+function compactLatency(value) {
+  const latency = Number(value || 0);
+  return latency > 0 ? `${latency.toFixed(latency < 10 ? 2 : 1)} ms` : '—';
+}
+
+function componentByID(connectivity, id) {
+  return (connectivity.components || []).find(component => component.id === id) || null;
+}
+
+function topologyNode(status, title, subtitle, meta = '') {
+  const normalized = normalizedStatus(status);
+  return `<div class="topology-node ${normalized}"><div class="topology-node-head"><span class="node-dot"></span><strong>${esc(title)}</strong></div><span>${esc(subtitle)}</span>${meta ? `<small>${esc(meta)}</small>` : ''}</div>`;
+}
+
+function renderConnectivity() {
+  const connectivity = state.overview?.connectivity || {};
+  const generated = connectivity.generated_at ? new Date(connectivity.generated_at) : null;
+  const staleAfter = Number(connectivity.stale_after_seconds || 15) * 1000;
+  const stale = generated && !Number.isNaN(generated.getTime()) && Date.now() - generated.getTime() > staleAfter;
+  const overall = stale && connectivity.overall_status === 'healthy' ? 'degraded' : normalizedStatus(connectivity.overall_status);
+  const liveDot = $('live-dot');
+  liveDot.classList.remove('live','degraded','down');
+  if (overall === 'healthy') liveDot.classList.add('live');
+  else if (overall === 'degraded') liveDot.classList.add('degraded');
+  else if (overall === 'down') liveDot.classList.add('down');
+  $('connection-label').textContent = stale ? 'System status stale' : `System ${statusLabel(overall).toLowerCase()}`;
+  const panel = $('connectivity-panel');
+  panel.className = `panel connectivity-panel status-${overall}`;
+  $('connectivity-overall').className = `status-pill ${overall}`;
+  $('connectivity-overall').textContent = stale ? 'STALE' : statusLabel(overall).toUpperCase();
+  $('connectivity-title').textContent = overall === 'healthy' ? 'All monitored connections are healthy' : overall === 'down' ? 'Critical connectivity failure detected' : overall === 'degraded' ? 'Connectivity is degraded' : 'Connectivity status is unavailable';
+  $('connectivity-summary').textContent = stale ? 'The last probe is stale. Run a new check before relying on this status.' : (connectivity.summary || 'Waiting for the first dependency probe.');
+  $('connectivity-updated').textContent = connectivity.generated_at ? `Checked ${dateText(connectivity.generated_at)}${stale ? ' · stale' : ''}` : 'Not checked';
+  $('connectivity-traffic').innerHTML = statusBadge(connectivity.traffic_path_status);
+  $('connectivity-edge').innerHTML = statusBadge(connectivity.edgeproxy_connection_status);
+  $('connectivity-observability').innerHTML = statusBadge(connectivity.observability_status);
+  const counts = connectivity.counts || {};
+  $('connectivity-routes').textContent = `${fmt(counts.ready_routes)}/${fmt(counts.total_routes)} ready`;
+  $('connectivity-origins').textContent = `${fmt(counts.healthy_origins)}/${fmt(counts.total_origins)} origins healthy`;
+  $('connectivity-health-count').textContent = `${fmt(counts.components_healthy)} healthy · ${fmt(counts.components_degraded)} degraded · ${fmt(counts.components_down)} down`;
+
+  const dns = componentByID(connectivity, 'technitium_dns');
+  const ingress = componentByID(connectivity, 'securityedge_ingress');
+  const edgeHTTP = componentByID(connectivity, 'edgeproxy_data_http');
+  const routeStatus = counts.total_routes ? (counts.ready_routes === counts.total_routes ? 'healthy' : counts.ready_routes > 0 ? 'degraded' : 'down') : 'unknown';
+  const originStatus = counts.total_origins ? (counts.healthy_origins === counts.total_origins ? 'healthy' : counts.healthy_origins > 0 ? 'degraded' : 'down') : 'unknown';
+  const topology = [
+    topologyNode(dns?.status || 'not_applicable', 'Phone & Technitium', dns ? 'Local DNS probe' : 'DNS probe disabled', dns?.latency_ms ? compactLatency(dns.latency_ms) : 'External phone path not directly verified'),
+    '<span class="topology-arrow">→</span>',
+    topologyNode(ingress?.status, 'SecurityEdge', 'Public WAF ingress', ingress?.endpoint || '—'),
+    '<span class="topology-arrow">→</span>',
+    topologyNode(connectivity.edgeproxy_connection_status, 'EdgeProxy', 'Data plane + Admin API', edgeHTTP ? compactLatency(edgeHTTP.latency_ms) : '—'),
+    '<span class="topology-arrow">→</span>',
+    topologyNode(routeStatus, 'Routes', `${fmt(counts.ready_routes)}/${fmt(counts.total_routes)} ready`, 'Route readiness'),
+    '<span class="topology-arrow">→</span>',
+    topologyNode(originStatus, 'Origins', `${fmt(counts.healthy_origins)}/${fmt(counts.total_origins)} healthy`, 'Reported by EdgeProxy health checks')
+  ];
+  $('connectivity-topology').innerHTML = topology.join('');
+
+  const components = connectivity.components || [];
+  $('connectivity-components').innerHTML = components.length ? components.map(component => {
+    const status = normalizedStatus(component.status);
+    const error = component.error ? `<div class="component-error">${esc(component.error)}</div>` : '';
+    const endpoint = component.endpoint ? `<code>${esc(component.endpoint)}</code>` : '<span class="muted">No network endpoint</span>';
+    return `<article class="component-check ${status}"><div class="component-check-head"><div><span class="node-dot"></span><strong>${esc(component.name)}</strong></div>${statusBadge(status)}</div><p>${esc(component.message || 'No detail')}</p>${error}<div class="component-meta"><span>${endpoint}</span><span>Latency <strong>${compactLatency(component.latency_ms)}</strong></span><span>Availability <strong>${Number(component.availability_percent || 0).toFixed(1)}%</strong></span><span>Failures <strong>${fmt(component.consecutive_failures)}</strong></span></div><div class="component-times"><span>Last success: ${esc(dateText(component.last_success_at))}</span><span>Last failure: ${esc(dateText(component.last_failure_at))}</span></div></article>`;
+  }).join('') : '<div class="empty-state">No component checks are available.</div>';
+
+  const history = [...(connectivity.history || [])].reverse().slice(0, 12);
+  $('connectivity-history').innerHTML = history.length ? history.map(item => `<div class="transition-item"><span class="transition-time">${esc(dateText(item.timestamp))}</span><div><strong>${esc(item.component)}</strong><p>${statusBadge(item.from)} <span class="transition-arrow">→</span> ${statusBadge(item.to)}</p><small>${esc(item.message || '')}</small></div></div>`).join('') : '<div class="empty-state">No status transition has occurred during this process lifetime.</div>';
+}
+
 function renderOverview() {
+  renderConnectivity();
   const overview = state.overview || {};
   const security = overview.security_metrics || {};
   const total = security.total || {};
   const edgeMetrics = overview.edgeproxy_metrics || {};
   const edgeTotal = edgeMetrics.total || {};
   const edgeStatus = overview.edgeproxy_status || {};
-  $('kpi-requests').textContent = fmt(edgeTotal.requests);
-  $('kpi-rps').textContent = `${Number(edgeMetrics.requests_per_second || 0).toFixed(2)} req/s`;
+  const edgeConnected = normalizedStatus(overview.connectivity?.edgeproxy_connection_status) !== 'down' && Boolean(overview.edgeproxy_metrics);
+  $('kpi-requests').textContent = edgeConnected ? fmt(edgeTotal.requests) : '—';
+  $('kpi-rps').textContent = edgeConnected ? `${Number(edgeMetrics.requests_per_second || 0).toFixed(2)} req/s` : 'EdgeProxy unavailable';
   $('kpi-blocked').textContent = fmt(rejectedCount(total));
   $('kpi-block-rate').textContent = `${pct(total.block_rate)} rejection rate`;
   $('kpi-detections').textContent = fmt(total.detections);
   $('kpi-detection-rate').textContent = `${pct(total.detection_rate)} detection rate`;
-  $('kpi-cache').textContent = pct(edgeTotal.cache_hit_ratio);
-  $('kpi-cache-counts').textContent = `${fmt(edgeTotal.cache_hits)} hits · ${fmt(edgeTotal.cache_misses)} misses`;
+  $('kpi-cache').textContent = edgeConnected ? pct(edgeTotal.cache_hit_ratio) : '—';
+  $('kpi-cache-counts').textContent = edgeConnected ? `${fmt(edgeTotal.cache_hits)} hits · ${fmt(edgeTotal.cache_misses)} misses` : 'No cache telemetry';
   $('kpi-p95').textContent = ms(total.latency?.p95_ms);
   $('kpi-upstream').textContent = `${ms(edgeTotal.upstream?.latency_ms?.average)} upstream avg`;
   const routes = edgeStatus.routes || [];
@@ -140,8 +235,10 @@ function renderOverview() {
   const healthy = origins.filter(origin => origin.healthy).length;
   $('kpi-origins').textContent = `${healthy}/${origins.length}`;
   $('kpi-routes').textContent = `${routes.filter(route => route.ready).length}/${routes.length} routes ready`;
-  state.trend.push({requests: edgeTotal.requests || 0, blocked: rejectedCount(total), time: Date.now()});
-  if (state.trend.length > 30) state.trend.shift();
+  if (overview.edgeproxy_metrics) {
+    state.trend.push({requests: edgeTotal.requests || 0, blocked: rejectedCount(total), time: Date.now()});
+    if (state.trend.length > 30) state.trend.shift();
+  }
   drawTrend();
   renderBars($('rule-bars'), total.rules || {});
   renderSecurityRows($('recent-security'), overview.security_logs?.entries || [], false, 7);
@@ -264,7 +361,12 @@ function renderBans() {
 }
 
 function renderTraffic() {
-  const total = state.overview?.edgeproxy_metrics?.total || {};
+  if (!state.overview?.edgeproxy_metrics) {
+    $('cache-stats').innerHTML = '<div class="empty-state">EdgeProxy metrics are unavailable. Check the connectivity panel.</div>';
+    $('latency-stats').innerHTML = '<div class="empty-state">No EdgeProxy latency telemetry is available.</div>';
+    return;
+  }
+  const total = state.overview.edgeproxy_metrics.total || {};
   $('cache-stats').innerHTML = metricRows([
     ['Hits', fmt(total.cache_hits)], ['Misses', fmt(total.cache_misses)], ['Stale', fmt(total.cache_stale)],
     ['Bypasses', fmt(total.cache_bypasses)], ['Stores', fmt(total.cache_stores)], ['Hit ratio', pct(total.cache_hit_ratio)]
@@ -365,10 +467,15 @@ function renderSystem() {
   ]);
   const edgeStatus = state.overview?.edgeproxy_status_code;
   const routes = state.overview?.edgeproxy_status?.routes || [];
+  const connection = state.overview?.connectivity || {};
+  const edgeAdmin = componentByID(connection, 'edgeproxy_admin_health');
+  const edgeData = componentByID(connection, 'edgeproxy_data_http');
   $('edge-system').innerHTML = metricRows([
-    ['Admin HTTP status',edgeStatus||'unavailable'],['Metrics schema',state.overview?.edgeproxy_metrics?.schema_version||'—'],
-    ['Uptime',`${fmt(state.overview?.edgeproxy_metrics?.uptime_seconds)} s`],['In flight',fmt(state.overview?.edgeproxy_metrics?.inflight)],
-    ['Ready routes',`${routes.filter(route=>route.ready).length}/${routes.length}`]
+    ['Overall connection',statusLabel(connection.edgeproxy_connection_status)],['Data-plane HTTP',statusLabel(edgeData?.status)],
+    ['Admin API',statusLabel(edgeAdmin?.status)],['Admin HTTP status',edgeStatus||'unavailable'],
+    ['Last connectivity check',dateText(connection.generated_at)],['Data-plane latency',compactLatency(edgeData?.latency_ms)],
+    ['Metrics schema',state.overview?.edgeproxy_metrics?.schema_version||'—'],['Uptime',`${fmt(state.overview?.edgeproxy_metrics?.uptime_seconds)} s`],
+    ['In flight',fmt(state.overview?.edgeproxy_metrics?.inflight)],['Ready routes',`${routes.filter(route=>route.ready).length}/${routes.length}`]
   ]);
 }
 
@@ -391,6 +498,18 @@ $('clear-bans').onclick = async () => { if (!confirm('Clear all active temporary
 $('policy-form').onsubmit = savePolicy;
 $('delete-override').onclick = async () => { await api(`/api/v1/policies/${encodeURIComponent(state.selectedPolicy)}`,{method:'DELETE'}); await loadPolicies(); toast('Route override deleted'); };
 $('purge-form').onsubmit = async event => { event.preventDefault(); const query=new URLSearchParams({route:$('purge-route').value}); if($('purge-host').value.trim())query.set('host',$('purge-host').value.trim()); if($('purge-path').value.trim())query.set('path_prefix',$('purge-path').value.trim()); try { const data=await api(`/api/v1/edgeproxy/cache/purge?${query}`,{method:'POST'}); $('purge-result').textContent=`Purged ${data.purged_entries} entries.`; toast('Cache purged'); await refreshAll(); } catch(error) { $('purge-result').textContent=error.message; } };
+$('check-connectivity').onclick = async () => {
+  const button = $('check-connectivity');
+  button.disabled = true;
+  button.textContent = 'Checking…';
+  try {
+    const connectivity = await api('/api/v1/connectivity/check', {method:'POST'});
+    state.overview = {...(state.overview || {}), connectivity};
+    renderConnectivity();
+    toast('Connectivity check completed');
+  } catch (error) { toast(error.message); }
+  finally { button.disabled = false; button.textContent = 'Check now'; }
+};
 $('reload-config').onclick = async () => { await api('/api/v1/reload',{method:'POST'}); await refreshAll(); toast('Configuration reloaded'); };
 window.addEventListener('resize', () => state.overview && drawTrend());
 

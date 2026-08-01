@@ -41,6 +41,26 @@
       </header>
 
       <section id="view-overview" class="view active">
+        <article id="connectivity-panel" class="panel connectivity-panel status-unknown">
+          <div class="connectivity-hero">
+            <div class="connectivity-heading">
+              <div id="connectivity-icon" class="status-orb" aria-hidden="true"><span></span></div>
+              <div><p class="eyebrow">Live dependency monitoring</p><h2 id="connectivity-title">Checking system connectivity…</h2><p id="connectivity-summary">Waiting for the first dependency probe.</p></div>
+            </div>
+            <div class="connectivity-actions"><span id="connectivity-overall" class="status-pill unknown">UNKNOWN</span><span id="connectivity-updated" class="muted">Not checked</span><button id="check-connectivity" class="ghost">Check now</button></div>
+          </div>
+          <div class="connectivity-summary-grid">
+            <div class="connection-summary"><span>Traffic path</span><strong id="connectivity-traffic">—</strong><small>Client → SecurityEdge → EdgeProxy</small></div>
+            <div class="connection-summary"><span>EdgeProxy connection</span><strong id="connectivity-edge">—</strong><small>Data plane + Admin API</small></div>
+            <div class="connection-summary"><span>Observability</span><strong id="connectivity-observability">—</strong><small>Status, metrics, cache, logs</small></div>
+            <div class="connection-summary"><span>Routes / origins</span><strong id="connectivity-routes">—</strong><small id="connectivity-origins">— origins</small></div>
+          </div>
+          <div id="connectivity-topology" class="connectivity-topology" aria-label="Live service topology"></div>
+          <div class="grid two connectivity-details">
+            <div><div class="subhead"><h3>Live component checks</h3><span id="connectivity-health-count" class="muted">—</span></div><div id="connectivity-components" class="component-list"></div></div>
+            <div><div class="subhead"><h3>Recent status transitions</h3><span class="muted">Newest first</span></div><div id="connectivity-history" class="transition-list"></div></div>
+          </div>
+        </article>
         <div class="kpi-grid">
           <article class="kpi"><span>EdgeProxy requests</span><strong id="kpi-requests">—</strong><small id="kpi-rps">— req/s</small></article>
           <article class="kpi"><span>Security rejections</span><strong id="kpi-blocked">—</strong><small id="kpi-block-rate">— block rate</small></article>

@@ -1,153 +1,228 @@
-# EdgeProxy Go — Reverse Proxy, Load Balancer, HTTP Cache, and Observability
+# EdgeProxy
 
-This repository implements the first two phases of the bachelor's project:
+EdgeProxy is the reverse-proxy and HTTP-caching component of the [SecureEdge Platform](../../README.md). It can run independently or as the internal data plane behind [SecurityEdge](../securityedge/README.md).
 
-> Design and Implementation of a Web Application Firewall Featuring Reverse Proxy, Caching, and Web Security Mechanisms Using Go
-
-The code in this repository covers **Phase 1 (reverse proxy and traffic management)** and **Phase 2 (HTTP caching and performance optimization)**. The WAF and graphical dashboard remain separate later phases.
-
-## What is implemented
-
-### Reverse proxy and traffic management
-
-- Real HTTP reverse proxy between client and origin devices
-- Host- and path-based routing for multiple websites and APIs
-- Exact-host, wildcard-host, and longest-path route precedence
-- Multiple origins per route with round-robin load balancing
-- Active health checks and route-level readiness
-- Retry of replayable idempotent requests on transport failures and 502/503/504 responses
-- Connection pooling and optional HTTPS connections to origins
-- Forwarding headers: `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host`
-- Correlated requests through `X-Request-ID`
-- Hop-by-hop header removal
-- Graceful shutdown of proxy, admin server, and demo origin
-- Optional inbound TLS termination
-
-### HTTP cache
-
-- Thread-safe in-memory LRU cache
-- Entry-count, total-byte, and per-object limits
-- TTL from `s-maxage`, `max-age`, or `Expires`
-- Safe bypass rules for `no-store`, `private`, Authorization, Cookie, Set-Cookie, Range, and unsupported `Vary`
-- Cache keys based on method, canonical host, URI, and configured request headers
-- `X-Cache: HIT`, `MISS`, `BYPASS`, or `STALE`
-- `Age` header and conditional 304 responses
-- Cache-stampede prevention with per-key locking
-- Stale-if-error fallback
-- Route/host/path cache purge API
-
-### Observability and administration
-
-- Global, per-route, and per-origin metrics
-- Request, status-code, cache, retry, timeout, byte, and latency statistics
-- Histogram-based P50/P95/P99 latency estimates
-- Bounded thread-safe in-memory log ring buffer
-- Correlated request, origin-attempt, health-change, and cache-purge events
-- Filtering, time ranges, pagination, and sensitive query-value redaction
-- Separate admin listener protected by Bearer token
-- `EDGEPROXY_ADMIN_TOKEN` environment override for deployments
-
-## Active three-device configuration
-
-`configs/edgeproxy.json` is the current Windows/LAN demonstration configuration:
+This README assumes commands are executed from:
 
 ```text
-Phone or client
-    |
-    | DNS: project.test -> Proxy IP
-    | HTTP port 80
-    v
-EdgeProxy device
-    | public: 0.0.0.0:80
-    | admin:  127.0.0.1:9090
-    v
-Origin device
-    | http://10.36.74.43:9000
+apps/edgeproxy
 ```
 
-Supported hosts in that file include:
+## Responsibilities
+
+EdgeProxy owns the platform's upstream delivery path:
+
+- host- and path-based route matching;
+- multiple origins per route;
+- round-robin origin selection;
+- active origin health checks;
+- route-level readiness;
+- HTTP reverse proxying and forwarding headers;
+- retries for safe replayable requests;
+- connection pooling and upstream timeouts;
+- in-memory HTTP caching;
+- cache-stampede prevention;
+- stale-if-error fallback;
+- structured access and origin-attempt logs;
+- request, cache, origin, retry, byte, and latency metrics;
+- an authenticated Admin API.
+
+In the active integrated deployment, EdgeProxy does **not** expose the public listener. SecurityEdge receives public traffic first and forwards accepted requests to EdgeProxy on loopback.
+
+## Architecture
+
+### Integrated platform mode
 
 ```text
-project.local
-project.test
-www.project.test
-localhost
-127.0.0.1
+SecurityEdge
+127.0.0.1 → EdgeProxy:8080
+                    │
+                    ├── route matching
+                    ├── cache processing
+                    ├── healthy-origin selection
+                    └── upstream observability
+                    ▼
+                  Origin
 ```
 
-Change the upstream URL when the Origin IP changes.
+### Standalone mode
 
-## Run the three-device configuration
+```text
+HTTP client → EdgeProxy → Origin
+```
 
-On the Origin device:
+Standalone mode is useful for isolated development and for demonstrating the reverse-proxy and cache phases without SecurityEdge.
+
+## Configuration profiles
+
+| Configuration | Listener | Origin | Usage |
+|---|---:|---|---|
+| `configs/local-dev.json` | `127.0.0.1:8080` | `127.0.0.1:9000` | Local EdgeProxy-only development |
+| `configs/edgeproxy.json` | `0.0.0.0:80` | `10.36.74.43:9000` | Standalone LAN demonstration |
+| `../../integration/edgeproxy-local-behind-waf.json` | `127.0.0.1:8080` | `127.0.0.1:9000` | Local integrated platform |
+| `../../integration/edgeproxy-behind-waf.json` | `127.0.0.1:8080` | `10.36.74.43:9000` | LAN integrated platform |
+| `configs/compose.json` | `0.0.0.0:8080` | `origin:9000` | Docker Compose demonstration |
+
+The shared profiles are stored in the root-level [`integration`](../../integration/README.md) directory because they define the contract between both applications.
+
+## Quick start: local standalone mode
+
+### 1. Start the demo Origin
 
 ```powershell
-go run ./cmd/origin-demo -listen 0.0.0.0:9000 -name origin-a
+go run ./cmd/origin-demo `
+  -listen 127.0.0.1:9000 `
+  -name origin-local
 ```
 
-On the Proxy device:
+### 2. Start EdgeProxy
+
+In another terminal, still from `apps/edgeproxy`:
 
 ```powershell
-go run ./cmd/edgeproxy -config .\configs\edgeproxy.json -validate
-go run ./cmd/edgeproxy -config .\configs\edgeproxy.json -pretty-logs
+go run ./cmd/edgeproxy `
+  -config ./configs/local-dev.json `
+  -pretty-logs
 ```
 
-From the client:
+### 3. Test proxying and caching
+
+```powershell
+curl.exe -i http://127.0.0.1:8080/api/products
+curl.exe -i http://127.0.0.1:8080/api/products
+```
+
+Expected cache headers:
 
 ```text
-http://project.test
-http://project.test/api/products
+first request   X-Cache: MISS
+second request  X-Cache: HIT
 ```
 
-For a reliable cache test, send two ordinary requests rather than browser refresh requests:
+Dynamic responses such as `/api/time` should bypass storage according to their origin cache policy:
 
-```bash
-curl -i http://project.test/api/products
-curl -i http://project.test/api/products
+```powershell
+curl.exe -i http://127.0.0.1:8080/api/time
 ```
 
-Expected result:
+## Run behind SecurityEdge
+
+Start the demo Origin as above, then run EdgeProxy with the shared local integration profile:
+
+```powershell
+go run ./cmd/edgeproxy `
+  -config ../../integration/edgeproxy-local-behind-waf.json `
+  -pretty-logs
+```
+
+For the LAN profile:
+
+```powershell
+go run ./cmd/edgeproxy `
+  -config ../../integration/edgeproxy-behind-waf.json `
+  -pretty-logs
+```
+
+In both integrated profiles, EdgeProxy binds to:
 
 ```text
-first request  -> X-Cache: MISS
-second request -> X-Cache: HIT
+Data plane   127.0.0.1:8080
+Admin API    127.0.0.1:9090
 ```
 
-## Local development on one computer
+Start SecurityEdge separately by following [`../securityedge/README.md`](../securityedge/README.md).
 
-`configs/local-dev.json` intentionally uses port `8080` and token `dev-token`:
+## Routing
 
-```bash
-go run ./cmd/origin-demo -listen :9000 -name origin-a
-go run ./cmd/edgeproxy -config configs/local-dev.json -pretty-logs
+Each route can define:
+
+- exact or wildcard hosts;
+- a path prefix;
+- optional prefix stripping;
+- host preservation behavior;
+- one or more upstream origins;
+- proxy and retry settings;
+- cache policy;
+- active health checks.
+
+Routing precedence favors the most specific host/path match. Example profiles are available in:
+
+```text
+configs/examples/multi-origin.json
+configs/examples/multi-route.json
 ```
 
-Add `127.0.0.1 project.local` to the local hosts file and test:
+## Reverse-proxy behavior
 
-```bash
-curl -i http://project.local:8080/api/products
+EdgeProxy provides:
+
+- `X-Forwarded-For`, `X-Forwarded-Proto`, and `X-Forwarded-Host` handling;
+- `X-Request-ID` generation and propagation;
+- hop-by-hop header removal;
+- optional incoming TLS termination;
+- optional HTTPS upstreams;
+- bounded response headers;
+- transport, response-header, request, and idle timeouts;
+- retries for idempotent replayable requests after transport failures or configured upstream errors;
+- graceful shutdown.
+
+## HTTP cache
+
+The cache is an in-memory, thread-safe LRU with:
+
+- entry-count, total-byte, and per-object limits;
+- TTL derived from `s-maxage`, `max-age`, `Expires`, or the route default;
+- `X-Cache: HIT`, `MISS`, `BYPASS`, or `STALE`;
+- `Age` response headers;
+- conditional `304 Not Modified` support;
+- per-key locking to prevent cache stampedes;
+- stale-if-error fallback;
+- route/host/path purge support.
+
+Requests or responses are bypassed when caching would be unsafe, including common cases involving `Authorization`, cookies, `Set-Cookie`, `Range`, `private`, `no-store`, or unsupported `Vary` values.
+
+## Demo Origin endpoints
+
+The included Origin server provides:
+
+```text
+GET /healthz       liveness response
+GET /               basic Origin identity
+GET /api/products   cacheable JSON response
+GET /api/time       dynamic response
+GET /api/private    private/non-cacheable response
+GET /api/slow       delayed response
+GET /api/error      upstream error response
+GET /api/counter    request counter
 ```
 
 ## Admin API
 
-The active three-device configuration binds the admin listener to loopback only. Run these commands on the Proxy device:
+The Admin API defaults to `127.0.0.1:9090` in local and integrated profiles.
 
-```powershell
-$AdminUrl = "http://127.0.0.1:9090"
-$Token = "EdgeProxyDemo2026"
-$Auth = "Authorization: Bearer $Token"
-```
-
-Endpoints:
+Liveness and readiness:
 
 ```text
-GET     /healthz
-GET     /readyz
+GET /healthz
+GET /readyz
+```
+
+Authenticated endpoints:
+
+```text
 GET     /api/v1/status
 GET     /api/v1/metrics
 GET     /api/v1/logs
 DELETE  /api/v1/logs
 POST    /api/v1/cache/purge
+```
+
+Local-development credentials:
+
+```powershell
+$AdminUrl = "http://127.0.0.1:9090"
+$Token = "dev-token"
+$Auth = "Authorization: Bearer $Token"
 ```
 
 Examples:
@@ -160,66 +235,100 @@ curl.exe -s -H $Auth "$AdminUrl/api/v1/metrics"
 curl.exe -s -H $Auth "$AdminUrl/api/v1/logs?limit=100"
 ```
 
-`/healthz` is process liveness. `/readyz` returns `503 Service Unavailable` when any route has no healthy origin.
-
-Purge one route's cache:
+Purge the cache for one route:
 
 ```powershell
 curl.exe -X POST -H $Auth `
   "$AdminUrl/api/v1/cache/purge?route=demo-app"
 ```
 
-## Admin-token environment override
+`/healthz` reports process liveness. `/readyz` reports `503 Service Unavailable` when any configured route has no healthy Origin.
+
+## Admin-token override
 
 The environment variable takes precedence over the JSON value:
 
 ```powershell
-$env:EDGEPROXY_ADMIN_TOKEN = "replace-with-a-long-random-token"
-go run ./cmd/edgeproxy -config .\configs\edgeproxy.json -pretty-logs
+$env:EDGEPROXY_ADMIN_TOKEN = "<strong-random-token>"
+
+go run ./cmd/edgeproxy `
+  -config ./configs/local-dev.json `
+  -pretty-logs
 ```
 
-This is preferable for non-demo deployments because the real token does not need to be committed to the repository.
+Use environment-based secret injection outside demonstration environments.
 
-## Multiple origins and routes
+## Scripts
 
-Ready-to-copy examples are provided in:
+Run from `apps/edgeproxy`:
 
-```text
-configs/examples/multi-origin.json
-configs/examples/multi-route.json
+```powershell
+.\scripts\start-origin.ps1
+.\scripts\start-proxy.ps1 -Config ./configs/local-dev.json
+.\scripts\test-proxy.ps1 -ProxyUrl http://127.0.0.1:8080 -Token dev-token
 ```
 
-Each route has independent hosts, path prefix, origin pool, health state, cache, metrics, and filterable logs.
+For the integrated LAN profile, supply the public SecurityEdge URL to traffic-generation scripts rather than connecting clients directly to EdgeProxy.
 
 ## Build and verification
 
-```bash
-gofmt -w ./cmd ./internal
+```powershell
+go fmt ./...
+
 go vet ./...
 go test ./...
 go test -race ./...
-go build ./cmd/edgeproxy
-go build ./cmd/origin-demo
+
+go build -trimpath -o ./bin/edgeproxy ./cmd/edgeproxy
+go build -trimpath -o ./bin/origin-demo ./cmd/origin-demo
 ```
 
-No third-party Go dependency is required.
+Makefile targets:
 
-## Docker
+```powershell
+make fmt
+make vet
+make test
+make validate
+make build
+```
 
-The container runs as a non-root user and therefore uses internal port `8080`:
+## Docker Compose
 
-```bash
+Run from `apps/edgeproxy`:
+
+```powershell
 docker compose up --build
 ```
 
-Then access:
+Then access the standalone Compose proxy at:
 
 ```text
-http://project.local:8080
+http://127.0.0.1:8080
 ```
 
-The admin port is published only on host loopback:
+The Admin API is published only on host loopback:
 
 ```text
 127.0.0.1:9090
 ```
+
+This Compose file demonstrates EdgeProxy and the demo Origin only; it is not the complete SecurityEdge Platform deployment.
+
+## Security guidance
+
+- In integrated mode, keep ports `8080` and `9090` on loopback.
+- Do not expose the Admin API to untrusted networks.
+- Use `EDGEPROXY_ADMIN_TOKEN` for real credentials.
+- Restrict the Origin application port to the gateway host.
+- Treat `configs/edgeproxy.json` and the checked-in tokens as demonstration values.
+
+## Related documentation
+
+- [SecureEdge Platform](../../README.md)
+- [SecurityEdge](../securityedge/README.md)
+- [Platform integration](../../integration/README.md)
+
+## License
+
+See [../../LICENSE](../../LICENSE).

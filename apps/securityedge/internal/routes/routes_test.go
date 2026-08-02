@@ -90,3 +90,12 @@ func TestLoadNormalizesValidHostPatterns(t *testing.T) {
 		}
 	}
 }
+
+func TestMatchNormalizesBracketedIPv6HostWithoutPort(t *testing.T) {
+	table := &Table{routes: []Route{{Name: "ipv6", Hosts: []string{"::1"}, PathPrefix: "/"}}}
+	req := httptest.NewRequest("GET", "http://[::1]/healthz", nil)
+	got, ok := table.Match(req)
+	if !ok || got.Name != "ipv6" {
+		t.Fatalf("expected IPv6 route, got %#v, ok=%v", got, ok)
+	}
+}

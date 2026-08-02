@@ -38,16 +38,20 @@ func main() {
 		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
 	}
 	logger := slog.New(handler)
+	if *validate {
+		if err := securityedge.Validate(*configPath); err != nil {
+			logger.Error("configuration failed", "error", err)
+			os.Exit(1)
+		}
+		fmt.Println("configuration is valid")
+		return
+	}
 	runtime, err := securityedge.New(*configPath, logger)
 	if err != nil {
 		logger.Error("configuration failed", "error", err)
 		os.Exit(1)
 	}
 	defer runtime.Close()
-	if *validate {
-		fmt.Println("configuration is valid")
-		return
-	}
 	cfg := runtime.Config()
 	adminServer, err := runtime.AdminServer()
 	if err != nil {

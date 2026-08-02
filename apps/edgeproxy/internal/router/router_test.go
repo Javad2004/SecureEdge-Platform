@@ -60,3 +60,12 @@ func TestMatchUsesCanonicalRequestPath(t *testing.T) {
 		t.Fatalf("expected canonical /admin route, got %#v, ok=%v", match, ok)
 	}
 }
+
+func TestMatchNormalizesBracketedIPv6HostWithoutPort(t *testing.T) {
+	r := New([]config.RouteConfig{{Name: "ipv6", Hosts: []string{"::1"}, PathPrefix: "/"}})
+	req := httptest.NewRequest("GET", "http://[::1]/healthz", nil)
+	match, ok := r.Match(req)
+	if !ok || match.Route.Name != "ipv6" {
+		t.Fatalf("expected IPv6 route, got %#v, ok=%v", match, ok)
+	}
+}

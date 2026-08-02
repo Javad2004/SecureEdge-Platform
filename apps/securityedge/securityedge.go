@@ -50,42 +50,66 @@ type Runtime struct {
 	clients   *clientip.Resolver
 }
 
+type preparedRuntime struct {
+	cfg       config.Config
+	table     *routes.Table
+	edge      *edgeadmin.Client
+	inspector *waf.Inspector
+	clients   *clientip.Resolver
+}
+
+// Validate checks the complete SecurityEdge configuration, including the
+// referenced EdgeProxy route table, without creating log files or starting
+// runtime background workers.
+func Validate(configPath string) error {
+	_, err := prepareRuntime(configPath)
+	return err
+}
+
+func prepareRuntime(configPath string) (preparedRuntime, error) {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return preparedRuntime{}, err
+	}
+	table, err := routes.Load(resolveEdgeConfigPath(configPath, cfg.EdgeProxy.ConfigPath))
+	if err != nil {
+		return preparedRuntime{}, err
+	}
+	if err := validateRoutePolicies(cfg, table); err != nil {
+		return preparedRuntime{}, err
+	}
+	edge, err := edgeadmin.New(cfg.EdgeProxy.AdminURL, cfg.EdgeProxy.AdminToken, cfg.EdgeProxy.Timeout.Duration)
+	if err != nil {
+		return preparedRuntime{}, err
+	}
+	inspector, err := waf.NewInspector(cfg.WAF.CustomRules, cfg.WAF.MaximumMatchesPerRequest)
+	if err != nil {
+		return preparedRuntime{}, err
+	}
+	clients, err := clientip.New(cfg.Server.TrustedProxyCIDRs, cfg.Server.ForwardedForHeader)
+	if err != nil {
+		return preparedRuntime{}, err
+	}
+	return preparedRuntime{cfg: cfg, table: table, edge: edge, inspector: inspector, clients: clients}, nil
+}
+
 func New(configPath string, logger *slog.Logger) (*Runtime, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	cfg, err := config.Load(configPath)
+	prepared, err := prepareRuntime(configPath)
 	if err != nil {
 		return nil, err
 	}
-	table, err := routes.Load(resolveEdgeConfigPath(configPath, cfg.EdgeProxy.ConfigPath))
-	if err != nil {
-		return nil, err
-	}
-	if err := validateRoutePolicies(cfg, table); err != nil {
-		return nil, err
-	}
-	edge, err := edgeadmin.New(cfg.EdgeProxy.AdminURL, cfg.EdgeProxy.AdminToken, cfg.EdgeProxy.Timeout.Duration)
-	if err != nil {
-		return nil, err
-	}
-	inspector, err := waf.NewInspector(cfg.WAF.CustomRules, cfg.WAF.MaximumMatchesPerRequest)
-	if err != nil {
-		return nil, err
-	}
-	clients, err := clientip.New(cfg.Server.TrustedProxyCIDRs, cfg.Server.ForwardedForHeader)
-	if err != nil {
-		return nil, err
-	}
-	logs, err := securitylog.NewWithConfig(cfg.Admin.LogStore)
+	logs, err := securitylog.NewWithConfig(prepared.cfg.Admin.LogStore)
 	if err != nil {
 		return nil, err
 	}
 	return &Runtime{
-		configPath: configPath, logger: logger, cfg: cfg, table: table, edge: edge,
-		registry: metrics.New(), logs: logs, traffic: traffic.New(traffic.DefaultCapacity, traffic.DefaultWindow), inspector: inspector,
-		limiter: ratelimit.New(cfg.DefaultPolicy.RateLimit.CleanupInterval.Duration, cfg.DefaultPolicy.RateLimit.IdleTTL.Duration),
-		bans:    ratelimit.NewBanManager(), admission: admission.New(), clients: clients,
+		configPath: configPath, logger: logger, cfg: prepared.cfg, table: prepared.table, edge: prepared.edge,
+		registry: metrics.New(), logs: logs, traffic: traffic.New(traffic.DefaultCapacity, traffic.DefaultWindow), inspector: prepared.inspector,
+		limiter: ratelimit.New(prepared.cfg.DefaultPolicy.RateLimit.CleanupInterval.Duration, prepared.cfg.DefaultPolicy.RateLimit.IdleTTL.Duration),
+		bans:    ratelimit.NewBanManager(), admission: admission.New(), clients: prepared.clients,
 	}, nil
 }
 

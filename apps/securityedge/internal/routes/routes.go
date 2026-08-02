@@ -98,10 +98,18 @@ func (t *Table) Routes() []Route {
 }
 
 func canonicalHost(hostport string) string {
+	hostport = strings.TrimSpace(hostport)
 	if host, _, err := net.SplitHostPort(hostport); err == nil {
 		hostport = host
+	} else if strings.HasPrefix(hostport, "[") && strings.HasSuffix(hostport, "]") {
+		// A Host header may contain a bracketed IPv6 literal without a port.
+		// Config validation stores IP literals in canonical, unbracketed form,
+		// so normalize the request-side representation the same way.
+		if ip := net.ParseIP(strings.TrimSuffix(strings.TrimPrefix(hostport, "["), "]")); ip != nil {
+			hostport = ip.String()
+		}
 	}
-	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(hostport), "."))
+	return strings.ToLower(strings.TrimSuffix(hostport, "."))
 }
 func hostMatchSpecificity(patterns []string, host string) (bool, int) {
 	best := -1

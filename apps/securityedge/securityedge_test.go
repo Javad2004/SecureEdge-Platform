@@ -12,6 +12,32 @@ import (
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
 )
 
+func TestValidateDoesNotCreatePersistentLogFiles(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Admin.LogStore.FilePath = filepath.Join(dir, "logs", "security.ndjson")
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Validate(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cfg.Admin.LogStore.FilePath); !os.IsNotExist(err) {
+		t.Fatalf("validation created persistent log file: err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(cfg.Admin.LogStore.FilePath)); !os.IsNotExist(err) {
+		t.Fatalf("validation created persistent log directory: err=%v", err)
+	}
+}
+
 func TestPolicyWriteDoesNotPersistEnvironmentSecretsOrAbsoluteRoutePath(t *testing.T) {
 	dir := t.TempDir()
 	edgePath := filepath.Join(dir, "edge.json")

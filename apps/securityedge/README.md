@@ -207,6 +207,8 @@ The dashboard token is entered by the operator. The EdgeProxy token is used only
 
 The Origin should permit its application port only from the gateway host. Untrusted clients should not connect directly to EdgeProxy, either Admin API, or the Origin port.
 
+SecurityEdge connects to the configured EdgeProxy data plane directly and does not inherit ambient `HTTP_PROXY` or `HTTPS_PROXY` settings. This prevents internal application traffic from being redirected through an unrelated host-level proxy.
+
 ## Dashboard behavior
 
 The Overview page separates service health from traffic activity.

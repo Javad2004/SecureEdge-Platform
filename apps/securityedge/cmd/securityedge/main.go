@@ -119,7 +119,8 @@ func main() {
 func newReverseProxy(target *url.URL, cfg config.ServerConfig, logger *slog.Logger) *httputil.ReverseProxy {
 	t := cfg.UpstreamTransport
 	transport := &http.Transport{
-		Proxy:             http.ProxyFromEnvironment,
+		// EdgeProxy is an internal data-plane dependency; never inherit ambient proxy settings.
+		Proxy:             nil,
 		DialContext:       (&net.Dialer{Timeout: t.DialTimeout.Duration, KeepAlive: 30 * time.Second}).DialContext,
 		ForceAttemptHTTP2: true, MaxIdleConns: t.MaxIdleConns, MaxIdleConnsPerHost: t.MaxIdleConnsPerHost,
 		MaxConnsPerHost: t.MaxConnsPerHost, IdleConnTimeout: t.IdleConnTimeout.Duration,

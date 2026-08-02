@@ -40,7 +40,8 @@ func newUpstreamPool(route config.RouteConfig) (*upstreamPool, error) {
 			return nil, fmt.Errorf("parse upstream %q: %w", raw.URL, err)
 		}
 		tr := &http.Transport{
-			Proxy:                  http.ProxyFromEnvironment,
+			// Origin traffic is an internal data-plane hop; never inherit ambient proxy settings.
+			Proxy:                  nil,
 			DialContext:            (&netDialer{timeout: route.Proxy.DialTimeout.Duration}).DialContext,
 			ForceAttemptHTTP2:      true,
 			MaxIdleConns:           route.Proxy.MaxIdleConns,

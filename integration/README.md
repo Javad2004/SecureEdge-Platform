@@ -170,6 +170,7 @@ When changing a paired deployment profile:
 ## Security boundaries
 
 - SecurityEdge is the only public HTTP ingress.
+- SecurityEdge-to-EdgeProxy and EdgeProxy-to-Origin data-plane connections are direct and do not use ambient `HTTP_PROXY` or `HTTPS_PROXY` variables.
 - EdgeProxy and Origin listeners are loopback-only on host deployments or unpublished on private container networks.
 - The SecurityEdge dashboard remains loopback-bound on the host unless another trusted access layer is added.
 - Runtime tokens, logs, `.env` files, and generated artifacts are not committed.

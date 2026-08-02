@@ -65,5 +65,8 @@ func (h *Handler) PurgeCache(routeName, host, pathPrefix string) (int, bool) {
 	if host == "" && pathPrefix == "" {
 		return rt.cache.Clear(), true
 	}
+	if host != "" {
+		host = cacheHost(host)
+	}
 	return rt.cache.Purge(host, pathPrefix), true
 }

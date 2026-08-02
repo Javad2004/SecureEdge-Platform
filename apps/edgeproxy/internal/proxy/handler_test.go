@@ -789,3 +789,57 @@ func TestCachedResponseNeverReplaysSetCookie(t *testing.T) {
 		t.Fatalf("origin calls=%d, want 1", calls.Load())
 	}
 }
+
+func TestMustRevalidateDisablesStaleIfError(t *testing.T) {
+	now := time.Date(2026, time.August, 2, 12, 0, 0, 0, time.UTC)
+	cfg := testConfig("http://127.0.0.1").Routes[0].Cache
+	cfg.StaleIfError = config.Duration{Duration: 2 * time.Minute}
+
+	for _, directive := range []string{"must-revalidate", "proxy-revalidate"} {
+		t.Run(directive, func(t *testing.T) {
+			resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}
+			resp.Header.Set("Cache-Control", "public, max-age=60, "+directive)
+			cacheable, expiresAt, staleUntil, _ := responseCachePolicy(
+				httptest.NewRequest(http.MethodGet, "http://proxy.test/revalidate", nil),
+				resp,
+				cfg,
+				now,
+			)
+			if !cacheable {
+				t.Fatal("response should remain cacheable while fresh")
+			}
+			if !staleUntil.Equal(expiresAt) {
+				t.Fatalf("%s must disable stale serving: expires=%v stale_until=%v", directive, expiresAt, staleUntil)
+			}
+		})
+	}
+}
+
+func TestCacheKeySeparatesRequestAuthoritiesByPort(t *testing.T) {
+	cfg := testConfig("http://127.0.0.1").Routes[0].Cache
+	first := httptest.NewRequest(http.MethodGet, "http://proxy.test/resource", nil)
+	first.Host = "Proxy.Test:8080"
+	second := httptest.NewRequest(http.MethodGet, "http://proxy.test/resource", nil)
+	second.Host = "proxy.test:9090"
+
+	if cacheKey(first, cfg) == cacheKey(second, cfg) {
+		t.Fatal("cache keys must not merge distinct request authorities")
+	}
+	if got := cacheHost("Proxy.Test.:8080"); got != "proxy.test:8080" {
+		t.Fatalf("cache authority was not normalized: %q", got)
+	}
+}
+
+func TestOriginTransportIgnoresAmbientProxySettings(t *testing.T) {
+	route := testConfig("http://origin.internal:9000").Routes[0]
+	pool, err := newUpstreamPool(route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pool.nodes) != 1 {
+		t.Fatalf("unexpected upstream count: %d", len(pool.nodes))
+	}
+	if pool.nodes[0].transport.Proxy != nil {
+		t.Fatal("origin transport must connect directly instead of honoring HTTP_PROXY/HTTPS_PROXY")
+	}
+}

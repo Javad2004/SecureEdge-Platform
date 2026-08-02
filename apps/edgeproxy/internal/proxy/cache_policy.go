@@ -96,10 +96,14 @@ func responseCachePolicy(req *http.Request, resp *http.Response, cfg config.Cach
 	}
 
 	ttl := cfg.DefaultTTL.Duration
+	allowStale := true
 	if cfg.RespectOriginHeaders {
 		cc := parseCacheControl(resp.Header.Values("Cache-Control"))
 		if hasCacheDirective(cc, "no-store") || hasCacheDirective(cc, "private") || hasCacheDirective(cc, "no-cache") || headerHasToken(resp.Header.Values("Pragma"), "no-cache") {
 			return false, time.Time{}, time.Time{}, 0
+		}
+		if hasCacheDirective(cc, "must-revalidate") || hasCacheDirective(cc, "proxy-revalidate") {
+			allowStale = false
 		}
 		initialAge = responseInitialAge(resp.Header, now)
 		if value := firstNonEmpty(cc["s-maxage"], cc["max-age"]); value != "" {
@@ -122,7 +126,10 @@ func responseCachePolicy(req *http.Request, resp *http.Response, cfg config.Cach
 		return false, time.Time{}, time.Time{}, 0
 	}
 	expiresAt = now.Add(ttl)
-	staleUntil = expiresAt.Add(cfg.StaleIfError.Duration)
+	staleUntil = expiresAt
+	if allowStale {
+		staleUntil = expiresAt.Add(cfg.StaleIfError.Duration)
+	}
 	return true, expiresAt, staleUntil, initialAge
 }
 
@@ -234,8 +241,9 @@ func normalizeETag(value string) string {
 
 func cacheHost(hostport string) string {
 	hostport = strings.ToLower(strings.TrimSpace(hostport))
-	if host, _, err := net.SplitHostPort(hostport); err == nil {
-		return strings.TrimSuffix(host, ".")
+	if host, port, err := net.SplitHostPort(hostport); err == nil {
+		host = strings.TrimSuffix(host, ".")
+		return net.JoinHostPort(host, port)
 	}
 	return strings.TrimSuffix(hostport, ".")
 }

@@ -22,7 +22,7 @@ EdgeProxy owns the platform's upstream delivery path:
 - connection pooling and upstream timeouts;
 - in-memory HTTP caching;
 - cache-stampede prevention;
-- stale-if-error fallback;
+- stale-if-error fallback, except when the Origin requires revalidation with `must-revalidate` or `proxy-revalidate`;
 - structured access and origin-attempt logs;
 - request, cache, origin, retry, byte, and latency metrics;
 - an authenticated Admin API.
@@ -166,6 +166,7 @@ EdgeProxy provides:
 - optional incoming TLS termination;
 - optional HTTPS upstreams;
 - bounded response headers;
+- direct Origin connections that do not inherit ambient `HTTP_PROXY` or `HTTPS_PROXY` settings;
 - transport, response-header, request, and idle timeouts;
 - retries for idempotent replayable requests after transport failures or configured upstream errors;
 - graceful shutdown.
@@ -180,7 +181,7 @@ The cache is an in-memory, thread-safe LRU with:
 - `Age` response headers;
 - conditional `304 Not Modified` support;
 - per-key locking to prevent cache stampedes;
-- stale-if-error fallback;
+- stale-if-error fallback, except when the Origin requires revalidation with `must-revalidate` or `proxy-revalidate`;
 - route/host/path purge support.
 
 Requests or responses are bypassed when caching would be unsafe, including common cases involving `Authorization`, cookies, `Set-Cookie`, `Range`, `private`, `no-store`, `no-cache`, legacy `Pragma: no-cache`, or unsupported `Vary` values. If authenticated or cookie-bearing request caching is explicitly enabled, EdgeProxy automatically partitions cache keys with SHA-256 fingerprints of those headers. Responses that are explicitly allowed to be cached despite `Set-Cookie` keep the cookie on the live Origin response but never replay it from shared cache.

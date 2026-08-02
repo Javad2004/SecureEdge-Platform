@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"mime"
@@ -74,7 +75,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	policy := h.policies.Policy(routeName)
 	serverCfg := h.policies.ServerConfig()
 	requestID := newRequestID()
-	req.Header.Set("X-Request-ID", requestID)
 	client := h.clients.Resolve(req)
 	req = req.WithContext(context.WithValue(req.Context(), resolvedClientIPKey{}, client))
 	action, reason := "ALLOW", ""
@@ -131,6 +131,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		writeBlocked(w, status, rejectReason, requestID)
 		return
 	}
+	// Validate the exact client-supplied header set before injecting trusted edge
+	// metadata. Otherwise the generated request ID both consumes a policy header
+	// slot and hides an oversized inbound X-Request-ID value from validation.
+	req.Header.Set("X-Request-ID", requestID)
 
 	allowlisted := ipMatches(client, policy.IPAllowlist)
 	if !allowlisted {
@@ -188,6 +192,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	result, err := h.inspector.Inspect(req, policy)
 	if err != nil {
 		processingErr = err
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			action, reason, status = "BLOCK", "body_too_large", http.StatusRequestEntityTooLarge
+			setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
+			writeBlocked(w, status, "body_too_large", requestID)
+			return
+		}
 		action, reason, status = "BLOCK", "inspection_failed", http.StatusBadRequest
 		setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
 		writeBlocked(w, status, "inspection_failed", requestID)

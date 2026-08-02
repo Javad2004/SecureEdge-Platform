@@ -259,3 +259,12 @@ func TestDNSDialerUsesResolverRequestedTransport(t *testing.T) {
 		t.Fatalf("TCP DNS fallback was not accepted: %v", err)
 	}
 }
+
+func TestLoopbackDialAddressPreservesWildcardAddressFamily(t *testing.T) {
+	if got := loopbackDialAddress("0.0.0.0:8081"); got != "127.0.0.1:8081" {
+		t.Fatalf("IPv4 wildcard probe address=%q", got)
+	}
+	if got := loopbackDialAddress("[::]:8081"); got != "[::1]:8081" {
+		t.Fatalf("IPv6 wildcard probe address=%q", got)
+	}
+}

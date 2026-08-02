@@ -301,3 +301,58 @@ func TestDecisionWriterPreservesFinalStatusAfterInformationalResponse(t *testing
 		t.Fatalf("forwarded statuses=%v, want [103 200]", underlying.statuses)
 	}
 }
+
+func TestGeneratedRequestIDDoesNotConsumeInboundHeaderLimit(t *testing.T) {
+	policy := config.Default().DefaultPolicy
+	policy.RateLimit.Enabled = false
+	policy.MaxHeaderCount = 1
+	called := false
+	h := newTestHandler(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}), policy)
+
+	req := httptest.NewRequest(http.MethodGet, "http://project.test/", nil)
+	req.Header.Set("X-Client-Metadata", "one")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, req)
+	if response.Code != http.StatusNoContent || !called {
+		t.Fatalf("status=%d called=%v body=%s", response.Code, called, response.Body.String())
+	}
+}
+
+func TestOversizedInboundRequestIDIsValidatedBeforeReplacement(t *testing.T) {
+	policy := config.Default().DefaultPolicy
+	policy.RateLimit.Enabled = false
+	policy.MaxHeaderValueBytes = 8
+	h := newTestHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next called for an oversized inbound request ID")
+	}), policy)
+
+	req := httptest.NewRequest(http.MethodGet, "http://project.test/", nil)
+	req.Header.Set("X-Request-ID", "client-controlled-request-id")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, req)
+	if response.Code != http.StatusRequestHeaderFieldsTooLarge || !strings.Contains(response.Body.String(), "header_value_too_large") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestInspectionMaxBytesErrorReturnsPayloadTooLarge(t *testing.T) {
+	policy := config.Default().DefaultPolicy
+	policy.RateLimit.Enabled = false
+	policy.MaxInspectionBodyBytes = 64
+	h := newTestHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next called for an oversized request body")
+	}), policy)
+
+	response := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://project.test/upload", strings.NewReader(strings.Repeat("x", 32)))
+	req.ContentLength = -1
+	req.Header.Set("Content-Type", "text/plain")
+	req.Body = http.MaxBytesReader(response, req.Body, 8)
+	h.ServeHTTP(response, req)
+	if response.Code != http.StatusRequestEntityTooLarge || !strings.Contains(response.Body.String(), "body_too_large") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}

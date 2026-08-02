@@ -685,8 +685,13 @@ func loopbackDialAddress(addr string) string {
 	if err != nil {
 		return addr
 	}
-	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+	switch host {
+	case "", "0.0.0.0":
 		host = "127.0.0.1"
+	case "::", "[::]":
+		// Preserve the listener address family. An IPv6 wildcard may be bound
+		// with IPV6_V6ONLY, in which case probing 127.0.0.1 is a false failure.
+		host = "::1"
 	}
 	return net.JoinHostPort(host, port)
 }

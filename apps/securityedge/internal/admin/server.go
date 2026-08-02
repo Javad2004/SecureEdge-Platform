@@ -161,7 +161,12 @@ func (s *Server) recordAuthFailure(client string, now time.Time) {
 	v := s.authFails[client]
 	if v == nil || now.Sub(v.windowStart) >= time.Minute {
 		if v == nil && len(s.authFails) >= maxTrackedAuthClients {
-			s.evictOldestAuthFailureLocked()
+			// Never evict an active lockout to remember a new failed client. A
+			// distributed attacker could otherwise churn the bounded map and release
+			// a locked address before its configured lockout duration expires.
+			if !s.evictOldestUnlockedAuthFailureLocked(now) {
+				return
+			}
 		}
 		v = &authFailure{windowStart: now}
 		s.authFails[client] = v
@@ -178,22 +183,23 @@ func (s *Server) pruneAuthFailuresLocked(now time.Time) {
 		}
 	}
 }
-func (s *Server) evictOldestAuthFailureLocked() {
+func (s *Server) evictOldestUnlockedAuthFailureLocked(now time.Time) bool {
 	var oldestClient string
 	var oldest time.Time
 	for client, failure := range s.authFails {
-		reference := failure.windowStart
-		if failure.lockedUntil.After(reference) {
-			reference = failure.lockedUntil
+		if now.Before(failure.lockedUntil) {
+			continue
 		}
-		if oldestClient == "" || reference.Before(oldest) {
+		if oldestClient == "" || failure.windowStart.Before(oldest) {
 			oldestClient = client
-			oldest = reference
+			oldest = failure.windowStart
 		}
 	}
-	if oldestClient != "" {
-		delete(s.authFails, oldestClient)
+	if oldestClient == "" {
+		return false
 	}
+	delete(s.authFails, oldestClient)
+	return true
 }
 func secureTokenEqual(got, want string) bool {
 	gotHash := sha256.Sum256([]byte(got))

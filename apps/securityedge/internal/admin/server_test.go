@@ -334,3 +334,26 @@ func TestLogQueryRejectsInvertedTimeRange(t *testing.T) {
 		t.Fatalf("body=%s", body)
 	}
 }
+
+func TestAuthFailureCapacityPreservesActiveLockouts(t *testing.T) {
+	cfg := config.Default().Admin
+	cfg.AuthFailuresPerMinute = 1
+	cfg.AuthLockoutDuration = config.Duration{Duration: time.Hour}
+	s := &Server{cfg: cfg, authFails: make(map[string]*authFailure)}
+	now := time.Now()
+	for i := 0; i < maxTrackedAuthClients; i++ {
+		client := "locked-" + strconv.Itoa(i)
+		s.authFails[client] = &authFailure{count: 1, windowStart: now, lockedUntil: now.Add(time.Hour)}
+	}
+
+	s.recordAuthFailure("new-client", now.Add(time.Second))
+	if _, exists := s.authFails["new-client"]; exists {
+		t.Fatal("new auth failure replaced an active lockout")
+	}
+	if got := len(s.authFails); got != maxTrackedAuthClients {
+		t.Fatalf("tracked auth clients=%d, want %d", got, maxTrackedAuthClients)
+	}
+	if locked, _ := s.authLocked("locked-0", now.Add(time.Second)); !locked {
+		t.Fatal("active lockout was evicted before its expiry")
+	}
+}

@@ -63,6 +63,109 @@ func TestProxyCacheMissThenHit(t *testing.T) {
 	}
 }
 
+func TestSuccessfulUnsafeRequestInvalidatesCachedVariants(t *testing.T) {
+	var value atomic.Value
+	value.Store("v1")
+	var getCalls atomic.Int64
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			getCalls.Add(1)
+			w.Header().Set("Cache-Control", "public, max-age=60")
+			_, _ = io.WriteString(w, value.Load().(string))
+		case http.MethodPut:
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read mutation body: %v", err)
+				http.Error(w, "bad body", http.StatusBadRequest)
+				return
+			}
+			value.Store(string(body))
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.Error(w, "unsupported", http.StatusMethodNotAllowed)
+		}
+	}))
+	defer origin.Close()
+
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	get := func(accept, wantCache, wantBody string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "http://proxy.test/item?id=1", nil)
+		req.Header.Set("Accept", accept)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || rec.Header().Get("X-Cache") != wantCache || strings.TrimSpace(rec.Body.String()) != wantBody {
+			t.Fatalf("accept=%q code=%d cache=%q body=%q", accept, rec.Code, rec.Header().Get("X-Cache"), rec.Body.String())
+		}
+	}
+
+	for _, accept := range []string{"text/plain", "application/json"} {
+		get(accept, "MISS", "v1")
+		get(accept, "HIT", "v1")
+	}
+
+	mutation := httptest.NewRequest(http.MethodPut, "http://proxy.test/item?id=1", strings.NewReader("v2"))
+	mutationRec := httptest.NewRecorder()
+	h.ServeHTTP(mutationRec, mutation)
+	if mutationRec.Code != http.StatusNoContent {
+		t.Fatalf("mutation status=%d body=%q", mutationRec.Code, mutationRec.Body.String())
+	}
+
+	for _, accept := range []string{"text/plain", "application/json"} {
+		get(accept, "MISS", "v2")
+	}
+	if got := getCalls.Load(); got != 4 {
+		t.Fatalf("origin GET calls=%d, want 4", got)
+	}
+}
+
+func TestFailedUnsafeRequestKeepsCachedRepresentation(t *testing.T) {
+	var getCalls atomic.Int64
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			http.Error(w, "mutation failed", http.StatusInternalServerError)
+			return
+		}
+		getCalls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		_, _ = io.WriteString(w, "stable")
+	}))
+	defer origin.Close()
+
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	first := httptest.NewRecorder()
+	h.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "http://proxy.test/item", nil))
+	if first.Header().Get("X-Cache") != "MISS" {
+		t.Fatalf("initial cache=%q", first.Header().Get("X-Cache"))
+	}
+
+	failed := httptest.NewRecorder()
+	h.ServeHTTP(failed, httptest.NewRequest(http.MethodPost, "http://proxy.test/item", strings.NewReader("ignored")))
+	if failed.Code != http.StatusInternalServerError {
+		t.Fatalf("failed mutation status=%d", failed.Code)
+	}
+
+	second := httptest.NewRecorder()
+	h.ServeHTTP(second, httptest.NewRequest(http.MethodGet, "http://proxy.test/item", nil))
+	if second.Header().Get("X-Cache") != "HIT" || strings.TrimSpace(second.Body.String()) != "stable" {
+		t.Fatalf("post-failure cache=%q body=%q", second.Header().Get("X-Cache"), second.Body.String())
+	}
+	if got := getCalls.Load(); got != 1 {
+		t.Fatalf("origin GET calls=%d, want 1", got)
+	}
+}
+
 func TestNoStoreBypassesCache(t *testing.T) {
 	var calls atomic.Int64
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

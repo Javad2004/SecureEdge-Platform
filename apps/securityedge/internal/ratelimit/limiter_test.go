@@ -79,3 +79,50 @@ func TestAutoBan(t *testing.T) {
 		t.Fatalf("unexpected active ban details: %+v", bans)
 	}
 }
+
+func TestAutoBanCapacityPreservesActiveBan(t *testing.T) {
+	m := NewBanManager()
+	cfg := config.AutoBanConfig{Enabled: true, ViolationThreshold: 2, Window: config.Duration{Duration: time.Minute}, BanDuration: config.Duration{Duration: 10 * time.Minute}, MaxTrackedClients: 2}
+	now := time.Unix(0, 0)
+
+	_, _ = m.RecordViolation("active", cfg, now)
+	if banned, _ := m.RecordViolation("active", cfg, now.Add(time.Second)); !banned {
+		t.Fatal("expected active client to be banned")
+	}
+	_, _ = m.RecordViolation("inactive", cfg, now.Add(2*time.Second))
+	_, _ = m.RecordViolation("new", cfg, now.Add(3*time.Second))
+
+	if banned, _ := m.IsBanned("active", now.Add(4*time.Second)); !banned {
+		t.Fatal("capacity pressure evicted an active ban")
+	}
+	if banned, _ := m.RecordViolation("new", cfg, now.Add(4*time.Second)); !banned {
+		t.Fatal("new client was not tracked after inactive entry eviction")
+	}
+	bans := m.List(now.Add(5 * time.Second))
+	if len(bans) != 2 || bans[0].Client != "active" || bans[1].Client != "new" {
+		t.Fatalf("unexpected bans after capacity eviction: %+v", bans)
+	}
+}
+
+func TestAutoBanCapacityNeverEvictsWhenAllEntriesAreActive(t *testing.T) {
+	m := NewBanManager()
+	cfg := config.AutoBanConfig{Enabled: true, ViolationThreshold: 1, Window: config.Duration{Duration: time.Minute}, BanDuration: config.Duration{Duration: 10 * time.Minute}, MaxTrackedClients: 2}
+	now := time.Unix(0, 0)
+
+	for _, client := range []string{"a", "b"} {
+		if banned, _ := m.RecordViolation(client, cfg, now); !banned {
+			t.Fatalf("expected %s to be banned", client)
+		}
+	}
+	if banned, _ := m.RecordViolation("c", cfg, now.Add(time.Second)); banned {
+		t.Fatal("new client should not replace an active ban when tracking is full")
+	}
+	for _, client := range []string{"a", "b"} {
+		if banned, _ := m.IsBanned(client, now.Add(2*time.Second)); !banned {
+			t.Fatalf("active ban for %s was evicted", client)
+		}
+	}
+	if banned, _ := m.IsBanned("c", now.Add(2*time.Second)); banned {
+		t.Fatal("untracked client unexpectedly appears banned")
+	}
+}

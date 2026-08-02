@@ -167,7 +167,12 @@ func (m *BanManager) RecordViolation(client string, cfg config.AutoBanConfig, no
 	v := m.clients[client]
 	if v == nil {
 		if len(m.clients) >= cfg.MaxTrackedClients {
-			m.evictOldestLocked()
+			// Never discard a currently active ban merely to track a new client.
+			// Otherwise a distributed attacker can churn the bounded tracking map
+			// and release an already-banned address before its ban duration ends.
+			if !m.evictOldestInactiveLocked(now) {
+				return false, 0
+			}
 		}
 		v = &violation{}
 		m.clients[client] = v
@@ -231,15 +236,20 @@ func (m *BanManager) ActiveCount(now time.Time) int {
 	return n
 }
 
-func (m *BanManager) evictOldestLocked() {
+func (m *BanManager) evictOldestInactiveLocked(now time.Time) bool {
 	var oldestKey string
 	var oldest time.Time
 	for key, v := range m.clients {
+		if now.Before(v.bannedUntil) {
+			continue
+		}
 		if oldestKey == "" || v.seen.Before(oldest) {
 			oldestKey, oldest = key, v.seen
 		}
 	}
 	if oldestKey != "" {
 		delete(m.clients, oldestKey)
+		return true
 	}
+	return false
 }

@@ -364,6 +364,12 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		return result
 	}
 
+	// A successful unsafe request changes server state and therefore invalidates
+	// every cached representation of its effective request URI. Purge all Vary
+	// variants before returning the mutation response so a following GET cannot
+	// observe stale data until the normal TTL expires.
+	invalidateUnsafeRequest(rt, req, resp.StatusCode)
+
 	removeHopByHop(resp.Header)
 	sanitizeOriginResponseHeaders(resp.Header)
 	copyHeaders(w.Header(), resp.Header)
@@ -409,6 +415,22 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		}
 	}
 	return result
+}
+
+func invalidateUnsafeRequest(rt *routeRuntime, req *http.Request, status int) int {
+	if rt == nil || rt.cache == nil || req == nil || !unsafeMethod(req.Method) || status < 200 || status >= 400 {
+		return 0
+	}
+	return rt.cache.PurgeRequest(cacheHost(req.Host), canonicalRequestURI(req.URL), cacheKeyRequest)
+}
+
+func unsafeMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+		return false
+	default:
+		return true
+	}
 }
 
 func (h *Handler) recordResponseCopyError(result *requestResult, req *http.Request, route, requestID string, err error) {

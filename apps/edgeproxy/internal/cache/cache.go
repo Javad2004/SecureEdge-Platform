@@ -136,6 +136,25 @@ func (c *Cache) Purge(host, pathPrefix string, keyRequest func(string) (string, 
 	return count
 }
 
+// PurgeRequest removes every cached representation of one exact request URI.
+// Cache keys may contain multiple Vary-header variants, so invalidation must
+// remove all matching keys rather than deleting a single computed key.
+func (c *Cache) PurgeRequest(host, requestURI string, keyRequest func(string) (string, string, bool)) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	host = strings.ToLower(strings.TrimSpace(host))
+	count := 0
+	for key, elem := range c.items {
+		keyHost, keyURI, ok := keyRequest(key)
+		if !ok || keyHost != host || keyURI != requestURI {
+			continue
+		}
+		c.removeElement(elem, false)
+		count++
+	}
+	return count
+}
+
 func purgePathMatches(requestURI, prefix string) bool {
 	parsed, err := url.ParseRequestURI(requestURI)
 	if err != nil {

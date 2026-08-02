@@ -2,6 +2,7 @@ package cache
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -45,5 +46,34 @@ func TestCacheLRUEviction(t *testing.T) {
 func TestPurgePathMatchesCanonicalRequestPath(t *testing.T) {
 	if !purgePathMatches("/api/../admin/settings?view=full", "/admin") {
 		t.Fatal("canonical /admin prefix should match a route-equivalent request URI")
+	}
+}
+
+func TestPurgeRequestRemovesAllExactVariants(t *testing.T) {
+	c := New(10, 4096)
+	now := time.Now()
+	entry := Entry{StatusCode: http.StatusOK, Header: make(http.Header), Body: []byte("value"), StoredAt: now, ExpiresAt: now.Add(time.Hour), StaleUntil: now.Add(time.Hour)}
+	for _, key := range []string{
+		"proxy.test|/item?id=1|accept=text/plain",
+		"proxy.test|/item?id=1|accept=application/json",
+		"proxy.test|/item?id=2|accept=text/plain",
+		"other.test|/item?id=1|accept=text/plain",
+	} {
+		if !c.Set(key, entry) {
+			t.Fatalf("failed to store %q", key)
+		}
+	}
+	parse := func(key string) (string, string, bool) {
+		parts := strings.Split(key, "|")
+		if len(parts) < 2 {
+			return "", "", false
+		}
+		return parts[0], parts[1], true
+	}
+	if removed := c.PurgeRequest("proxy.test", "/item?id=1", parse); removed != 2 {
+		t.Fatalf("removed=%d, want 2", removed)
+	}
+	if stats := c.Stats(); stats.Entries != 2 {
+		t.Fatalf("remaining entries=%d, want 2", stats.Entries)
 	}
 }

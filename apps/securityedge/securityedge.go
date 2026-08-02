@@ -332,6 +332,8 @@ func restartRequiredChanges(current, next config.Config) []string {
 	add("admin", !reflect.DeepEqual(current.Admin, next.Admin))
 	add("default_policy.rate_limit.cleanup_interval", current.DefaultPolicy.RateLimit.CleanupInterval != next.DefaultPolicy.RateLimit.CleanupInterval)
 	add("default_policy.rate_limit.idle_ttl", current.DefaultPolicy.RateLimit.IdleTTL != next.DefaultPolicy.RateLimit.IdleTTL)
+	add("default_policy.rate_limit.max_buckets", current.DefaultPolicy.RateLimit.MaxBuckets != next.DefaultPolicy.RateLimit.MaxBuckets)
+	add("default_policy.auto_ban.max_tracked_clients", current.DefaultPolicy.AutoBan.MaxTrackedClients != next.DefaultPolicy.AutoBan.MaxTrackedClients)
 	sort.Strings(fields)
 	return fields
 }

@@ -1,6 +1,8 @@
 package waf
 
 import (
+	"bytes"
+	"io"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -160,5 +162,44 @@ func TestExcludedPathCanonicalizationPreventsDotSegmentBypass(t *testing.T) {
 	}
 	if got.Excluded || len(got.Matches) == 0 {
 		t.Fatalf("dot-segment path must remain inspected: %#v", got)
+	}
+}
+
+type closeTrackingBody struct {
+	io.Reader
+	closed bool
+}
+
+func (b *closeTrackingBody) Close() error {
+	b.closed = true
+	return nil
+}
+
+func TestReadAndRestoreTruncatedBodyPreservesCloseSemantics(t *testing.T) {
+	payload := []byte("0123456789")
+	original := &closeTrackingBody{Reader: bytes.NewReader(payload)}
+	req := httptest.NewRequest("POST", "http://project.test/upload", nil)
+	req.Body = original
+
+	inspected, truncated, err := readAndRestore(req, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !truncated || string(inspected) != "0123" {
+		t.Fatalf("unexpected inspection result: body=%q truncated=%v", inspected, truncated)
+	}
+
+	replayed, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(replayed, payload) {
+		t.Fatalf("restored body mismatch: got %q want %q", replayed, payload)
+	}
+	if err := req.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !original.closed {
+		t.Fatal("closing the restored body did not close the original request body")
 	}
 }

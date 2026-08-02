@@ -414,8 +414,13 @@ func (c *Config) Validate() error {
 		if p.MaxInspectionBodyBytes > c.Server.MaxRequestBodyBytes {
 			errs = append(errs, fmt.Errorf("route_policies.%s.max_inspection_body_bytes cannot exceed server.max_request_body_bytes", name))
 		}
-		if p.RateLimit.CleanupInterval != c.DefaultPolicy.RateLimit.CleanupInterval || p.RateLimit.IdleTTL != c.DefaultPolicy.RateLimit.IdleTTL {
-			errs = append(errs, fmt.Errorf("route_policies.%s rate_limit cleanup_interval and idle_ttl must match default_policy because limiter cleanup is process-wide", name))
+		if p.RateLimit.CleanupInterval != c.DefaultPolicy.RateLimit.CleanupInterval ||
+			p.RateLimit.IdleTTL != c.DefaultPolicy.RateLimit.IdleTTL ||
+			p.RateLimit.MaxBuckets != c.DefaultPolicy.RateLimit.MaxBuckets {
+			errs = append(errs, fmt.Errorf("route_policies.%s rate_limit cleanup_interval, idle_ttl, and max_buckets must match default_policy because limiter storage is process-wide", name))
+		}
+		if p.AutoBan.MaxTrackedClients != c.DefaultPolicy.AutoBan.MaxTrackedClients {
+			errs = append(errs, fmt.Errorf("route_policies.%s auto_ban.max_tracked_clients must match default_policy because ban tracking is process-wide", name))
 		}
 		c.RoutePolicies[name] = p
 	}

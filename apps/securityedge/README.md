@@ -301,7 +301,9 @@ POST    /api/v1/connectivity/check
 
 `POST /api/v1/reload` validates the complete configuration before changing the live runtime. It can apply security policies, WAF custom rules, trusted-proxy lists, route metadata, and EdgeProxy Admin connectivity without interrupting traffic.
 
-Settings owned by already-running listeners or long-lived process resources require a SecurityEdge restart. This includes listener addresses and HTTP timeouts, the upstream data-plane URL and transport, Admin listener/authentication/log-store settings, and the process-wide rate-limiter cleanup lifecycle. When one of these values changes, the reload endpoint returns `409 Conflict` with the `restart_required` error code instead of reporting a partial success.
+Settings owned by already-running listeners or long-lived process resources require a SecurityEdge restart. This includes listener addresses and HTTP timeouts, the upstream data-plane URL and transport, Admin listener/authentication/log-store settings, and the process-wide rate-limiter and automatic-ban store lifecycle or capacity. When one of these values changes, the reload endpoint returns `409 Conflict` with the `restart_required` error code instead of reporting a partial success.
+
+Rate-limit buckets and automatic-ban tracking are also process-wide stores. Route policies may define different request rates, bursts, violation thresholds, windows, and ban durations, but they must use the same `cleanup_interval`, `idle_ttl`, `max_buckets`, and `max_tracked_clients` capacity settings as `default_policy`. This prevents one route from applying a smaller shared-store capacity to buckets or client records created by another route.
 
 Dashboard policy updates are prepared before the configuration file is replaced. A validation or reload-preparation failure therefore leaves both the persisted file and the active runtime unchanged.
 

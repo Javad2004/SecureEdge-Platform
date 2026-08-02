@@ -216,3 +216,30 @@ func TestCloneConfigDoesNotShareNestedSlices(t *testing.T) {
 		t.Fatalf("custom rule targets share backing storage: %q", got)
 	}
 }
+
+func TestRestartRequiredChangesIncludeProcessWideCapacities(t *testing.T) {
+	current := config.Default()
+
+	next := cloneConfig(current)
+	next.DefaultPolicy.RateLimit.MaxBuckets++
+	fields := restartRequiredChanges(current, next)
+	if !containsString(fields, "default_policy.rate_limit.max_buckets") {
+		t.Fatalf("missing rate-limit capacity restart field: %#v", fields)
+	}
+
+	next = cloneConfig(current)
+	next.DefaultPolicy.AutoBan.MaxTrackedClients++
+	fields = restartRequiredChanges(current, next)
+	if !containsString(fields, "default_policy.auto_ban.max_tracked_clients") {
+		t.Fatalf("missing ban capacity restart field: %#v", fields)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}

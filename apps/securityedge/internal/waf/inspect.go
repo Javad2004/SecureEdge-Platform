@@ -284,8 +284,18 @@ func requestBodyTypeAllowed(raw string, allowed []string) bool {
 	return false
 }
 
+type replayReadCloser struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (r *replayReadCloser) Close() error {
+	return r.closer.Close()
+}
+
 func readAndRestore(req *http.Request, max int64) ([]byte, bool, error) {
-	buf, err := io.ReadAll(io.LimitReader(req.Body, max+1))
+	original := req.Body
+	buf, err := io.ReadAll(io.LimitReader(original, max+1))
 	if err != nil {
 		return nil, false, err
 	}
@@ -293,9 +303,12 @@ func readAndRestore(req *http.Request, max int64) ([]byte, bool, error) {
 	inspect := buf
 	if truncated {
 		inspect = buf[:max]
-		req.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), req.Body))
+		req.Body = &replayReadCloser{
+			Reader: io.MultiReader(bytes.NewReader(buf), original),
+			closer: original,
+		}
 	} else {
-		_ = req.Body.Close()
+		_ = original.Close()
 		req.Body = io.NopCloser(bytes.NewReader(buf))
 		req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(buf)), nil }
 	}

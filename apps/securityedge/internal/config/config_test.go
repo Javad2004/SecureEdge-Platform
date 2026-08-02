@@ -179,15 +179,28 @@ func TestRejectsPolicyAddressInBothAllowAndDenyLists(t *testing.T) {
 	}
 }
 
-func TestRoutePoliciesShareProcessWideLimiterLifecycle(t *testing.T) {
-	cfg := Default()
-	cfg.Server.Mode = "embedded"
-	cfg.EdgeProxy.ConfigPath = "edge.json"
-	policy := cfg.DefaultPolicy
-	policy.RateLimit.IdleTTL.Duration += time.Minute
-	cfg.RoutePolicies["demo-app"] = policy
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected route-specific limiter lifecycle to be rejected")
+func TestRoutePoliciesShareProcessWideLimiterResources(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Policy)
+	}{
+		{name: "cleanup interval", mutate: func(p *Policy) { p.RateLimit.CleanupInterval.Duration += time.Minute }},
+		{name: "idle ttl", mutate: func(p *Policy) { p.RateLimit.IdleTTL.Duration += time.Minute }},
+		{name: "bucket capacity", mutate: func(p *Policy) { p.RateLimit.MaxBuckets++ }},
+		{name: "ban tracking capacity", mutate: func(p *Policy) { p.AutoBan.MaxTrackedClients++ }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Server.Mode = "embedded"
+			cfg.EdgeProxy.ConfigPath = "edge.json"
+			policy := cfg.DefaultPolicy
+			tc.mutate(&policy)
+			cfg.RoutePolicies["demo-app"] = policy
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("expected route-specific process-wide resource setting to be rejected")
+			}
+		})
 	}
 }
 

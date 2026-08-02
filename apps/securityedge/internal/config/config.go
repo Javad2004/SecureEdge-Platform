@@ -300,6 +300,8 @@ func (c *Config) Validate() error {
 	}
 	if !validHTTPToken(c.Server.ForwardedForHeader) {
 		errs = append(errs, errors.New("server.forwarded_for_header must be a valid HTTP header field name"))
+	} else if reservedClientIPSourceHeader(c.Server.ForwardedForHeader) {
+		errs = append(errs, fmt.Errorf("server.forwarded_for_header %q is reserved and cannot be used as a client IP source", c.Server.ForwardedForHeader))
 	}
 	trusted := make([]string, 0, len(c.Server.TrustedProxyCIDRs))
 	seenTrusted := map[string]struct{}{}
@@ -671,6 +673,35 @@ func normalizePolicyPathPrefix(raw string) (string, error) {
 		return "", errors.New("must be canonical and must not contain dot-segments or repeated slashes")
 	}
 	return value, nil
+}
+
+func reservedClientIPSourceHeader(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "authorization",
+		"connection",
+		"content-length",
+		"content-type",
+		"cookie",
+		"forwarded",
+		"host",
+		"keep-alive",
+		"proxy-authorization",
+		"proxy-connection",
+		"set-cookie",
+		"te",
+		"trailer",
+		"transfer-encoding",
+		"upgrade",
+		"via",
+		"x-forwarded-host",
+		"x-forwarded-port",
+		"x-forwarded-proto",
+		"x-forwarded-server",
+		"x-request-id":
+		return true
+	default:
+		return false
+	}
 }
 
 func validHTTPToken(value string) bool {

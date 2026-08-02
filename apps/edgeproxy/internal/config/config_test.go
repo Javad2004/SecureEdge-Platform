@@ -212,6 +212,26 @@ func TestRejectsInvalidTrustedProxyConfiguration(t *testing.T) {
 	}
 }
 
+func TestRejectsReservedClientIPSourceHeaders(t *testing.T) {
+	for _, header := range []string{"Authorization", "Cookie", "Forwarded", "Host", "X-Request-ID", "X-Forwarded-Proto"} {
+		t.Run(header, func(t *testing.T) {
+			cfg := Default()
+			cfg.Routes = []RouteConfig{validRouteForValidation()}
+			cfg.Server.ForwardedForHeader = header
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "reserved") {
+				t.Fatalf("expected reserved client IP source header %q to be rejected, got %v", header, err)
+			}
+		})
+	}
+
+	cfg := Default()
+	cfg.Routes = []RouteConfig{validRouteForValidation()}
+	cfg.Server.ForwardedForHeader = "X-Trusted-Client-IP"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected dedicated custom client IP header to be accepted: %v", err)
+	}
+}
+
 func TestValidateNormalizesCanonicalRouteAndHealthPaths(t *testing.T) {
 	cfg := Default()
 	route := validRouteForValidation()

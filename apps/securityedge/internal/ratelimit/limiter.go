@@ -126,9 +126,10 @@ func (l *Limiter) cleanup(ctx context.Context, interval, idleTTL time.Duration) 
 }
 
 type violation struct {
-	times       []time.Time
-	bannedUntil time.Time
-	seen        time.Time
+	times         []time.Time
+	bannedUntil   time.Time
+	banViolations int
+	seen          time.Time
 }
 
 type Ban struct {
@@ -182,6 +183,7 @@ func (m *BanManager) RecordViolation(client string, cfg config.AutoBanConfig, no
 	v.times = append(kept, now)
 	if len(v.times) >= cfg.ViolationThreshold {
 		v.bannedUntil = now.Add(cfg.BanDuration.Duration)
+		v.banViolations = len(v.times)
 		v.times = nil
 		return true, cfg.BanDuration.Duration
 	}
@@ -194,7 +196,7 @@ func (m *BanManager) List(now time.Time) []Ban {
 	out := []Ban{}
 	for client, v := range m.clients {
 		if now.Before(v.bannedUntil) {
-			out = append(out, Ban{Client: client, BannedUntil: v.bannedUntil.UTC().Format(time.RFC3339Nano), Violations: len(v.times)})
+			out = append(out, Ban{Client: client, BannedUntil: v.bannedUntil.UTC().Format(time.RFC3339Nano), Violations: v.banViolations})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Client < out[j].Client })

@@ -298,6 +298,8 @@ POST    /api/v1/connectivity/check
 
 `DELETE /api/v1/logs` clears the in-memory event ring, truncates the active NDJSON log, and removes rotated backups. CSV exports neutralize spreadsheet-formula prefixes in user-controlled fields before writing rows.
 
+When NDJSON persistence is enabled, SecurityEdge restores the newest retained events from the active file and configured rotated backups during startup. Event sequence numbers continue monotonically across restarts; malformed or crash-truncated lines are skipped and counted in the log-store `file_errors` metric instead of preventing startup.
+
 The in-memory Admin event ring accepts a configured `capacity` from `1` through `100000` entries. This bound prevents an accidental configuration value from causing an excessive startup allocation.
 
 ### Live reload boundaries

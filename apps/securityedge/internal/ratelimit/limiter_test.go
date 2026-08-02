@@ -74,4 +74,8 @@ func TestAutoBan(t *testing.T) {
 	if banned, _ := m.IsBanned("1.2.3.4", now.Add(3*time.Second)); !banned {
 		t.Fatal("ban not active")
 	}
+	bans := m.List(now.Add(3 * time.Second))
+	if len(bans) != 1 || bans[0].Violations != cfg.ViolationThreshold {
+		t.Fatalf("unexpected active ban details: %+v", bans)
+	}
 }

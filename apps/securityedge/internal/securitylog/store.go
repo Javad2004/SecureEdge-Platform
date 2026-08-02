@@ -2,6 +2,7 @@ package securitylog
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -114,16 +115,99 @@ func NewWithConfig(cfg config.LogStoreConfig) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(s.filePath), 0o750); err != nil {
 		return nil, fmt.Errorf("create security log directory: %w", err)
 	}
-	file, err := os.OpenFile(s.filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+	s.restorePersistentEntries()
+	file, err := os.OpenFile(s.filePath, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0o640)
 	if err != nil {
 		return nil, fmt.Errorf("open security log file: %w", err)
 	}
-	info, _ := file.Stat()
-	if info != nil {
-		s.fileBytes = info.Size()
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("stat security log file: %w", err)
 	}
+	s.fileBytes = info.Size()
 	s.file = file
+	s.ensureTrailingNewlineLocked()
 	return s, nil
+}
+
+func (s *Store) restorePersistentEntries() {
+	// Rotation suffixes are newest-first (.1) on disk. Read them in reverse
+	// order so the bounded ring sees events in their original chronology.
+	paths := make([]string, 0, s.maxBackups+1)
+	for i := s.maxBackups; i >= 1; i-- {
+		paths = append(paths, fmt.Sprintf("%s.%d", s.filePath, i))
+	}
+	paths = append(paths, s.filePath)
+
+	var highestSequence uint64
+	for _, path := range paths {
+		file, err := os.Open(path)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				s.fileErrors++
+			}
+			continue
+		}
+		scanner := bufio.NewScanner(file)
+		scanner.Buffer(make([]byte, 64<<10), 4<<20)
+		for scanner.Scan() {
+			line := bytes.TrimSpace(scanner.Bytes())
+			if len(line) == 0 {
+				continue
+			}
+			var entry Entry
+			if err := json.Unmarshal(line, &entry); err != nil {
+				s.fileErrors++
+				continue
+			}
+			entry = normalizeEntry(entry)
+			if entry.Sequence == 0 || entry.Sequence <= highestSequence {
+				entry.Sequence = highestSequence + 1
+			}
+			highestSequence = entry.Sequence
+			s.appendRestored(entry)
+		}
+		if err := scanner.Err(); err != nil {
+			s.fileErrors++
+		}
+		_ = file.Close()
+	}
+	if highestSequence >= s.nextSeq {
+		s.nextSeq = highestSequence + 1
+	}
+}
+
+func (s *Store) appendRestored(entry Entry) {
+	if s.count < s.capacity {
+		idx := (s.head + s.count) % s.capacity
+		s.entries[idx] = entry
+		s.count++
+		return
+	}
+	s.entries[s.head] = entry
+	s.head = (s.head + 1) % s.capacity
+	s.dropped++
+}
+
+func (s *Store) ensureTrailingNewlineLocked() {
+	if s.file == nil || s.fileBytes == 0 {
+		return
+	}
+	var last [1]byte
+	if _, err := s.file.ReadAt(last[:], s.fileBytes-1); err != nil {
+		s.fileErrors++
+		return
+	}
+	if last[0] == '\n' {
+		return
+	}
+	n, err := s.file.Write([]byte{'\n'})
+	if err != nil {
+		s.fileErrors++
+		return
+	}
+	s.fileBytes += int64(n)
 }
 
 func (s *Store) Close() error {
@@ -138,6 +222,25 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) Append(e Entry) Entry {
+	e = normalizeEntry(e)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e.Sequence = s.nextSeq
+	s.nextSeq++
+	if s.count < s.capacity {
+		idx := (s.head + s.count) % s.capacity
+		s.entries[idx] = e
+		s.count++
+	} else {
+		s.entries[s.head] = e
+		s.head = (s.head + 1) % s.capacity
+		s.dropped++
+	}
+	s.writeFileLocked(e)
+	return e
+}
+
+func normalizeEntry(e Entry) Entry {
 	if e.Timestamp == "" {
 		e.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
 	}
@@ -160,20 +263,6 @@ func (s *Store) Append(e Entry) Entry {
 	e.Error = trim(e.Error, 2048)
 	e.RuleIDs = uniqueUpper(e.RuleIDs)
 	e.Tags = uniqueLower(e.Tags)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e.Sequence = s.nextSeq
-	s.nextSeq++
-	if s.count < s.capacity {
-		idx := (s.head + s.count) % s.capacity
-		s.entries[idx] = e
-		s.count++
-	} else {
-		s.entries[s.head] = e
-		s.head = (s.head + 1) % s.capacity
-		s.dropped++
-	}
-	s.writeFileLocked(e)
 	return e
 }
 
@@ -247,7 +336,7 @@ func (s *Store) rotateLocked() error {
 }
 
 func (s *Store) reopenAppendLocked() error {
-	file, err := os.OpenFile(s.filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+	file, err := os.OpenFile(s.filePath, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0o640)
 	if err != nil {
 		return fmt.Errorf("reopen security log after rotation failure: %w", err)
 	}

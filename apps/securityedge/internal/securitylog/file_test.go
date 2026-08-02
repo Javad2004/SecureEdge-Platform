@@ -3,6 +3,7 @@ package securitylog
 import (
 	"bytes"
 	"encoding/csv"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -184,4 +185,134 @@ func TestRotationReplacesExistingBackupDestinations(t *testing.T) {
 	if info.Size() != 0 {
 		t.Fatalf("expected a fresh active log, size=%d", info.Size())
 	}
+}
+
+func TestPersistentLogRestoresEntriesAndContinuesSequence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.ndjson")
+	writeEntries := func(name string, entries ...Entry) {
+		t.Helper()
+		var data bytes.Buffer
+		encoder := json.NewEncoder(&data)
+		for _, entry := range entries {
+			if err := encoder.Encode(entry); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(name, data.Bytes(), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeEntries(path+".1",
+		Entry{Sequence: 7, Timestamp: "2026-08-01T00:00:00Z", Event: "oldest"},
+		Entry{Sequence: 8, Timestamp: "2026-08-01T00:00:01Z", Event: "older"},
+	)
+	// Simulate a file produced by an older process that restarted its sequence
+	// counter at one. Startup must repair that duplicate in memory.
+	writeEntries(path, Entry{Sequence: 1, Timestamp: "2026-08-01T00:00:02Z", Event: "active"})
+
+	s, err := NewWithConfig(config.LogStoreConfig{Capacity: 10, FilePath: path, MaxFileBytes: 1 << 20, MaxBackups: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := s.Query(Filter{Limit: 10})
+	if query.Returned != 3 {
+		t.Fatalf("expected three restored entries, got %#v", query)
+	}
+	if got := []uint64{query.Entries[0].Sequence, query.Entries[1].Sequence, query.Entries[2].Sequence}; !equalUint64s(got, []uint64{9, 8, 7}) {
+		t.Fatalf("unexpected restored sequences: %v", got)
+	}
+	appended := s.Append(Entry{Event: "new"})
+	if appended.Sequence != 10 {
+		t.Fatalf("expected next sequence 10, got %d", appended.Sequence)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := NewWithConfig(config.LogStoreConfig{Capacity: 10, FilePath: path, MaxFileBytes: 1 << 20, MaxBackups: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	appended = reopened.Append(Entry{Event: "newer"})
+	if appended.Sequence != 11 {
+		t.Fatalf("expected stable sequence 11 after a second restart, got %d", appended.Sequence)
+	}
+}
+
+func TestPersistentLogRestoresOnlyNewestCapacity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.ndjson")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoder := json.NewEncoder(file)
+	for i := 1; i <= 5; i++ {
+		if err := encoder.Encode(Entry{Sequence: uint64(i), Event: "event-" + strconv.Itoa(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := NewWithConfig(config.LogStoreConfig{Capacity: 3, FilePath: path, MaxFileBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	query := s.Query(Filter{Limit: 10})
+	if query.Returned != 3 || query.Dropped != 2 {
+		t.Fatalf("unexpected restored ring stats: %#v", query)
+	}
+	if got := []uint64{query.Entries[0].Sequence, query.Entries[1].Sequence, query.Entries[2].Sequence}; !equalUint64s(got, []uint64{5, 4, 3}) {
+		t.Fatalf("unexpected retained sequences: %v", got)
+	}
+}
+
+func TestPersistentLogSeparatesPartialTailBeforeAppending(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.ndjson")
+	valid, err := json.Marshal(Entry{Sequence: 3, Event: "valid"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(append(valid, '\n'), []byte(`{"sequence":4,"event":"partial"`)...), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := NewWithConfig(config.LogStoreConfig{Capacity: 10, FilePath: path, MaxFileBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats := s.Stats(); stats.FileErrors != 1 {
+		t.Fatalf("expected one malformed-tail error, got %#v", stats)
+	}
+	appended := s.Append(Entry{Event: "after-restart"})
+	if appended.Sequence != 4 {
+		t.Fatalf("expected sequence 4 after ignoring partial tail, got %d", appended.Sequence)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte("partial\"\n{\"sequence\":4")) {
+		t.Fatalf("new entry was not separated from partial tail: %q", data)
+	}
+}
+
+func equalUint64s(a, b []uint64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

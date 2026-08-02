@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/accesslog"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/cache"
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/metrics"
 )
@@ -841,5 +842,82 @@ func TestOriginTransportIgnoresAmbientProxySettings(t *testing.T) {
 	}
 	if pool.nodes[0].transport.Proxy != nil {
 		t.Fatal("origin transport must connect directly instead of honoring HTTP_PROXY/HTTPS_PROXY")
+	}
+}
+
+func TestPurgeCacheUsesExactHostAndPathBoundaries(t *testing.T) {
+	calls := map[string]int{}
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls[r.URL.Path]++
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		_, _ = io.WriteString(w, r.URL.Path)
+	}))
+	defer origin.Close()
+
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	request := func(rawURL string) string {
+		req := httptest.NewRequest(http.MethodGet, rawURL, nil)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s returned %d: %s", rawURL, rr.Code, rr.Body.String())
+		}
+		return rr.Header().Get("X-Cache")
+	}
+
+	for _, rawURL := range []string{
+		"http://proxy.test/api",
+		"http://proxy.test/api/items?q=raw|h:delimiter",
+		"http://proxy.test/apix",
+	} {
+		if got := request(rawURL); got != "MISS" {
+			t.Fatalf("first request %s cache=%q, want MISS", rawURL, got)
+		}
+		if got := request(rawURL); got != "HIT" {
+			t.Fatalf("second request %s cache=%q, want HIT", rawURL, got)
+		}
+	}
+
+	purged, ok, err := h.PurgeCache("test", "PROXY.TEST.", "/api/")
+	if err != nil || !ok || purged != 2 {
+		t.Fatalf("purge result entries=%d ok=%v err=%v, want 2 true nil", purged, ok, err)
+	}
+	if got := request("http://proxy.test/api"); got != "MISS" {
+		t.Fatalf("exact path was not purged: cache=%q", got)
+	}
+	if got := request("http://proxy.test/api/items?q=raw|h:delimiter"); got != "MISS" {
+		t.Fatalf("child path was not purged: cache=%q", got)
+	}
+	if got := request("http://proxy.test/apix"); got != "HIT" {
+		t.Fatalf("sibling prefix was incorrectly purged: cache=%q", got)
+	}
+	if calls["/apix"] != 1 {
+		t.Fatalf("/apix origin calls=%d, want 1", calls["/apix"])
+	}
+}
+
+func TestPurgeCacheRejectsAmbiguousPathPrefix(t *testing.T) {
+	h := &Handler{routes: map[string]*routeRuntime{
+		"test": {cache: cache.New(10, 1024)},
+	}}
+	for _, value := range []string{"api", "/api/../admin", "/api//items", "/api%2Fitems", "/api?x=1"} {
+		if _, ok, err := h.PurgeCache("test", "", value); !ok || err == nil {
+			t.Fatalf("path_prefix %q: ok=%v err=%v, want existing route and validation error", value, ok, err)
+		}
+	}
+}
+
+func TestParseCacheControlTrimsOptionalWhitespace(t *testing.T) {
+	directives := parseCacheControl([]string{`public, max-age = "60", no-store`})
+	if got := directives["max-age"]; got != "60" {
+		t.Fatalf("max-age=%q, want 60", got)
+	}
+	if !hasCacheDirective(directives, "no-store") {
+		t.Fatal("no-store directive was not parsed")
 	}
 }

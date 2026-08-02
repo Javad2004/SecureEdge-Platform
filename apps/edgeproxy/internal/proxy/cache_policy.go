@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"net/http"
@@ -18,7 +19,9 @@ func cacheKey(req *http.Request, cfg config.CacheConfig) string {
 		method = http.MethodGet
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "method=%s|host=%s|uri=%s", method, cacheHost(req.Host), req.URL.RequestURI())
+	// Host and URI are encoded so cache-admin filters can parse the key without
+	// being confused by delimiters that are legal in a raw query string.
+	fmt.Fprintf(&b, "method=%s|host64=%s|uri64=%s", method, encodeCacheKeyField(cacheHost(req.Host)), encodeCacheKeyField(req.URL.RequestURI()))
 	seen := make(map[string]struct{}, len(cfg.VaryRequestHeaders)+2)
 	appendHeader := func(name string) {
 		canonical := http.CanonicalHeaderKey(strings.TrimSpace(name))
@@ -51,6 +54,42 @@ func cacheKey(req *http.Request, cfg config.CacheConfig) string {
 		appendHeader("Cookie")
 	}
 	return b.String()
+}
+
+func encodeCacheKeyField(value string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(value))
+}
+
+func decodeCacheKeyField(value string) (string, bool) {
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return "", false
+	}
+	return string(decoded), true
+}
+
+func cacheKeyRequest(key string) (host, requestURI string, ok bool) {
+	var encodedHost, encodedURI string
+	for _, field := range strings.Split(key, "|") {
+		switch {
+		case strings.HasPrefix(field, "host64="):
+			encodedHost = strings.TrimPrefix(field, "host64=")
+		case strings.HasPrefix(field, "uri64="):
+			encodedURI = strings.TrimPrefix(field, "uri64=")
+		}
+	}
+	if encodedHost == "" || encodedURI == "" {
+		return "", "", false
+	}
+	host, ok = decodeCacheKeyField(encodedHost)
+	if !ok {
+		return "", "", false
+	}
+	requestURI, ok = decodeCacheKeyField(encodedURI)
+	if !ok {
+		return "", "", false
+	}
+	return host, requestURI, true
 }
 
 func requestCacheMode(req *http.Request, cfg config.CacheConfig) (lookup, store bool, reason string) {
@@ -161,11 +200,14 @@ func parseCacheControl(values []string) map[string]string {
 	for _, value := range values {
 		for _, directive := range strings.Split(value, ",") {
 			parts := strings.SplitN(strings.TrimSpace(directive), "=", 2)
-			key := strings.ToLower(parts[0])
+			key := strings.ToLower(strings.TrimSpace(parts[0]))
+			if key == "" {
+				continue
+			}
 			if len(parts) == 1 {
 				out[key] = "1"
 			} else {
-				out[key] = strings.Trim(parts[1], `"`)
+				out[key] = strings.Trim(strings.TrimSpace(parts[1]), `"`)
 			}
 		}
 	}

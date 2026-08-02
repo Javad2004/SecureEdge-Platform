@@ -247,6 +247,15 @@ curl.exe -X POST -H $Auth `
   "$AdminUrl/api/v1/cache/purge?route=demo-app"
 ```
 
+Limit the purge to one authority and a canonical path prefix:
+
+```powershell
+curl.exe -X POST -H $Auth `
+  "$AdminUrl/api/v1/cache/purge?route=demo-app&host=project.test&path_prefix=%2Fapi"
+```
+
+`path_prefix` matches the exact path segment and its descendants. For example, `/api` matches `/api` and `/api/products`, but not `/apix`. It must be an absolute canonical path without query text, fragments, percent-encoded path bytes, dot-segments, or repeated slashes.
+
 `/healthz` reports process liveness. `/readyz` reports `503 Service Unavailable` when any configured route has no healthy Origin.
 
 ## Admin-token override

@@ -315,6 +315,8 @@ DELETE  /api/v1/edgeproxy/logs
 POST    /api/v1/edgeproxy/cache/purge
 ```
 
+The cache-purge backend forwards the EdgeProxy `route`, `host`, and `path_prefix` query parameters. A path prefix is segment-aware: `/api` purges `/api` and `/api/...`, but not `/apix`. Invalid or ambiguous path prefixes are rejected with `400 Bad Request`.
+
 Example:
 
 ```powershell

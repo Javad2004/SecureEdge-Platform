@@ -1,7 +1,11 @@
 package proxy
 
 import (
+	"errors"
+	"net/url"
+	"path"
 	"sort"
+	"strings"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/cache"
 )
@@ -57,16 +61,48 @@ func (h *Handler) Readiness() ReadinessStatus {
 	return status
 }
 
-func (h *Handler) PurgeCache(routeName, host, pathPrefix string) (int, bool) {
+func (h *Handler) PurgeCache(routeName, host, pathPrefix string) (int, bool, error) {
 	rt, ok := h.routes[routeName]
 	if !ok || rt.cache == nil {
-		return 0, false
+		return 0, false, nil
+	}
+	normalizedPath, err := normalizePurgePathPrefix(pathPrefix)
+	if err != nil {
+		return 0, true, err
 	}
 	if host == "" && pathPrefix == "" {
-		return rt.cache.Clear(), true
+		return rt.cache.Clear(), true, nil
 	}
 	if host != "" {
 		host = cacheHost(host)
 	}
-	return rt.cache.Purge(host, pathPrefix), true
+	return rt.cache.Purge(host, normalizedPath, cacheKeyRequest), true, nil
+}
+
+func normalizePurgePathPrefix(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", nil
+	}
+	if !strings.HasPrefix(value, "/") {
+		return "", errors.New("path_prefix must start with /")
+	}
+	if strings.ContainsAny(value, "?#") {
+		return "", errors.New("path_prefix must contain a path only")
+	}
+	decoded, err := url.PathUnescape(value)
+	if err != nil {
+		return "", errors.New("path_prefix contains invalid escaping")
+	}
+	if decoded != value {
+		return "", errors.New("path_prefix must not contain percent-encoded path bytes")
+	}
+	value = strings.TrimRight(value, "/")
+	if value == "" {
+		value = "/"
+	}
+	if path.Clean(value) != value {
+		return "", errors.New("path_prefix must be canonical and must not contain dot-segments or repeated slashes")
+	}
+	return value, nil
 }

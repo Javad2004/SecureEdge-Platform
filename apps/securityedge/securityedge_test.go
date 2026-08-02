@@ -191,3 +191,28 @@ func TestPolicyUpdateDoesNotPersistWhenReloadPreparationFails(t *testing.T) {
 		t.Fatal("failed update was persisted to disk")
 	}
 }
+
+func TestCloneConfigDoesNotShareNestedSlices(t *testing.T) {
+	original := config.Default()
+	original.Admin.Connectivity.DNS.Names = []string{"project.test"}
+	original.Admin.Connectivity.DNS.ExpectedAddresses = []string{"192.0.2.10"}
+	original.WAF.CustomRules = []config.CustomRuleConfig{{
+		ID: "CUSTOM-001", Name: "custom", Category: "test", Description: "test rule",
+		Score: 1, Targets: []string{"query"}, Pattern: "example",
+	}}
+
+	cloned := cloneConfig(original)
+	cloned.Admin.Connectivity.DNS.Names[0] = "changed.test"
+	cloned.Admin.Connectivity.DNS.ExpectedAddresses[0] = "198.51.100.10"
+	cloned.WAF.CustomRules[0].Targets[0] = "headers"
+
+	if got := original.Admin.Connectivity.DNS.Names[0]; got != "project.test" {
+		t.Fatalf("DNS names share backing storage: %q", got)
+	}
+	if got := original.Admin.Connectivity.DNS.ExpectedAddresses[0]; got != "192.0.2.10" {
+		t.Fatalf("DNS expected addresses share backing storage: %q", got)
+	}
+	if got := original.WAF.CustomRules[0].Targets[0]; got != "query" {
+		t.Fatalf("custom rule targets share backing storage: %q", got)
+	}
+}

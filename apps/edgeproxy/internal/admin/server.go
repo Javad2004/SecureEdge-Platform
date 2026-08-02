@@ -152,9 +152,13 @@ func (s *Server) purgeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	host := strings.TrimSpace(r.URL.Query().Get("host"))
 	pathPrefix := strings.TrimSpace(r.URL.Query().Get("path_prefix"))
-	count, ok := s.proxy.PurgeCache(route, host, pathPrefix)
+	count, ok, err := s.proxy.PurgeCache(route, host, pathPrefix)
 	if !ok {
 		writeAPIError(w, http.StatusNotFound, "route_not_found", "route was not found or its cache is disabled")
+		return
+	}
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_path_prefix", err.Error())
 		return
 	}
 	s.logger.Info("cache purged", "route", route, "host", host, "path_prefix", pathPrefix, "entries", count)

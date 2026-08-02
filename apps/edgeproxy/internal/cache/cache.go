@@ -3,6 +3,7 @@ package cache
 import (
 	"container/list"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -112,22 +113,38 @@ func (c *Cache) Delete(key string) bool {
 	return true
 }
 
-func (c *Cache) Purge(host, pathPrefix string) int {
+func (c *Cache) Purge(host, pathPrefix string, keyRequest func(string) (string, string, bool)) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	count := 0
 	host = strings.ToLower(strings.TrimSpace(host))
 	for key, elem := range c.items {
-		if host != "" && !strings.Contains(key, "|host="+host+"|") {
+		keyHost, requestURI, ok := keyRequest(key)
+		if !ok {
 			continue
 		}
-		if pathPrefix != "" && !strings.Contains(key, "|uri="+pathPrefix) {
+		if host != "" && keyHost != host {
+			continue
+		}
+		if pathPrefix != "" && !purgePathMatches(requestURI, pathPrefix) {
 			continue
 		}
 		c.removeElement(elem, false)
 		count++
 	}
 	return count
+}
+
+func purgePathMatches(requestURI, prefix string) bool {
+	parsed, err := url.ParseRequestURI(requestURI)
+	if err != nil {
+		return false
+	}
+	requestPath := parsed.Path
+	if prefix == "/" || requestPath == prefix {
+		return true
+	}
+	return strings.HasPrefix(requestPath, prefix) && len(requestPath) > len(prefix) && requestPath[len(prefix)] == '/'
 }
 
 func (c *Cache) Clear() int {

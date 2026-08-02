@@ -367,7 +367,13 @@ func (r *Runtime) routeExists(name string) bool {
 func cloneConfig(in config.Config) config.Config {
 	out := in
 	out.Server = cloneServerConfig(in.Server)
-	out.WAF.CustomRules = append([]config.CustomRuleConfig(nil), in.WAF.CustomRules...)
+	out.Admin.Connectivity.DNS.Names = append([]string(nil), in.Admin.Connectivity.DNS.Names...)
+	out.Admin.Connectivity.DNS.ExpectedAddresses = append([]string(nil), in.Admin.Connectivity.DNS.ExpectedAddresses...)
+	out.WAF.CustomRules = make([]config.CustomRuleConfig, len(in.WAF.CustomRules))
+	for i, rule := range in.WAF.CustomRules {
+		out.WAF.CustomRules[i] = rule
+		out.WAF.CustomRules[i].Targets = append([]string(nil), rule.Targets...)
+	}
 	out.RoutePolicies = map[string]config.Policy{}
 	for k, v := range in.RoutePolicies {
 		out.RoutePolicies[k] = clonePolicy(v)

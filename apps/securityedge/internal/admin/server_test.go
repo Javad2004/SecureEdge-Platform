@@ -308,3 +308,29 @@ func TestRequestIDMiddlewareRejectsUnsafeValues(t *testing.T) {
 		}
 	}
 }
+
+func TestLogQueryRejectsInvertedTimeRange(t *testing.T) {
+	ts := newAdminTestServer(t, 10)
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/logs?since=2026-08-02T12:00:00Z&until=2026-08-02T11:00:00Z", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer secret-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "since cannot be after until") {
+		t.Fatalf("body=%s", body)
+	}
+}

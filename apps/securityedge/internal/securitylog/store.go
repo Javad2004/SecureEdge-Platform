@@ -323,7 +323,6 @@ func (s *Store) Export(w io.Writer, f Filter, format string) error {
 	switch strings.ToLower(format) {
 	case "csv":
 		cw := csv.NewWriter(w)
-		defer cw.Flush()
 		if err := cw.Write([]string{"sequence", "timestamp", "level", "event", "request_id", "client_ip", "method", "host", "path", "path_fingerprint", "route", "status", "action", "reason", "score", "rule_ids", "duration_ms", "auto_banned"}); err != nil {
 			return err
 		}
@@ -336,6 +335,7 @@ func (s *Store) Export(w io.Writer, f Filter, format string) error {
 				return err
 			}
 		}
+		cw.Flush()
 		return cw.Error()
 	case "ndjson", "jsonl":
 		bw := bufio.NewWriter(w)
@@ -367,10 +367,12 @@ func (s *Store) Clear() (int, error) {
 			s.fileBytes = 0
 		}
 	}
-	for i := 1; i <= s.maxBackups; i++ {
-		backup := fmt.Sprintf("%s.%d", s.filePath, i)
-		if err := os.Remove(backup); err != nil && !os.IsNotExist(err) {
-			errs = append(errs, fmt.Errorf("remove security log backup %q: %w", backup, err))
+	if s.filePath != "" {
+		for i := 1; i <= s.maxBackups; i++ {
+			backup := fmt.Sprintf("%s.%d", s.filePath, i)
+			if err := os.Remove(backup); err != nil && !os.IsNotExist(err) {
+				errs = append(errs, fmt.Errorf("remove security log backup %q: %w", backup, err))
+			}
 		}
 	}
 	return n, errors.Join(errs...)
@@ -466,6 +468,12 @@ func filters(f Filter) map[string]any {
 	}
 	if f.Status > 0 {
 		m["status"] = f.Status
+	}
+	if !f.Since.IsZero() {
+		m["since"] = f.Since.UTC().Format(time.RFC3339Nano)
+	}
+	if !f.Until.IsZero() {
+		m["until"] = f.Until.UTC().Format(time.RFC3339Nano)
 	}
 	if f.BeforeSequence > 0 {
 		m["before_sequence"] = f.BeforeSequence

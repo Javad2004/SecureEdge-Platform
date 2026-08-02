@@ -278,3 +278,29 @@ func TestValidateRejectsInvalidCacheVaryHeader(t *testing.T) {
 		t.Fatalf("expected invalid vary-header error, got %v", err)
 	}
 }
+
+func TestValidateRejectsInvalidRouteHostPatterns(t *testing.T) {
+	for _, host := range []string{"example.test:8080", "foo*bar.example", "*.127.0.0.1", "bad..example", "-bad.example", "bad_.example"} {
+		cfg := Default()
+		route := validRouteForValidation()
+		route.Hosts = []string{host}
+		cfg.Routes = []RouteConfig{route}
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("expected host pattern %q to be rejected", host)
+		}
+	}
+}
+
+func TestValidateNormalizesValidRouteHostPatterns(t *testing.T) {
+	cfg := Default()
+	route := validRouteForValidation()
+	route.Hosts = []string{" Example.TEST. ", "*.Sub.Example.TEST.", "[::1]"}
+	cfg.Routes = []RouteConfig{route}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"example.test", "*.sub.example.test", "::1"}
+	if !reflect.DeepEqual(cfg.Routes[0].Hosts, want) {
+		t.Fatalf("hosts=%#v, want %#v", cfg.Routes[0].Hosts, want)
+	}
+}

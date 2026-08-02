@@ -94,6 +94,45 @@ func (failingWriter) Write([]byte) (int, error) {
 	return 0, errors.New("forced write failure")
 }
 
+func TestCSVExportReturnsFlushError(t *testing.T) {
+	s := New(10)
+	s.Append(Entry{Event: "test"})
+	if err := s.Export(failingWriter{}, Filter{Limit: 10}, "csv"); err == nil {
+		t.Fatal("expected CSV writer flush error")
+	}
+}
+
+func TestClearWithoutFileLoggingDoesNotRemoveRelativeBackups(t *testing.T) {
+	dir := t.TempDir()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previous) })
+
+	for _, name := range []string{".1", ".2"} {
+		if err := os.WriteFile(name, []byte("unrelated"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := NewWithConfig(config.LogStoreConfig{Capacity: 10, MaxBackups: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Append(Entry{Event: "test"})
+	if _, err := s.Clear(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".1", ".2"} {
+		if _, err := os.Stat(name); err != nil {
+			t.Fatalf("unrelated file %s was removed: %v", name, err)
+		}
+	}
+}
+
 func TestNDJSONExportReturnsFlushError(t *testing.T) {
 	s := New(10)
 	s.Append(Entry{Event: "test"})

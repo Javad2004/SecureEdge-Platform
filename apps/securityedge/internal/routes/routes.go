@@ -52,9 +52,9 @@ func Load(path string) (*Table, error) {
 		hosts := make([]string, 0, len(cfg.Routes[i].Hosts))
 		seenHosts := map[string]bool{}
 		for _, raw := range cfg.Routes[i].Hosts {
-			host := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(raw, ".")))
-			if host == "" {
-				return nil, fmt.Errorf("edgeproxy route %q contains an empty host", cfg.Routes[i].Name)
+			host, err := normalizeRouteHostPattern(raw)
+			if err != nil {
+				return nil, fmt.Errorf("edgeproxy route %q host %q: %w", cfg.Routes[i].Name, raw, err)
 			}
 			if !seenHosts[host] {
 				seenHosts[host] = true
@@ -128,6 +128,72 @@ func hostMatchSpecificity(patterns []string, host string) (bool, int) {
 		}
 	}
 	return best >= 0, best
+}
+
+func normalizeRouteHostPattern(raw string) (string, error) {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	value = strings.TrimSuffix(value, ".")
+	if value == "" {
+		return "", fmt.Errorf("cannot be empty")
+	}
+	if value == "*" {
+		return value, nil
+	}
+	if strings.ContainsAny(value, " \t\r\n/\\?#@") {
+		return "", fmt.Errorf("must contain only a hostname, IP address, or leading wildcard")
+	}
+	if strings.HasPrefix(value, "*.") {
+		if strings.Count(value, "*") != 1 {
+			return "", fmt.Errorf("wildcard is only allowed as a single leading '*.'")
+		}
+		suffix, err := normalizeExactRouteHost(strings.TrimPrefix(value, "*."))
+		if err != nil {
+			return "", fmt.Errorf("invalid wildcard suffix: %w", err)
+		}
+		if net.ParseIP(suffix) != nil {
+			return "", fmt.Errorf("wildcard suffix cannot be an IP address")
+		}
+		return "*." + suffix, nil
+	}
+	if strings.Contains(value, "*") {
+		return "", fmt.Errorf("wildcard is only allowed as a single leading '*.'")
+	}
+	return normalizeExactRouteHost(value)
+}
+
+func normalizeExactRouteHost(value string) (string, error) {
+	if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+		ip := net.ParseIP(strings.TrimSuffix(strings.TrimPrefix(value, "["), "]"))
+		if ip == nil {
+			return "", fmt.Errorf("contains an invalid bracketed IP address")
+		}
+		return strings.ToLower(ip.String()), nil
+	}
+	if ip := net.ParseIP(value); ip != nil {
+		return strings.ToLower(ip.String()), nil
+	}
+	if strings.Contains(value, ":") {
+		return "", fmt.Errorf("must not include a port")
+	}
+	if len(value) > 253 {
+		return "", fmt.Errorf("hostname is longer than 253 characters")
+	}
+	for _, label := range strings.Split(value, ".") {
+		if label == "" || len(label) > 63 {
+			return "", fmt.Errorf("hostname contains an empty or overlong label")
+		}
+		for i := 0; i < len(label); i++ {
+			b := label[i]
+			alnum := (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+			if !alnum && b != '-' {
+				return "", fmt.Errorf("hostname labels may contain only letters, digits, and hyphens")
+			}
+			if (i == 0 || i == len(label)-1) && !alnum {
+				return "", fmt.Errorf("hostname labels must start and end with a letter or digit")
+			}
+		}
+	}
+	return value, nil
 }
 
 func normalizePathPrefix(raw string) (string, error) {

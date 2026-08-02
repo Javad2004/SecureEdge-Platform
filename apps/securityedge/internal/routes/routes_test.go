@@ -55,3 +55,38 @@ func TestLoadNormalizesTrailingSlashAndRejectsNonCanonicalPrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadRejectsInvalidHostPatterns(t *testing.T) {
+	for _, host := range []string{"app.example.com:8080", "foo*bar.example", "*.127.0.0.1", "bad..example"} {
+		configPath := t.TempDir() + "/edge.json"
+		payload := `{"routes":[{"name":"api","hosts":["` + host + `"],"path_prefix":"/"}]}`
+		if err := os.WriteFile(configPath, []byte(payload), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(configPath); err == nil {
+			t.Fatalf("expected host pattern %q to be rejected", host)
+		}
+	}
+}
+
+func TestLoadNormalizesValidHostPatterns(t *testing.T) {
+	configPath := t.TempDir() + "/edge.json"
+	payload := `{"routes":[{"name":"api","hosts":[" Example.TEST. ","*.Sub.Example.TEST.","[::1]"],"path_prefix":"/"}]}`
+	if err := os.WriteFile(configPath, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	table, err := Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := table.Routes()[0].Hosts
+	want := []string{"example.test", "*.sub.example.test", "::1"}
+	if len(got) != len(want) {
+		t.Fatalf("hosts=%#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("hosts=%#v, want %#v", got, want)
+		}
+	}
+}

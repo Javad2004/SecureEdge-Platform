@@ -255,13 +255,13 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("route %q requires at least one host", r.Name))
 		}
 		seenHosts := map[string]struct{}{}
-		for j, host := range r.Hosts {
-			host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
-			r.Hosts[j] = host
-			if host == "" {
-				errs = append(errs, fmt.Errorf("route %q hosts[%d] cannot be empty", r.Name, j))
+		for j, rawHost := range r.Hosts {
+			host, hostErr := normalizeRouteHostPattern(rawHost)
+			if hostErr != nil {
+				errs = append(errs, fmt.Errorf("route %q hosts[%d]: %w", r.Name, j, hostErr))
 				continue
 			}
+			r.Hosts[j] = host
 			if _, exists := seenHosts[host]; exists {
 				errs = append(errs, fmt.Errorf("route %q contains duplicate host pattern %q", r.Name, host))
 			} else {
@@ -389,6 +389,72 @@ func (c *Config) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func normalizeRouteHostPattern(raw string) (string, error) {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	value = strings.TrimSuffix(value, ".")
+	if value == "" {
+		return "", errors.New("cannot be empty")
+	}
+	if value == "*" {
+		return value, nil
+	}
+	if strings.ContainsAny(value, " \t\r\n/\\?#@") {
+		return "", errors.New("must contain only a hostname, IP address, or leading wildcard")
+	}
+	if strings.HasPrefix(value, "*.") {
+		if strings.Count(value, "*") != 1 {
+			return "", errors.New("wildcard is only allowed as a single leading '*.'")
+		}
+		suffix, err := normalizeExactRouteHost(strings.TrimPrefix(value, "*."))
+		if err != nil {
+			return "", fmt.Errorf("invalid wildcard suffix: %w", err)
+		}
+		if net.ParseIP(suffix) != nil {
+			return "", errors.New("wildcard suffix cannot be an IP address")
+		}
+		return "*." + suffix, nil
+	}
+	if strings.Contains(value, "*") {
+		return "", errors.New("wildcard is only allowed as a single leading '*.'")
+	}
+	return normalizeExactRouteHost(value)
+}
+
+func normalizeExactRouteHost(value string) (string, error) {
+	if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+		ip := net.ParseIP(strings.TrimSuffix(strings.TrimPrefix(value, "["), "]"))
+		if ip == nil {
+			return "", errors.New("contains an invalid bracketed IP address")
+		}
+		return strings.ToLower(ip.String()), nil
+	}
+	if ip := net.ParseIP(value); ip != nil {
+		return strings.ToLower(ip.String()), nil
+	}
+	if strings.Contains(value, ":") {
+		return "", errors.New("must not include a port")
+	}
+	if len(value) > 253 {
+		return "", errors.New("hostname is longer than 253 characters")
+	}
+	for _, label := range strings.Split(value, ".") {
+		if label == "" || len(label) > 63 {
+			return "", errors.New("hostname contains an empty or overlong label")
+		}
+		for i := 0; i < len(label); i++ {
+			b := label[i]
+			alnum := (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+			if !alnum && b != '-' {
+				return "", errors.New("hostname labels may contain only letters, digits, and hyphens")
+			}
+			if (i == 0 || i == len(label)-1) && !alnum {
+				return "", errors.New("hostname labels must start and end with a letter or digit")
+			}
+		}
+	}
+	return value, nil
 }
 
 func normalizePathPrefix(raw string) (string, error) {

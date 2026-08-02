@@ -514,6 +514,9 @@ func (s *Server) parseLogFilter(r *http.Request) (securitylog.Filter, error) {
 			return securitylog.Filter{}, errors.New("until must be RFC3339")
 		}
 	}
+	if !f.Since.IsZero() && !f.Until.IsZero() && f.Since.After(f.Until) {
+		return securitylog.Filter{}, errors.New("since cannot be after until")
+	}
 	return f, nil
 }
 func (s *Server) decodeJSON(r *http.Request, v any) error {

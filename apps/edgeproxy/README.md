@@ -139,7 +139,7 @@ Start SecurityEdge separately by following [`../securityedge/README.md`](../secu
 
 Each route can define:
 
-- exact or wildcard hosts;
+- exact hosts or a single leading wildcard such as `*.example.com` (without ports);
 - a path prefix;
 - optional prefix stripping;
 - host preservation behavior;

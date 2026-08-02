@@ -921,3 +921,46 @@ func TestParseCacheControlTrimsOptionalWhitespace(t *testing.T) {
 		t.Fatal("no-store directive was not parsed")
 	}
 }
+
+func TestOriginCannotSpoofAuthoritativeEdgeHeaders(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Request-ID", "origin-spoof")
+		w.Header().Set("X-Cache", "ORIGIN")
+		w.Header().Set("X-Upstream-Response-Time", "999s")
+		w.Header().Set("X-Security-Action", "BLOCK")
+		w.Header().Set("X-Security-Score", "999")
+		w.Header().Set("X-Security-Gateway", "origin")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer origin.Close()
+
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	for index, expectedCache := range []string{"MISS", "HIT"} {
+		requestID := fmt.Sprintf("client-%d", index)
+		req := httptest.NewRequest(http.MethodGet, "http://proxy.test/headers", nil)
+		req.Header.Set("X-Request-ID", requestID)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		if got := rec.Result().Header.Values("X-Request-ID"); len(got) != 1 || got[0] != requestID {
+			t.Fatalf("request %d IDs=%#v, want [%q]", index, got, requestID)
+		}
+		if got := rec.Result().Header.Values("X-Cache"); len(got) != 1 || got[0] != expectedCache {
+			t.Fatalf("request %d cache headers=%#v, want [%q]", index, got, expectedCache)
+		}
+		if got := rec.Result().Header.Values("X-Upstream-Response-Time"); index == 0 && (len(got) != 1 || got[0] == "999s") {
+			t.Fatalf("request %d timing headers=%#v", index, got)
+		}
+		for _, name := range []string{"X-Security-Action", "X-Security-Score", "X-Security-Gateway"} {
+			if got := rec.Result().Header.Values(name); len(got) != 0 {
+				t.Fatalf("request %d leaked %s=%#v", index, name, got)
+			}
+		}
+	}
+}

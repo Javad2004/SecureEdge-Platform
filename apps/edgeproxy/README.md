@@ -162,6 +162,7 @@ EdgeProxy provides:
 - `X-Forwarded-For`, `X-Forwarded-Proto`, and `X-Forwarded-Host` handling;
 - explicit `server.trusted_proxy_cidrs` and `server.forwarded_for_header` controls so only approved upstream proxies can supply the original client address;
 - `X-Request-ID` generation and propagation;
+- authoritative edge response metadata: Origin-supplied `X-Request-ID`, `X-Cache`, timing, and `X-Security-*` headers are removed before responses are forwarded or cached;
 - hop-by-hop header removal;
 - optional incoming TLS termination;
 - optional HTTPS upstreams;

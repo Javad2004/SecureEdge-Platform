@@ -544,9 +544,13 @@ func retryableStatus(status int) bool {
 }
 
 func serveCacheEntry(w http.ResponseWriter, req *http.Request, entry cache.Entry, status string, now time.Time) {
-	copyHeaders(w.Header(), entry.Header)
-	removeHopByHop(w.Header())
-	sanitizeOriginResponseHeaders(w.Header())
+	// Sanitize a private header copy rather than the destination map. The
+	// destination already contains the current request's authoritative edge
+	// metadata, including X-Request-ID.
+	header := entry.Header.Clone()
+	removeHopByHop(header)
+	sanitizeOriginResponseHeaders(header)
+	copyHeaders(w.Header(), header)
 	age := int(now.Sub(entry.StoredAt).Seconds())
 	if age < 0 {
 		age = 0

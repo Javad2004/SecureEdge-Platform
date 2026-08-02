@@ -229,3 +229,28 @@ func TestGlobalRateLimitDoesNotAutoBanIndividualClient(t *testing.T) {
 		t.Fatal("a client rejected by the global rate limit must not be auto-banned")
 	}
 }
+
+func TestDownstreamCannotSpoofSecurityDecisionHeaders(t *testing.T) {
+	policy := config.Default().DefaultPolicy
+	policy.RateLimit.Enabled = false
+	h := newTestHandler(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Request-ID", "downstream-spoof")
+		w.Header().Set("X-Security-Action", "BLOCK")
+		w.Header().Set("X-Security-Score", "999")
+		w.WriteHeader(http.StatusOK)
+	}), policy)
+
+	req := httptest.NewRequest(http.MethodGet, "http://project.test/", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if got := rec.Result().Header.Values("X-Request-ID"); len(got) != 1 || got[0] == "downstream-spoof" || got[0] == "" {
+		t.Fatalf("request IDs=%#v", got)
+	}
+	if got := rec.Result().Header.Values("X-Security-Action"); len(got) != 1 || got[0] != "ALLOW" {
+		t.Fatalf("security actions=%#v", got)
+	}
+	if got := rec.Result().Header.Values("X-Security-Score"); len(got) != 1 || got[0] != "0" {
+		t.Fatalf("security scores=%#v", got)
+	}
+}

@@ -3,8 +3,10 @@ package securityedge
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
@@ -242,4 +244,82 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestConcurrentPolicyUpdatesAreSerialized(t *testing.T) {
+	dir := t.TempDir()
+	const routeCount = 24
+	routesList := make([]map[string]any, 0, routeCount)
+	for i := 0; i < routeCount; i++ {
+		routesList = append(routesList, map[string]any{
+			"name":        fmt.Sprintf("route-%02d", i),
+			"hosts":       []string{fmt.Sprintf("route-%02d.test", i)},
+			"path_prefix": "/",
+		})
+	}
+	edgeData, err := json.Marshal(map[string]any{"routes": routesList})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "edge.json"), edgeData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	start := make(chan struct{})
+	errs := make(chan error, routeCount)
+	var wg sync.WaitGroup
+	for i := 0; i < routeCount; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			route := fmt.Sprintf("route-%02d", i)
+			policy := runtime.EffectivePolicy(route)
+			policy.AnomalyThreshold = i + 1
+			errs <- runtime.UpdateRoutePolicy(route, policy)
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent policy update failed: %v", err)
+		}
+	}
+
+	saved, err := config.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(saved.RoutePolicies); got != routeCount {
+		t.Fatalf("persisted route policies=%d, want %d", got, routeCount)
+	}
+	if got := len(runtime.Config().RoutePolicies); got != routeCount {
+		t.Fatalf("runtime route policies=%d, want %d", got, routeCount)
+	}
+	for i := 0; i < routeCount; i++ {
+		route := fmt.Sprintf("route-%02d", i)
+		want := i + 1
+		if got := saved.RoutePolicies[route].AnomalyThreshold; got != want {
+			t.Fatalf("persisted %s threshold=%d, want %d", route, got, want)
+		}
+		if got := runtime.EffectivePolicy(route).AnomalyThreshold; got != want {
+			t.Fatalf("runtime %s threshold=%d, want %d", route, got, want)
+		}
+	}
 }

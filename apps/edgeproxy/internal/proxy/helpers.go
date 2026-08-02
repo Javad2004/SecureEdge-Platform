@@ -40,10 +40,22 @@ func copyHeaders(dst, src http.Header) {
 // be exposed by the edge. Operational details remain available through the
 // authenticated Admin API and structured logs.
 func sanitizeOriginResponseHeaders(h http.Header) {
-	h.Del("Server")
-	h.Del("X-Powered-By")
-	h.Del("X-AspNet-Version")
-	h.Del("X-AspNetMvc-Version")
+	for _, name := range []string{
+		"Server",
+		"X-Powered-By",
+		"X-AspNet-Version",
+		"X-AspNetMvc-Version",
+		// These headers are authoritative edge metadata. An Origin must not be
+		// able to inject, duplicate, or persist them through the shared cache.
+		"X-Request-ID",
+		"X-Cache",
+		"X-Upstream-Response-Time",
+		"X-Security-Action",
+		"X-Security-Score",
+		"X-Security-Gateway",
+	} {
+		h.Del(name)
+	}
 }
 
 func requestID(req *http.Request) string {

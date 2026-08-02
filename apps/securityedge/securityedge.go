@@ -32,18 +32,22 @@ import (
 type Runtime struct {
 	configPath string
 	logger     *slog.Logger
-	mu         sync.RWMutex
-	cfg        config.Config
-	table      *routes.Table
-	edge       *edgeadmin.Client
-	registry   *metrics.Registry
-	logs       *securitylog.Store
-	traffic    *traffic.Tracker
-	inspector  *waf.Inspector
-	limiter    *ratelimit.Limiter
-	bans       *ratelimit.BanManager
-	admission  *admission.Limiter
-	clients    *clientip.Resolver
+	// configMu serializes complete load/validate/persist/apply transactions.
+	// Without it, concurrent reloads and policy edits can lose updates or leave
+	// the persisted file and live runtime on different revisions.
+	configMu  sync.Mutex
+	mu        sync.RWMutex
+	cfg       config.Config
+	table     *routes.Table
+	edge      *edgeadmin.Client
+	registry  *metrics.Registry
+	logs      *securitylog.Store
+	traffic   *traffic.Tracker
+	inspector *waf.Inspector
+	limiter   *ratelimit.Limiter
+	bans      *ratelimit.BanManager
+	admission *admission.Limiter
+	clients   *clientip.Resolver
 }
 
 func New(configPath string, logger *slog.Logger) (*Runtime, error) {
@@ -220,6 +224,9 @@ type preparedReload struct {
 }
 
 func (r *Runtime) Reload() error {
+	r.configMu.Lock()
+	defer r.configMu.Unlock()
+
 	cfg, err := config.Load(r.configPath)
 	if err != nil {
 		return err
@@ -277,6 +284,9 @@ func (r *Runtime) applyReload(prepared preparedReload) error {
 }
 
 func (r *Runtime) update(mutator func(*config.Config)) error {
+	r.configMu.Lock()
+	defer r.configMu.Unlock()
+
 	fileCfg, err := config.LoadFile(r.configPath)
 	if err != nil {
 		return err

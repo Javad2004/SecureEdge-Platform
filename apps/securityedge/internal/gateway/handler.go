@@ -145,7 +145,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if !policy.Enabled || policy.Mode == "off" || allowlisted {
 		setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
 		securityDuration = time.Since(started)
-		writer := &decisionWriter{ResponseWriter: w, requestID: requestID, addSecurityHeaders: serverCfg.AddSecurityHeaders}
+		writer := &decisionWriter{ResponseWriter: w, requestID: requestID, action: action, score: score, addSecurityHeaders: serverCfg.AddSecurityHeaders}
 		h.next.ServeHTTP(writer, req)
 		status = writer.Status()
 		cacheStatus = writer.Header().Get("X-Cache")
@@ -214,7 +214,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
 	securityDuration = time.Since(started)
-	writer := &decisionWriter{ResponseWriter: w, requestID: requestID, addSecurityHeaders: serverCfg.AddSecurityHeaders}
+	writer := &decisionWriter{ResponseWriter: w, requestID: requestID, action: action, score: score, addSecurityHeaders: serverCfg.AddSecurityHeaders}
 	h.next.ServeHTTP(writer, req)
 	status = writer.Status()
 	cacheStatus = writer.Header().Get("X-Cache")
@@ -315,6 +315,8 @@ func (h *Handler) appendLog(req *http.Request, id, client, route string, status 
 type decisionWriter struct {
 	http.ResponseWriter
 	requestID          string
+	action             string
+	score              int
 	addSecurityHeaders bool
 	status             int
 }
@@ -331,7 +333,7 @@ func (w *decisionWriter) WriteHeader(status int) {
 		return
 	}
 	w.status = status
-	setBaseHeaders(w.Header(), w.requestID, w.addSecurityHeaders)
+	setBaseHeaders(w.Header(), w.requestID, w.action, w.score, w.addSecurityHeaders)
 	w.ResponseWriter.WriteHeader(status)
 }
 func (w *decisionWriter) Write(data []byte) (int, error) {
@@ -351,7 +353,10 @@ func (w *decisionWriter) ReadFrom(reader io.Reader) (int64, error) {
 }
 func (w *decisionWriter) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
-		setBaseHeaders(w.Header(), w.requestID, w.addSecurityHeaders)
+		if w.status == 0 {
+			w.status = http.StatusOK
+		}
+		setBaseHeaders(w.Header(), w.requestID, w.action, w.score, w.addSecurityHeaders)
 		f.Flush()
 	}
 }
@@ -367,10 +372,12 @@ func setDecisionHeaders(w http.ResponseWriter, id, action string, score int, sec
 	w.Header().Set("X-Security-Score", strconv.Itoa(score))
 }
 
-func setBaseHeaders(h http.Header, id string, security bool) {
-	if h.Get("X-Request-ID") == "" {
-		h.Set("X-Request-ID", id)
-	}
+func setBaseHeaders(h http.Header, id, action string, score int, security bool) {
+	// Always overwrite downstream values. These fields describe the decision
+	// made by SecurityEdge and must not be spoofable by EdgeProxy or an Origin.
+	h.Set("X-Request-ID", id)
+	h.Set("X-Security-Action", action)
+	h.Set("X-Security-Score", strconv.Itoa(score))
 	if security {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")

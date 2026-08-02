@@ -305,7 +305,9 @@ Settings owned by already-running listeners or long-lived process resources requ
 
 Rate-limit buckets and automatic-ban tracking are also process-wide stores. Route policies may define different request rates, bursts, violation thresholds, windows, and ban durations, but they must use the same `cleanup_interval`, `idle_ttl`, `max_buckets`, and `max_tracked_clients` capacity settings as `default_policy`. This prevents one route from applying a smaller shared-store capacity to buckets or client records created by another route.
 
-Dashboard policy updates are prepared before the configuration file is replaced. A validation or reload-preparation failure therefore leaves both the persisted file and the active runtime unchanged.
+Dashboard policy updates are prepared before the configuration file is replaced. A validation or reload-preparation failure therefore leaves both the persisted file and the active runtime unchanged. Reload and policy-write transactions are serialized, so concurrent Admin API requests cannot overwrite one another or apply a different revision than the one persisted on disk.
+
+SecurityEdge also overwrites `X-Request-ID`, `X-Security-Action`, and `X-Security-Score` at the final response boundary. Values supplied by EdgeProxy or an Origin cannot impersonate the security decision returned to the client.
 
 Authenticated EdgeProxy backend-for-frontend endpoints:
 

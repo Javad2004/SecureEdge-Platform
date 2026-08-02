@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -962,5 +963,52 @@ func TestOriginCannotSpoofAuthoritativeEdgeHeaders(t *testing.T) {
 				t.Fatalf("request %d leaked %s=%#v", index, name, got)
 			}
 		}
+	}
+}
+
+func TestRewriteURLStripsPrefixFromCanonicalPath(t *testing.T) {
+	in, err := url.Parse("http://proxy.test/api/../admin/settings?view=full")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := url.Parse("http://origin.test/base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := rewriteURL(in, base, "/admin", true)
+	if got.Path != "/base/settings" || got.RawQuery != "view=full" {
+		t.Fatalf("rewritten URL=%q, want path /base/settings with original query", got.String())
+	}
+}
+
+func TestCacheKeyUsesCanonicalForwardedPath(t *testing.T) {
+	cfg := config.CacheConfig{}
+	a := httptest.NewRequest(http.MethodGet, "http://proxy.test/api/../admin/settings?q=1", nil)
+	b := httptest.NewRequest(http.MethodGet, "http://proxy.test/admin/settings?q=1", nil)
+	if gotA, gotB := cacheKey(a, cfg), cacheKey(b, cfg); gotA != gotB {
+		t.Fatalf("equivalent forwarded paths produced different keys:\n%s\n%s", gotA, gotB)
+	}
+}
+
+func TestResponseBodyCopyFailureIsReported(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "10")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "abc")
+	}))
+	defer origin.Close()
+
+	registry := metrics.New()
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), registry, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/truncated", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if got := registry.Snapshot().Total.ProxyErrors; got != 1 {
+		t.Fatalf("proxy_errors=%d, want 1 after truncated upstream response", got)
 	}
 }

@@ -329,6 +329,14 @@ func (w *decisionWriter) Status() int {
 	return w.status
 }
 func (w *decisionWriter) WriteHeader(status int) {
+	// HTTP permits multiple informational responses before one final response.
+	// Forward 1xx statuses without latching them as the request's final status;
+	// 101 is final because the connection switches protocols.
+	if status >= 100 && status < 200 && status != http.StatusSwitchingProtocols {
+		setBaseHeaders(w.Header(), w.requestID, w.action, w.score, w.addSecurityHeaders)
+		w.ResponseWriter.WriteHeader(status)
+		return
+	}
 	if w.status != 0 {
 		return
 	}

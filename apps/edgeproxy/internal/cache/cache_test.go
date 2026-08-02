@@ -41,3 +41,9 @@ func TestCacheLRUEviction(t *testing.T) {
 		t.Fatalf("unexpected stats: %+v", stats)
 	}
 }
+
+func TestPurgePathMatchesCanonicalRequestPath(t *testing.T) {
+	if !purgePathMatches("/api/../admin/settings?view=full", "/admin") {
+		t.Fatal("canonical /admin prefix should match a route-equivalent request URI")
+	}
+}

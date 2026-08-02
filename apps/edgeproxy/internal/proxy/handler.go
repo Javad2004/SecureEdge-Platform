@@ -359,13 +359,18 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 			w.Header().Set("X-Cache", "BYPASS")
 		}
 		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
+		if _, err := io.Copy(w, resp.Body); err != nil {
+			h.recordResponseCopyError(&result, req, rt.cfg.Name, id, err)
+		}
 		return result
 	}
 
 	w.WriteHeader(resp.StatusCode)
 	capture := &cappedBuffer{max: rt.cfg.Cache.MaxObjectBytes}
 	_, copyErr := io.Copy(io.MultiWriter(w, capture), resp.Body)
+	if copyErr != nil {
+		h.recordResponseCopyError(&result, req, rt.cfg.Name, id, copyErr)
+	}
 	if copyErr == nil && !capture.overflow {
 		cacheHeader := resp.Header.Clone()
 		// A response may be explicitly eligible for body caching even when it
@@ -384,6 +389,21 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		}
 	}
 	return result
+}
+
+func (h *Handler) recordResponseCopyError(result *requestResult, req *http.Request, route, requestID string, err error) {
+	if err == nil {
+		return
+	}
+	result.proxyError = true
+	result.errorMessage = errorText(err)
+	h.logger.Warn("response body forwarding failed",
+		"request_id", requestID,
+		"route", route,
+		"client_ip", clientIP(req),
+		"upstream", result.upstream,
+		"error", err,
+	)
 }
 
 func (h *Handler) recordUpstreamAttempt(req *http.Request, route, requestID, upstreamURL string, attempt, status int, duration time.Duration, retry, timeout bool, err error, failed bool) {

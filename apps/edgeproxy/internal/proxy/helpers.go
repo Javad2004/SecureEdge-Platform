@@ -117,11 +117,34 @@ func joinPath(base, next string) string {
 	return joined
 }
 
+func canonicalRequestPath(value string) string {
+	if value == "" {
+		return "/"
+	}
+	trailingSlash := strings.HasSuffix(value, "/")
+	cleaned := path.Clean("/" + strings.TrimPrefix(value, "/"))
+	if trailingSlash && cleaned != "/" {
+		cleaned += "/"
+	}
+	return cleaned
+}
+
+func canonicalRequestURI(in *url.URL) string {
+	out := *in
+	out.Path = canonicalRequestPath(in.Path)
+	out.RawPath = ""
+	out.Fragment = ""
+	return out.RequestURI()
+}
+
 func rewriteURL(in *url.URL, base *url.URL, routePrefix string, stripPrefix bool) *url.URL {
 	out := *in
 	out.Scheme = base.Scheme
 	out.Host = base.Host
-	requestPath := in.Path
+	// Route selection is based on the canonical decoded path. Apply prefix
+	// stripping to that same path so the selected route and forwarded resource
+	// cannot diverge when the request contains dot-segments.
+	requestPath := canonicalRequestPath(in.Path)
 	if stripPrefix {
 		requestPath = strings.TrimPrefix(requestPath, routePrefix)
 		if requestPath == "" {

@@ -21,7 +21,7 @@ func cacheKey(req *http.Request, cfg config.CacheConfig) string {
 	var b strings.Builder
 	// Host and URI are encoded so cache-admin filters can parse the key without
 	// being confused by delimiters that are legal in a raw query string.
-	fmt.Fprintf(&b, "method=%s|host64=%s|uri64=%s", method, encodeCacheKeyField(cacheHost(req.Host)), encodeCacheKeyField(req.URL.RequestURI()))
+	fmt.Fprintf(&b, "method=%s|host64=%s|uri64=%s", method, encodeCacheKeyField(cacheHost(req.Host)), encodeCacheKeyField(canonicalRequestURI(req.URL)))
 	seen := make(map[string]struct{}, len(cfg.VaryRequestHeaders)+2)
 	appendHeader := func(name string) {
 		canonical := http.CanonicalHeaderKey(strings.TrimSpace(name))

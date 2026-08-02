@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -140,11 +141,23 @@ func purgePathMatches(requestURI, prefix string) bool {
 	if err != nil {
 		return false
 	}
-	requestPath := parsed.Path
+	requestPath := canonicalRequestPath(parsed.Path)
 	if prefix == "/" || requestPath == prefix {
 		return true
 	}
 	return strings.HasPrefix(requestPath, prefix) && len(requestPath) > len(prefix) && requestPath[len(prefix)] == '/'
+}
+
+func canonicalRequestPath(value string) string {
+	if value == "" {
+		return "/"
+	}
+	trailingSlash := strings.HasSuffix(value, "/")
+	cleaned := path.Clean("/" + strings.TrimPrefix(value, "/"))
+	if trailingSlash && cleaned != "/" {
+		cleaned += "/"
+	}
+	return cleaned
 }
 
 func (c *Cache) Clear() int {

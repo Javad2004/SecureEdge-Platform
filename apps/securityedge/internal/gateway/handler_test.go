@@ -254,3 +254,32 @@ func TestDownstreamCannotSpoofSecurityDecisionHeaders(t *testing.T) {
 		t.Fatalf("security scores=%#v", got)
 	}
 }
+
+type informationalResponseWriter struct {
+	header   http.Header
+	statuses []int
+}
+
+func (w *informationalResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+func (w *informationalResponseWriter) WriteHeader(status int) {
+	w.statuses = append(w.statuses, status)
+}
+func (w *informationalResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+func TestDecisionWriterPreservesFinalStatusAfterInformationalResponse(t *testing.T) {
+	underlying := &informationalResponseWriter{}
+	writer := &decisionWriter{ResponseWriter: underlying, requestID: "request-1", action: "ALLOW", score: 0, addSecurityHeaders: true}
+	writer.WriteHeader(http.StatusEarlyHints)
+	writer.WriteHeader(http.StatusOK)
+	if writer.Status() != http.StatusOK {
+		t.Fatalf("final status=%d, want %d", writer.Status(), http.StatusOK)
+	}
+	if len(underlying.statuses) != 2 || underlying.statuses[0] != http.StatusEarlyHints || underlying.statuses[1] != http.StatusOK {
+		t.Fatalf("forwarded statuses=%v, want [103 200]", underlying.statuses)
+	}
+}

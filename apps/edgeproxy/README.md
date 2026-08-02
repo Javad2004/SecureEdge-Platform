@@ -148,7 +148,7 @@ Each route can define:
 - cache policy;
 - active health checks.
 
-Routing precedence favors the most specific host/path match. Example profiles are available in:
+Routing precedence favors the most specific host/path match. Request paths are canonicalized before route selection, optional prefix stripping, Origin forwarding, cache-key generation, and path-filtered cache purges. This keeps dot-segment-equivalent requests aligned across the entire data path. Example profiles are available in:
 
 ```text
 configs/examples/multi-origin.json
@@ -170,6 +170,7 @@ EdgeProxy provides:
 - direct Origin connections that do not inherit ambient `HTTP_PROXY` or `HTTPS_PROXY` settings;
 - transport, response-header, request, and idle timeouts;
 - retries for idempotent replayable requests after transport failures or configured upstream errors;
+- response-stream failures recorded in metrics and structured logs even when the final HTTP status has already been sent;
 - graceful shutdown.
 
 ## HTTP cache

@@ -71,7 +71,8 @@ SecurityEdge provides application-layer HTTP protection. SYN floods, UDP floods,
 - policy editing with validation and atomic persistence;
 - temporary-ban management;
 - CSV and NDJSON event exports;
-- bounded dependency transition history.
+- bounded dependency transition history;
+- bounded metric labels, with nonstandard or extension HTTP methods aggregated under `OTHER`.
 
 ## Configuration profiles
 
@@ -296,6 +297,8 @@ POST    /api/v1/connectivity/check
 ```
 
 `DELETE /api/v1/logs` clears the in-memory event ring, truncates the active NDJSON log, and removes rotated backups. CSV exports neutralize spreadsheet-formula prefixes in user-controlled fields before writing rows.
+
+The in-memory Admin event ring accepts a configured `capacity` from `1` through `100000` entries. This bound prevents an accidental configuration value from causing an excessive startup allocation.
 
 ### Live reload boundaries
 

@@ -3,6 +3,7 @@ package metrics
 import (
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -269,6 +270,7 @@ func New() *Registry {
 // Begin starts accounting for one client request. The returned callback must be
 // called exactly once when the response is complete.
 func (r *Registry) Begin(route, method string, bytesIn uint64) func(RequestObservation) {
+	method = metricMethod(method)
 	r.inflight.Add(1)
 	routeMetrics := r.route(route)
 	for _, target := range []*Counters{&r.total, &routeMetrics.counters} {
@@ -545,6 +547,16 @@ func durationToMS(duration time.Duration) float64 {
 
 func nsToMS(value uint64) float64 {
 	return float64(value) / float64(time.Millisecond)
+}
+
+func metricMethod(method string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(method))
+	switch normalized {
+	case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE":
+		return normalized
+	default:
+		return "OTHER"
+	}
 }
 
 func sortedCounterMap(values map[string]uint64) map[string]uint64 {

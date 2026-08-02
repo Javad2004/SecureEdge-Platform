@@ -188,6 +188,8 @@ The cache is an in-memory, thread-safe LRU with:
 
 Requests or responses are bypassed when caching would be unsafe, including common cases involving `Authorization`, cookies, `Set-Cookie`, `Range`, `private`, `no-store`, `no-cache`, legacy `Pragma: no-cache`, or unsupported `Vary` values. If authenticated or cookie-bearing request caching is explicitly enabled, EdgeProxy automatically partitions cache keys with SHA-256 fingerprints of those headers. Responses that are explicitly allowed to be cached despite `Set-Cookie` keep the cookie on the live Origin response but never replay it from shared cache.
 
+When the Origin explicitly sends `s-maxage`, `max-age`, or `Expires`, malformed values cause the response to bypass storage instead of silently falling back to the route default TTL. This prevents an invalid Origin freshness policy from extending a response's shared-cache lifetime.
+
 ## Demo Origin endpoints
 
 The included Origin server provides:
@@ -259,6 +261,8 @@ curl.exe -X POST -H $Auth `
 `path_prefix` matches the exact path segment and its descendants. For example, `/api` matches `/api` and `/api/products`, but not `/apix`. It must be an absolute canonical path without query text, fragments, percent-encoded path bytes, dot-segments, or repeated slashes.
 
 `/healthz` reports process liveness. `/readyz` reports `503 Service Unavailable` when any configured route has no healthy Origin.
+
+The in-memory Admin log ring accepts a configured capacity from `1` through `100000` entries. Request-method metrics preserve the standard HTTP methods and aggregate nonstandard or extension methods under `OTHER` to keep metric label cardinality bounded.
 
 ## Admin-token override
 

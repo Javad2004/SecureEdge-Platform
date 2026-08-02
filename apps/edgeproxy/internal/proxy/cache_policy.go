@@ -145,19 +145,29 @@ func responseCachePolicy(req *http.Request, resp *http.Response, cfg config.Cach
 			allowStale = false
 		}
 		initialAge = responseInitialAge(resp.Header, now)
-		if value := firstNonEmpty(cc["s-maxage"], cc["max-age"]); value != "" {
-			seconds, err := strconv.Atoi(value)
-			if err == nil {
-				ttl = time.Duration(seconds) * time.Second
+		switch {
+		case hasCacheDirective(cc, "s-maxage"):
+			seconds, ok := cacheDeltaSeconds(cc["s-maxage"])
+			if !ok {
+				return false, time.Time{}, time.Time{}, 0
 			}
-		} else if expires := resp.Header.Get("Expires"); expires != "" {
-			if parsed, err := http.ParseTime(expires); err == nil {
-				reference := now
-				if date, dateErr := http.ParseTime(resp.Header.Get("Date")); dateErr == nil {
-					reference = date
-				}
-				ttl = parsed.Sub(reference)
+			ttl = time.Duration(seconds) * time.Second
+		case hasCacheDirective(cc, "max-age"):
+			seconds, ok := cacheDeltaSeconds(cc["max-age"])
+			if !ok {
+				return false, time.Time{}, time.Time{}, 0
 			}
+			ttl = time.Duration(seconds) * time.Second
+		case strings.TrimSpace(resp.Header.Get("Expires")) != "":
+			parsed, err := http.ParseTime(resp.Header.Get("Expires"))
+			if err != nil {
+				return false, time.Time{}, time.Time{}, 0
+			}
+			reference := now
+			if date, dateErr := http.ParseTime(resp.Header.Get("Date")); dateErr == nil {
+				reference = date
+			}
+			ttl = parsed.Sub(reference)
 		}
 		ttl -= initialAge
 	}
@@ -170,6 +180,15 @@ func responseCachePolicy(req *http.Request, resp *http.Response, cfg config.Cach
 		staleUntil = expiresAt.Add(cfg.StaleIfError.Duration)
 	}
 	return true, expiresAt, staleUntil, initialAge
+}
+
+func cacheDeltaSeconds(value string) (int64, bool) {
+	seconds, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	const maxDurationSeconds = int64(1<<63-1) / int64(time.Second)
+	if err != nil || seconds < 0 || seconds > maxDurationSeconds {
+		return 0, false
+	}
+	return seconds, true
 }
 
 // responseInitialAge applies the shared-cache Age/Date correction needed when

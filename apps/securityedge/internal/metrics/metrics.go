@@ -120,7 +120,7 @@ func (r *Registry) Begin() func(Observation) {
 
 func (r *Registry) record(c *counters, o Observation) {
 	c.requests.Add(1)
-	add(&c.methods, o.Method, 1)
+	add(&c.methods, metricMethod(o.Method), 1)
 	add(&c.actions, o.Action, 1)
 	add(&c.reasons, o.Reason, 1)
 	switch o.Action {
@@ -278,6 +278,16 @@ func percentile(c *counters, total uint64, q float64) float64 {
 		}
 	}
 	return float64(c.maxDurationNS.Load()) / float64(time.Millisecond)
+}
+
+func metricMethod(method string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(method))
+	switch normalized {
+	case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE":
+		return normalized
+	default:
+		return "OTHER"
+	}
 }
 
 func add(m *sync.Map, key string, n uint64) {

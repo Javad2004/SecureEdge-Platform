@@ -223,3 +223,13 @@ func TestValidateRejectsAdminURLQuery(t *testing.T) {
 		t.Fatalf("expected admin URL query to be rejected, got %v", err)
 	}
 }
+
+func TestValidateRejectsExcessiveAdminLogCapacity(t *testing.T) {
+	cfg := Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Admin.LogStore.Capacity = 100001
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "capacity") {
+		t.Fatalf("expected excessive log capacity error, got %v", err)
+	}
+}

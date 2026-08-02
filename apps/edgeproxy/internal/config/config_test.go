@@ -304,3 +304,15 @@ func TestValidateNormalizesValidRouteHostPatterns(t *testing.T) {
 		t.Fatalf("hosts=%#v, want %#v", cfg.Routes[0].Hosts, want)
 	}
 }
+
+func TestValidateRejectsExcessiveAdminLogCapacity(t *testing.T) {
+	cfg := Default()
+	cfg.Routes = []RouteConfig{validRouteForValidation()}
+	cfg.Admin.Enabled = true
+	cfg.Admin.LogStore.Enabled = true
+	cfg.Admin.LogStore.Capacity = 100001
+	cfg.Admin.LogStore.MaxPageSize = 500
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "capacity") {
+		t.Fatalf("expected excessive log capacity error, got %v", err)
+	}
+}

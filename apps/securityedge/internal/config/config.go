@@ -17,6 +17,8 @@ import (
 	"time"
 )
 
+const maxAdminLogStoreCapacity = 100_000
+
 type Config struct {
 	Server        ServerConfig      `json:"server"`
 	Admin         AdminConfig       `json:"admin"`
@@ -323,8 +325,11 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(c.Admin.AuthToken) == "" && !isLoopback(host) {
 			errs = append(errs, errors.New("admin.auth_token is required when admin is not loopback"))
 		}
-		if c.Admin.LogStore.Capacity <= 0 || c.Admin.LogStore.DefaultPageSize <= 0 || c.Admin.LogStore.MaxPageSize <= 0 {
-			errs = append(errs, errors.New("admin.log_store values must be positive"))
+		if c.Admin.LogStore.Capacity <= 0 || c.Admin.LogStore.Capacity > maxAdminLogStoreCapacity {
+			errs = append(errs, fmt.Errorf("admin.log_store.capacity must be between 1 and %d", maxAdminLogStoreCapacity))
+		}
+		if c.Admin.LogStore.DefaultPageSize <= 0 || c.Admin.LogStore.MaxPageSize <= 0 {
+			errs = append(errs, errors.New("admin.log_store page sizes must be positive"))
 		}
 		if c.Admin.LogStore.DefaultPageSize > c.Admin.LogStore.MaxPageSize || c.Admin.LogStore.MaxPageSize > c.Admin.LogStore.Capacity {
 			errs = append(errs, errors.New("admin.log_store requires default_page_size <= max_page_size <= capacity"))

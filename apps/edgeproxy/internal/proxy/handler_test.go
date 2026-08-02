@@ -1063,3 +1063,43 @@ func TestResponseBodyCopyFailureIsReported(t *testing.T) {
 		t.Fatalf("proxy_errors=%d, want 1 after truncated upstream response", got)
 	}
 }
+
+func TestInvalidOriginFreshnessDoesNotFallBackToDefaultTTL(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		value  string
+	}{
+		{name: "invalid shared max age", header: "Cache-Control", value: "public, s-maxage=invalid"},
+		{name: "invalid max age", header: "Cache-Control", value: "public, max-age=invalid"},
+		{name: "invalid expires", header: "Expires", value: "0"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int64
+			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.Header().Set(tc.header, tc.value)
+				_, _ = io.WriteString(w, "body")
+			}))
+			defer origin.Close()
+
+			h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer h.Close()
+
+			for i := 0; i < 2; i++ {
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://proxy.test/invalid-freshness", nil))
+				if rec.Code != http.StatusOK || rec.Header().Get("X-Cache") != "BYPASS" {
+					t.Fatalf("request %d: code=%d cache=%q", i+1, rec.Code, rec.Header().Get("X-Cache"))
+				}
+			}
+			if calls.Load() != 2 {
+				t.Fatalf("invalid freshness metadata was cached: origin calls=%d", calls.Load())
+			}
+		})
+	}
+}

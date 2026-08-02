@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -43,5 +44,17 @@ func TestHistogramEmptySnapshot(t *testing.T) {
 	snapshot := h.Snapshot()
 	if snapshot.Count != 0 || snapshot.Average != 0 || len(snapshot.Distribution) != 0 {
 		t.Fatalf("unexpected empty histogram: %#v", snapshot)
+	}
+}
+
+func TestUnknownMethodsUseBoundedMetricLabel(t *testing.T) {
+	r := New()
+	for i := 0; i < 1000; i++ {
+		finish := r.Begin("demo", fmt.Sprintf("X-CUSTOM-%d", i), 0)
+		finish(RequestObservation{Status: 200})
+	}
+	methods := r.Snapshot().Total.Methods
+	if len(methods) != 1 || methods["OTHER"] != 1000 {
+		t.Fatalf("unbounded method labels: %#v", methods)
 	}
 }

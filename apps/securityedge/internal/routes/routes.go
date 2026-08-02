@@ -35,6 +35,7 @@ func Load(path string) (*Table, error) {
 		return nil, fmt.Errorf("edgeproxy config has no routes")
 	}
 	seenNames := map[string]bool{}
+	selectors := map[string]string{}
 	for i := range cfg.Routes {
 		cfg.Routes[i].Name = strings.TrimSpace(cfg.Routes[i].Name)
 		normalizedPrefix, err := normalizePathPrefix(cfg.Routes[i].PathPrefix)
@@ -56,12 +57,20 @@ func Load(path string) (*Table, error) {
 			if err != nil {
 				return nil, fmt.Errorf("edgeproxy route %q host %q: %w", cfg.Routes[i].Name, raw, err)
 			}
-			if !seenHosts[host] {
-				seenHosts[host] = true
-				hosts = append(hosts, host)
+			if seenHosts[host] {
+				return nil, fmt.Errorf("edgeproxy route %q contains duplicate host pattern %q", cfg.Routes[i].Name, host)
 			}
+			seenHosts[host] = true
+			hosts = append(hosts, host)
 		}
 		cfg.Routes[i].Hosts = hosts
+		for _, host := range hosts {
+			key := host + "\x00" + cfg.Routes[i].PathPrefix
+			if owner, exists := selectors[key]; exists {
+				return nil, fmt.Errorf("edgeproxy routes %q and %q have the same host/path selector %q %q", owner, cfg.Routes[i].Name, host, cfg.Routes[i].PathPrefix)
+			}
+			selectors[key] = cfg.Routes[i].Name
+		}
 	}
 	return &Table{routes: cfg.Routes}, nil
 }

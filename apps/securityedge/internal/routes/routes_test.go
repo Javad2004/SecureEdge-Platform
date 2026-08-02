@@ -99,3 +99,25 @@ func TestMatchNormalizesBracketedIPv6HostWithoutPort(t *testing.T) {
 		t.Fatalf("expected IPv6 route, got %#v, ok=%v", got, ok)
 	}
 }
+
+func TestLoadRejectsDuplicateNormalizedHostInRoute(t *testing.T) {
+	configPath := t.TempDir() + "/edge.json"
+	payload := `{"routes":[{"name":"api","hosts":["Example.TEST","example.test."],"path_prefix":"/"}]}`
+	if err := os.WriteFile(configPath, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(configPath); err == nil {
+		t.Fatal("expected duplicate normalized host to be rejected")
+	}
+}
+
+func TestLoadRejectsDuplicateHostPathSelector(t *testing.T) {
+	configPath := t.TempDir() + "/edge.json"
+	payload := `{"routes":[{"name":"api-one","hosts":["app.example.test"],"path_prefix":"/api"},{"name":"api-two","hosts":["APP.EXAMPLE.TEST."],"path_prefix":"/api/"}]}`
+	if err := os.WriteFile(configPath, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(configPath); err == nil {
+		t.Fatal("expected duplicate host/path selector to be rejected")
+	}
+}

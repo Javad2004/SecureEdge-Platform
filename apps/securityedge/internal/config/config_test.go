@@ -259,6 +259,34 @@ func TestValidateRejectsExcessiveAdminLogCapacity(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsExplicitEmptyPorts(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{name: "gateway listener", mutate: func(cfg *Config) { cfg.Server.ListenAddr = "127.0.0.1:" }},
+		{name: "admin listener", mutate: func(cfg *Config) { cfg.Admin.ListenAddr = "127.0.0.1:" }},
+		{name: "upstream proxy URL", mutate: func(cfg *Config) { cfg.Server.UpstreamProxyURL = "http://127.0.0.1:" }},
+		{name: "edgeproxy admin URL", mutate: func(cfg *Config) { cfg.EdgeProxy.AdminURL = "http://127.0.0.1:" }},
+		{name: "DNS server", mutate: func(cfg *Config) {
+			cfg.Admin.Connectivity.DNS.Enabled = true
+			cfg.Admin.Connectivity.DNS.Server = "127.0.0.1:"
+			cfg.Admin.Connectivity.DNS.Names = []string{"project.test"}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Server.Mode = "gateway"
+			cfg.EdgeProxy.ConfigPath = "edge.json"
+			tc.mutate(&cfg)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "port is required") {
+				t.Fatalf("expected missing-port validation error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateRejectsOutOfRangePorts(t *testing.T) {
 	tests := []struct {
 		name   string

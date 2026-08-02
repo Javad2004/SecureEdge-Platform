@@ -410,13 +410,20 @@ func (m *Monitor) edgeJSONProbe(ctx context.Context, cfg config.Config, id, name
 	return probeResult{id: id, name: name, layer: layer, status: probeStatus, critical: critical, endpoint: endpoint, message: message, httpStatus: status, latency: latency, details: details}
 }
 
+// dnsDialer preserves the transport requested by net.Resolver. DNS starts on
+// UDP, but truncated responses must be retried over TCP; forcing every request
+// onto UDP breaks that standards-defined fallback for larger answers.
+func dnsDialer(endpoint string) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, endpoint)
+	}
+}
+
 func probeDNS(ctx context.Context, cfg config.DNSProbeConfig) probeResult {
 	endpoint := cfg.Server
 	resolver := &net.Resolver{
 		PreferGo: true,
-		Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "udp", endpoint)
-		},
+		Dial:     dnsDialer(endpoint),
 	}
 	started := time.Now()
 	resolved := map[string][]string{}

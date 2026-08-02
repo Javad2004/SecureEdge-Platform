@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -135,13 +136,7 @@ func newReverseProxy(target *url.URL, cfg config.ServerConfig, logger *slog.Logg
 		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			clientIP := gateway.ResolvedClientIP(pr.In.Context())
-			// The configured source header is input-only. Never pass the raw value
-			// downstream, where another trusted hop could interpret it again.
-			pr.Out.Header.Del(cfg.ForwardedForHeader)
-			pr.Out.Header.Del("Forwarded")
-			pr.Out.Header.Del("X-Forwarded-For")
-			pr.Out.Header.Del("X-Forwarded-Host")
-			pr.Out.Header.Del("X-Forwarded-Proto")
+			removeForwardingIdentityHeaders(pr.Out.Header, cfg.ForwardedForHeader)
 			pr.SetURL(target)
 			pr.SetXForwarded()
 			if net.ParseIP(clientIP) != nil {
@@ -170,6 +165,27 @@ func newReverseProxy(target *url.URL, cfg config.ServerConfig, logger *slog.Logg
 		},
 	}
 	return proxy
+}
+
+// removeForwardingIdentityHeaders ensures SecurityEdge is the only source of
+// client identity metadata sent to EdgeProxy. Alternate forwarding headers are
+// removed as well as the configured source header so downstream components
+// cannot accidentally trust a spoofed value.
+func removeForwardingIdentityHeaders(header http.Header, configured string) {
+	configured = strings.TrimSpace(configured)
+	for name := range header {
+		lower := strings.ToLower(name)
+		remove := strings.EqualFold(name, configured) || strings.HasPrefix(lower, "x-forwarded-")
+		if !remove {
+			switch lower {
+			case "forwarded", "client-ip", "x-real-ip", "true-client-ip", "x-client-ip", "x-cluster-client-ip", "x-originating-ip", "x-original-forwarded-for", "cf-connecting-ip", "fastly-client-ip", "fly-client-ip", "x-appengine-user-ip", "x-azure-clientip", "proxy-client-ip", "wl-proxy-client-ip":
+				remove = true
+			}
+		}
+		if remove {
+			header.Del(name)
+		}
+	}
 }
 
 func writeProxyError(w http.ResponseWriter, status int, code, id string) {

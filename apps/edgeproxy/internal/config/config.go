@@ -514,13 +514,26 @@ func validateHostPort(name, addr string, allowZero bool) error {
 }
 
 func validateURLPort(name string, value *url.URL) error {
-	if value == nil || value.Port() == "" {
+	if value == nil {
+		return nil
+	}
+	// url.URL.Port cannot distinguish an omitted port from an explicit empty
+	// port (for example, http://127.0.0.1:). Reject the latter rather than
+	// silently falling back to the scheme default.
+	if strings.HasSuffix(value.Host, ":") {
+		return fmt.Errorf("%s port is required after ':'", name)
+	}
+	if value.Port() == "" {
 		return nil
 	}
 	return validateNumericPort(name, value.Port(), false)
 }
 
 func validateNumericPort(name, raw string, allowZero bool) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fmt.Errorf("%s port is required", name)
+	}
 	port, err := strconv.Atoi(raw)
 	if err != nil {
 		// net.Listen accepts registered service names for listen addresses. URL

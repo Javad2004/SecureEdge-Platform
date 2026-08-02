@@ -702,6 +702,60 @@ func TestUntrustedClientCannotSpoofForwardedFor(t *testing.T) {
 	}
 }
 
+func TestForwardingIdentityHeadersAreRebuilt(t *testing.T) {
+	seen := make(chan http.Header, 1)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Clone()
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer origin.Close()
+
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/identity", nil)
+	req.RemoteAddr = "203.0.113.44:43210"
+	for name, value := range map[string]string{
+		"Forwarded":          "for=198.51.100.25;proto=https",
+		"CF-Connecting-IP":   "198.51.100.25",
+		"X-Client-IP":        "198.51.100.25",
+		"X-Real-IP":          "198.51.100.25",
+		"True-Client-IP":     "198.51.100.25",
+		"X-Forwarded-For":    "198.51.100.25",
+		"X-Forwarded-Host":   "spoofed.example",
+		"X-Forwarded-Proto":  "https",
+		"X-Forwarded-Port":   "443",
+		"X-Forwarded-Server": "spoofed-edge",
+	} {
+		req.Header.Set(name, value)
+	}
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+
+	headers := <-seen
+	for _, name := range []string{"Forwarded", "CF-Connecting-IP", "X-Client-IP", "X-Real-IP", "True-Client-IP", "X-Forwarded-Port", "X-Forwarded-Server"} {
+		if got := headers.Get(name); got != "" {
+			t.Fatalf("untrusted %s leaked to origin: %q", name, got)
+		}
+	}
+	if got := headers.Get("X-Forwarded-For"); got != "203.0.113.44" {
+		t.Fatalf("X-Forwarded-For=%q", got)
+	}
+	if got := headers.Get("X-Forwarded-Host"); got != "proxy.test" {
+		t.Fatalf("X-Forwarded-Host=%q", got)
+	}
+	if got := headers.Get("X-Forwarded-Proto"); got != "http" {
+		t.Fatalf("X-Forwarded-Proto=%q", got)
+	}
+}
+
 func TestNoCacheResponseIsNotStored(t *testing.T) {
 	var calls atomic.Int64
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -28,6 +28,28 @@ func removeHopByHop(h http.Header) {
 	}
 }
 
+// removeForwardingIdentityHeaders drops every client-controlled forwarding
+// identity header before this trusted proxy creates a canonical set. Keeping
+// alternate headers such as Forwarded or X-Real-IP would let downstream
+// applications observe a spoofed client identity even when X-Forwarded-For is
+// sanitized correctly.
+func removeForwardingIdentityHeaders(h http.Header, configured string) {
+	configured = strings.TrimSpace(configured)
+	for name := range h {
+		lower := strings.ToLower(name)
+		remove := strings.EqualFold(name, configured) || strings.HasPrefix(lower, "x-forwarded-")
+		if !remove {
+			switch lower {
+			case "forwarded", "client-ip", "x-real-ip", "true-client-ip", "x-client-ip", "x-cluster-client-ip", "x-originating-ip", "x-original-forwarded-for", "cf-connecting-ip", "fastly-client-ip", "fly-client-ip", "x-appengine-user-ip", "x-azure-clientip", "proxy-client-ip", "wl-proxy-client-ip":
+				remove = true
+			}
+		}
+		if remove {
+			h.Del(name)
+		}
+	}
+}
+
 func copyHeaders(dst, src http.Header) {
 	for k, values := range src {
 		for _, value := range values {

@@ -554,9 +554,10 @@ func cloneRequest(ctx context.Context, in *http.Request, node *upstream, cfg *co
 	out.Close = false
 	out.Header = in.Header.Clone()
 	removeHopByHop(out.Header)
-	// The configured client-IP header is trusted input to this edge only. Remove
-	// it before forwarding so an origin cannot reinterpret an unverified chain.
-	out.Header.Del(forwardedForHeader)
+	// Treat all inbound forwarding identity headers as untrusted. This edge
+	// reconstructs the canonical forwarding metadata below from the resolved
+	// client address and the actual incoming request.
+	removeForwardingIdentityHeaders(out.Header, forwardedForHeader)
 	if !cfg.PreserveHost {
 		out.Host = node.url.Host
 	}

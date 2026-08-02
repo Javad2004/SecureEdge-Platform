@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -228,5 +229,33 @@ func TestCanceledCallerDoesNotPoisonConnectivitySnapshot(t *testing.T) {
 func TestContainsAnyCanonicalizesIPAddressForms(t *testing.T) {
 	if !containsAny([]string{"2001:db8::1"}, []string{" 2001:0db8:0:0:0:0:0:1 "}) {
 		t.Fatal("equivalent IPv6 address forms should match")
+	}
+}
+
+func TestDNSDialerUsesResolverRequestedTransport(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	accepted := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err == nil {
+			_ = conn.Close()
+		}
+		accepted <- err
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, err := dnsDialer(listener.Addr().String())(ctx, "tcp", "ignored:53")
+	if err != nil {
+		t.Fatalf("TCP DNS fallback dial failed: %v", err)
+	}
+	_ = conn.Close()
+	if err := <-accepted; err != nil {
+		t.Fatalf("TCP DNS fallback was not accepted: %v", err)
 	}
 }

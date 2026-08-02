@@ -72,6 +72,22 @@ func TestLogsEndpointRejectsOversizedPageAndCanClear(t *testing.T) {
 	}
 }
 
+func TestLogsEndpointRejectsNonFiniteMinimumDuration(t *testing.T) {
+	server := testAdminServer(accesslog.New(10))
+
+	for _, value := range []string{"NaN", "+Inf", "-Inf"} {
+		t.Run(value, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/logs?min_duration_ms="+value, nil)
+			req.Header.Set("Authorization", "Bearer test-token")
+			rr := httptest.NewRecorder()
+			server.HTTPServer().Handler.ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for %q, got %d: %s", value, rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
 func TestAuthAcceptsCaseInsensitiveBearerAndReturnsChallenge(t *testing.T) {
 	server := testAdminServer(accesslog.New(10))
 

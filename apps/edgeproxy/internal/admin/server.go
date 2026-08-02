@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -230,8 +231,8 @@ func (s *Server) parseLogFilter(r *http.Request) (accesslog.Filter, error) {
 
 	if raw := strings.TrimSpace(query.Get("min_duration_ms")); raw != "" {
 		value, err := strconv.ParseFloat(raw, 64)
-		if err != nil || value < 0 {
-			return accesslog.Filter{}, errors.New("min_duration_ms must be a non-negative number")
+		if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+			return accesslog.Filter{}, errors.New("min_duration_ms must be a finite non-negative number")
 		}
 		filter.MinDurationMS = value
 	}

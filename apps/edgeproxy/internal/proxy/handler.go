@@ -291,16 +291,36 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 			break
 		}
 
-		if err == nil && resp != nil {
+		if resp != nil && resp.Body != nil {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 			resp.Body.Close()
 		}
+
+		// A cancellation or deadline inherited from the client request does not
+		// indicate an origin failure. Preserve the origin's health and stop here:
+		// every retry would inherit the same already-terminated context.
+		if err != nil && req.Context().Err() != nil {
+			lastErr = req.Context().Err()
+			result.errorMessage = errorText(lastErr)
+			break
+		}
+
 		lastErr = attemptErr
 		result.errorMessage = errorText(lastErr)
 		excluded[node] = true
 		if node.healthy.Swap(false) {
 			h.recordHealthChange(rt.cfg.Name, healthChange{Upstream: node.url.String(), Healthy: false, Status: status, Duration: elapsed, Error: errorText(lastErr)})
 		}
+
+		// The route-wide timeout applies to the whole request, not each retry. Once
+		// it expires, record the failed origin but do not attempt another origin
+		// with an already-done context.
+		if ctx.Err() != nil {
+			lastErr = ctx.Err()
+			result.errorMessage = errorText(lastErr)
+			break
+		}
+
 		if attempt+1 < attempts {
 			result.retries++
 			if backoff := rt.cfg.Proxy.RetryBackoff.Duration; backoff > 0 {

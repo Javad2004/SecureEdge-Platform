@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -390,6 +391,124 @@ func TestAccessLogRedactsSensitiveQueryValues(t *testing.T) {
 	query := result.Entries[0].Query
 	if strings.Contains(query, "super-secret") || !strings.Contains(query, "normal=value") || !strings.Contains(query, "REDACTED") {
 		t.Fatalf("query was not safely redacted: %q", query)
+	}
+}
+
+func TestClientCancellationPreservesOriginHealthAndStopsRetries(t *testing.T) {
+	var firstCalls atomic.Int64
+	started := make(chan struct{}, 1)
+	first := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		firstCalls.Add(1)
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done()
+	}))
+	defer first.Close()
+
+	var secondCalls atomic.Int64
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer second.Close()
+
+	cfg := testConfig(first.URL)
+	cfg.Routes[0].Upstreams = []config.UpstreamConfig{{URL: first.URL}, {URL: second.URL}}
+	cfg.Routes[0].Cache.Enabled = false
+	cfg.Routes[0].Proxy.RetryCount = 3
+	cfg.Routes[0].Proxy.RetryBackoff = config.Duration{}
+	logs := accesslog.New(20)
+	h, err := NewHandler(cfg, slog.Default(), metrics.New(), logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/cancel", nil).WithContext(ctx)
+	done := make(chan struct{})
+	go func() {
+		h.ServeHTTP(httptest.NewRecorder(), req)
+		close(done)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("origin did not receive the request")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy did not stop after client cancellation")
+	}
+
+	if firstCalls.Load() != 1 || secondCalls.Load() != 0 {
+		t.Fatalf("unexpected origin calls after cancellation: first=%d second=%d", firstCalls.Load(), secondCalls.Load())
+	}
+	attempts := logs.Query(accesslog.Filter{Event: "upstream_attempt", Limit: 10})
+	if len(attempts.Entries) != 1 {
+		t.Fatalf("upstream attempts=%d, want 1", len(attempts.Entries))
+	}
+	for _, node := range h.routes["test"].pool.nodes {
+		if !node.healthy.Load() {
+			t.Fatalf("client cancellation marked origin %s unhealthy", node.url)
+		}
+	}
+	if status := h.Readiness(); !status.Ready {
+		t.Fatalf("client cancellation changed readiness: %#v", status)
+	}
+}
+
+func TestRouteTimeoutStopsRetriesAfterMarkingFailedOrigin(t *testing.T) {
+	var firstCalls atomic.Int64
+	first := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		firstCalls.Add(1)
+		<-r.Context().Done()
+	}))
+	defer first.Close()
+
+	var secondCalls atomic.Int64
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer second.Close()
+
+	cfg := testConfig(first.URL)
+	cfg.Routes[0].Upstreams = []config.UpstreamConfig{{URL: first.URL}, {URL: second.URL}}
+	cfg.Routes[0].Cache.Enabled = false
+	cfg.Routes[0].Proxy.RequestTimeout = config.Duration{Duration: 25 * time.Millisecond}
+	cfg.Routes[0].Proxy.RetryCount = 3
+	cfg.Routes[0].Proxy.RetryBackoff = config.Duration{}
+	logs := accesslog.New(20)
+	h, err := NewHandler(cfg, slog.Default(), metrics.New(), logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://proxy.test/timeout", nil))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusBadGateway)
+	}
+	if firstCalls.Load() != 1 || secondCalls.Load() != 0 {
+		t.Fatalf("unexpected origin calls after route timeout: first=%d second=%d", firstCalls.Load(), secondCalls.Load())
+	}
+	attempts := logs.Query(accesslog.Filter{Event: "upstream_attempt", Limit: 10})
+	if len(attempts.Entries) != 1 || !attempts.Entries[0].Timeout {
+		t.Fatalf("unexpected timeout attempts: %#v", attempts.Entries)
+	}
+	nodes := h.routes["test"].pool.nodes
+	if nodes[0].healthy.Load() {
+		t.Fatal("timed-out origin remained healthy")
+	}
+	if !nodes[1].healthy.Load() {
+		t.Fatal("unattempted origin was marked unhealthy")
 	}
 }
 

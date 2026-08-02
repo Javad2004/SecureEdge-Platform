@@ -59,10 +59,11 @@ func healthyConfig(t *testing.T, dataPlane *httptest.Server) config.Config {
 
 func TestMonitorHealthySnapshot(t *testing.T) {
 	dataPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/healthz" {
+		if r.Method != http.MethodHead || r.URL.Path != "/" || r.Host != "project.test" {
 			http.NotFound(w, r)
 			return
 		}
+		w.Header().Set("X-Request-ID", "connectivity-test")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
@@ -91,6 +92,7 @@ func TestMonitorHealthySnapshot(t *testing.T) {
 
 func TestMonitorDetectsEdgeProxyFailureAndRecordsRecovery(t *testing.T) {
 	dataPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Request-ID", "connectivity-test")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
@@ -122,5 +124,74 @@ func TestMonitorDetectsEdgeProxyFailureAndRecordsRecovery(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("missing data-plane transition: %#v", second.History)
+	}
+}
+
+func TestRepresentativeDataPlaneTargetPrefersExactRoute(t *testing.T) {
+	target := representativeDataPlaneTarget([]routes.Route{
+		{Name: "catch-all", Hosts: []string{"*"}, PathPrefix: "/"},
+		{Name: "wildcard", Hosts: []string{"*.example.com"}, PathPrefix: "/api"},
+		{Name: "exact", Hosts: []string{"2001:db8::1"}, PathPrefix: "/private"},
+	})
+	if target.routeName != "exact" || target.host != "[2001:db8::1]" || target.path != "/private" {
+		t.Fatalf("target=%#v", target)
+	}
+}
+
+func TestRepresentativeDataPlaneTargetBuildsWildcardHost(t *testing.T) {
+	target := representativeDataPlaneTarget([]routes.Route{{
+		Name:       "wildcard",
+		Hosts:      []string{"*.example.com"},
+		PathPrefix: "/api",
+	}})
+	if target.routeName != "wildcard" || target.host != "connectivity-probe.example.com" || target.path != "/api" {
+		t.Fatalf("target=%#v", target)
+	}
+}
+
+func TestProbeDataPlaneHTTPUsesConfiguredWildcardRoute(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead || r.Host != "connectivity-probe.example.com" || r.URL.Path != "/api" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("X-Request-ID", "matched-route")
+		w.Header().Set("Location", "/must-not-follow")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Server.Mode = "gateway"
+	cfg.Server.UpstreamProxyURL = server.URL
+	cfg.Admin.Connectivity.Timeout = config.Duration{Duration: time.Second}
+	result := probeDataPlaneHTTP(context.Background(), cfg, []routes.Route{{
+		Name:       "api",
+		Hosts:      []string{"*.example.com"},
+		PathPrefix: "/api",
+	}})
+	if result.status != StatusHealthy || result.httpStatus != http.StatusFound {
+		t.Fatalf("result=%#v", result)
+	}
+	if result.details["request_id"] != "matched-route" || result.details["route"] != "api" {
+		t.Fatalf("details=%#v", result.details)
+	}
+}
+
+func TestProbeDataPlaneHTTPRejectsUnmatchedResponse(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Server.Mode = "gateway"
+	cfg.Server.UpstreamProxyURL = server.URL
+	cfg.Admin.Connectivity.Timeout = config.Duration{Duration: time.Second}
+	result := probeDataPlaneHTTP(context.Background(), cfg, []routes.Route{{
+		Name:       "api",
+		Hosts:      []string{"project.test"},
+		PathPrefix: "/api",
+	}})
+	if result.status != StatusDown || result.httpStatus != http.StatusNotFound {
+		t.Fatalf("result=%#v", result)
 	}
 }

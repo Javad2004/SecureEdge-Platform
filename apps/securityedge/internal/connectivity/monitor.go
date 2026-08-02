@@ -282,32 +282,46 @@ func probeDataPlaneHTTP(ctx context.Context, cfg config.Config, configuredRoutes
 	if cfg.Server.Mode != "gateway" {
 		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy HTTP health", layer: "edgeproxy", status: StatusNotApplicable, critical: true, message: "embedded mode invokes EdgeProxy in-process"}
 	}
+	target := representativeDataPlaneTarget(configuredRoutes)
 	u, err := url.Parse(cfg.Server.UpstreamProxyURL)
 	if err != nil {
 		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy HTTP health", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: cfg.Server.UpstreamProxyURL, message: "upstream proxy URL is invalid", err: err.Error()}
 	}
-	u.Path = joinURLPath(u.Path, "/healthz")
+	u.Path = joinURLPath(u.Path, target.path)
 	u.RawQuery = ""
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, u.String(), nil)
 	if err != nil {
-		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy HTTP health", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: u.String(), message: "failed to construct EdgeProxy health request", err: err.Error()}
+		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy HTTP health", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: u.String(), message: "failed to construct EdgeProxy data-plane request", err: err.Error()}
 	}
-	if host := representativeHost(configuredRoutes); host != "" {
-		req.Host = host
+	if target.host != "" {
+		req.Host = target.host
 	}
-	client := &http.Client{Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}, Timeout: cfg.Admin.Connectivity.Timeout.Duration}
+	details := map[string]any{"probe_path": target.path}
+	if target.host != "" {
+		details["probe_host"] = target.host
+	}
+	if target.routeName != "" {
+		details["route"] = target.routeName
+	}
+	client := &http.Client{
+		Transport:     &http.Transport{Proxy: nil, DisableKeepAlives: true},
+		Timeout:       cfg.Admin.Connectivity.Timeout.Duration,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	started := time.Now()
 	resp, err := client.Do(req)
 	latency := time.Since(started)
 	if err != nil {
-		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy HTTP health", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: u.String(), message: "EdgeProxy HTTP health endpoint is unreachable", err: err.Error(), latency: latency}
+		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy HTTP health", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: u.String(), message: "EdgeProxy data plane is unreachable over HTTP", err: err.Error(), latency: latency, details: details}
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
-	if resp.StatusCode != http.StatusOK {
-		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy HTTP health", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: u.String(), message: fmt.Sprintf("EdgeProxy health endpoint returned HTTP %d", resp.StatusCode), httpStatus: resp.StatusCode, latency: latency}
+	requestID := strings.TrimSpace(resp.Header.Get("X-Request-ID"))
+	if requestID == "" {
+		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy HTTP health", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: u.String(), message: fmt.Sprintf("EdgeProxy returned HTTP %d without matching the configured probe route", resp.StatusCode), httpStatus: resp.StatusCode, latency: latency, details: details}
 	}
-	return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy HTTP health", layer: "edgeproxy", status: StatusHealthy, critical: true, endpoint: u.String(), message: "EdgeProxy data-plane health endpoint returned HTTP 200", httpStatus: resp.StatusCode, latency: latency}
+	details["request_id"] = requestID
+	return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy HTTP health", layer: "edgeproxy", status: StatusHealthy, critical: true, endpoint: u.String(), message: fmt.Sprintf("EdgeProxy accepted the configured route probe with HTTP %d", resp.StatusCode), httpStatus: resp.StatusCode, latency: latency, details: details}
 }
 
 func (m *Monitor) probeEdgeHealth(ctx context.Context, cfg config.Config) probeResult {
@@ -607,15 +621,52 @@ func componentOrder(id string) int {
 	return 1000
 }
 
-func representativeHost(configured []routes.Route) string {
+type dataPlaneProbeTarget struct {
+	routeName string
+	host      string
+	path      string
+}
+
+func representativeDataPlaneTarget(configured []routes.Route) dataPlaneProbeTarget {
+	var wildcard *dataPlaneProbeTarget
+	var catchAll *dataPlaneProbeTarget
 	for _, route := range configured {
-		for _, host := range route.Hosts {
-			if host != "*" && !strings.HasPrefix(host, "*.") {
-				return host
+		probePath := route.PathPrefix
+		if probePath == "" {
+			probePath = "/"
+		}
+		for _, rawHost := range route.Hosts {
+			host := strings.TrimSpace(rawHost)
+			switch {
+			case host == "*":
+				if catchAll == nil {
+					candidate := dataPlaneProbeTarget{routeName: route.Name, path: probePath}
+					catchAll = &candidate
+				}
+			case strings.HasPrefix(host, "*."):
+				if wildcard == nil {
+					candidate := dataPlaneProbeTarget{
+						routeName: route.Name,
+						host:      "connectivity-probe." + strings.TrimPrefix(host, "*."),
+						path:      probePath,
+					}
+					wildcard = &candidate
+				}
+			default:
+				if ip := net.ParseIP(host); ip != nil && strings.Contains(host, ":") {
+					host = "[" + ip.String() + "]"
+				}
+				return dataPlaneProbeTarget{routeName: route.Name, host: host, path: probePath}
 			}
 		}
 	}
-	return ""
+	if wildcard != nil {
+		return *wildcard
+	}
+	if catchAll != nil {
+		return *catchAll
+	}
+	return dataPlaneProbeTarget{path: "/"}
 }
 
 func loopbackDialAddress(addr string) string {

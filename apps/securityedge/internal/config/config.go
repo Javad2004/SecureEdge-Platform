@@ -273,8 +273,8 @@ func (c *Config) Validate() error {
 			errs = append(errs, err)
 		}
 		u, err := url.Parse(c.Server.UpstreamProxyURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Fragment != "" {
-			errs = append(errs, errors.New("server.upstream_proxy_url must be an absolute http(s) URL without credentials or fragments"))
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+			errs = append(errs, errors.New("server.upstream_proxy_url must be an absolute http(s) origin URL without credentials, non-root paths, queries, or fragments"))
 		}
 	}
 	if c.Server.ReadHeaderTimeout.Duration <= 0 || c.Server.ShutdownTimeout.Duration <= 0 {

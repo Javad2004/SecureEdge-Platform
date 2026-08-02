@@ -224,6 +224,31 @@ func TestValidateRejectsAdminURLQuery(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsUpstreamProxyURLPathOrQuery(t *testing.T) {
+	for _, value := range []string{
+		"http://127.0.0.1:8080/edgeproxy",
+		"http://127.0.0.1:8080?route=demo",
+	} {
+		t.Run(value, func(t *testing.T) {
+			cfg := Default()
+			cfg.EdgeProxy.ConfigPath = "edge.json"
+			cfg.Server.UpstreamProxyURL = value
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "upstream_proxy_url") {
+				t.Fatalf("expected upstream proxy URL to be rejected, got %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateAllowsUpstreamProxyURLWithRootPath(t *testing.T) {
+	cfg := Default()
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Server.UpstreamProxyURL = "http://127.0.0.1:8080/"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected root-path upstream URL to be accepted, got %v", err)
+	}
+}
+
 func TestValidateRejectsExcessiveAdminLogCapacity(t *testing.T) {
 	cfg := Default()
 	cfg.Server.Mode = "embedded"

@@ -135,6 +135,9 @@ func newReverseProxy(target *url.URL, cfg config.ServerConfig, logger *slog.Logg
 		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			clientIP := gateway.ResolvedClientIP(pr.In.Context())
+			// The configured source header is input-only. Never pass the raw value
+			// downstream, where another trusted hop could interpret it again.
+			pr.Out.Header.Del(cfg.ForwardedForHeader)
 			pr.Out.Header.Del("Forwarded")
 			pr.Out.Header.Del("X-Forwarded-For")
 			pr.Out.Header.Del("X-Forwarded-Host")

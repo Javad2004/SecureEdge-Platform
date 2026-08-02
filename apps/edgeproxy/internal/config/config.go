@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -174,8 +175,8 @@ func (c *Config) Validate() error {
 	c.Admin.AuthToken = strings.TrimSpace(c.Admin.AuthToken)
 	if strings.TrimSpace(c.Server.ListenAddr) == "" {
 		errs = append(errs, errors.New("server.listen_addr is required"))
-	} else if _, _, err := net.SplitHostPort(c.Server.ListenAddr); err != nil {
-		errs = append(errs, fmt.Errorf("invalid server.listen_addr: %w", err))
+	} else if err := validateHostPort("server.listen_addr", c.Server.ListenAddr, true); err != nil {
+		errs = append(errs, err)
 	}
 	if c.Server.ReadHeaderTimeout.Duration <= 0 {
 		errs = append(errs, errors.New("server.read_header_timeout must be positive"))
@@ -216,6 +217,8 @@ func (c *Config) Validate() error {
 		host, _, err := net.SplitHostPort(c.Admin.ListenAddr)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("invalid admin.listen_addr: %w", err))
+		} else if portErr := validateHostPort("admin.listen_addr", c.Admin.ListenAddr, true); portErr != nil {
+			errs = append(errs, portErr)
 		} else if strings.TrimSpace(c.Admin.AuthToken) == "" && !isLoopbackHost(host) {
 			errs = append(errs, errors.New("admin.auth_token is required when admin.listen_addr is not loopback"))
 		}
@@ -306,6 +309,9 @@ func (c *Config) Validate() error {
 			}
 			if parsed.Fragment != "" {
 				errs = append(errs, fmt.Errorf("route %q upstream[%d] must not contain a URL fragment", r.Name, j))
+			}
+			if portErr := validateURLPort(fmt.Sprintf("route %q upstream[%d]", r.Name, j), parsed); portErr != nil {
+				errs = append(errs, portErr)
 			}
 			if up.InsecureSkipVerify && parsed.Scheme != "https" {
 				errs = append(errs, fmt.Errorf("route %q upstream[%d] insecure_skip_verify is only valid for https", r.Name, j))
@@ -497,6 +503,38 @@ func normalizeAbsolutePath(raw string) (string, error) {
 		cleaned += "/"
 	}
 	return cleaned, nil
+}
+
+func validateHostPort(name, addr string, allowZero bool) error {
+	_, port, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		return fmt.Errorf("invalid %s: %w", name, err)
+	}
+	return validateNumericPort(name, port, allowZero)
+}
+
+func validateURLPort(name string, value *url.URL) error {
+	if value == nil || value.Port() == "" {
+		return nil
+	}
+	return validateNumericPort(name, value.Port(), false)
+}
+
+func validateNumericPort(name, raw string, allowZero bool) error {
+	port, err := strconv.Atoi(raw)
+	if err != nil {
+		// net.Listen accepts registered service names for listen addresses. URL
+		// parsers already reject non-numeric explicit ports.
+		return nil
+	}
+	minimum := 1
+	if allowZero {
+		minimum = 0
+	}
+	if port < minimum || port > 65535 {
+		return fmt.Errorf("%s port must be between %d and 65535", name, minimum)
+	}
+	return nil
 }
 
 func validHTTPToken(value string) bool {

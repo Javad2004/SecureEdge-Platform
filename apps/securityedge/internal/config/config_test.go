@@ -258,3 +258,65 @@ func TestValidateRejectsExcessiveAdminLogCapacity(t *testing.T) {
 		t.Fatalf("expected excessive log capacity error, got %v", err)
 	}
 }
+
+func TestValidateRejectsOutOfRangePorts(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{name: "gateway listener", mutate: func(cfg *Config) { cfg.Server.ListenAddr = "127.0.0.1:70000" }},
+		{name: "admin listener", mutate: func(cfg *Config) { cfg.Admin.ListenAddr = "127.0.0.1:-1" }},
+		{name: "upstream proxy URL", mutate: func(cfg *Config) { cfg.Server.UpstreamProxyURL = "http://127.0.0.1:70000" }},
+		{name: "edgeproxy admin URL", mutate: func(cfg *Config) { cfg.EdgeProxy.AdminURL = "http://127.0.0.1:70000" }},
+		{name: "DNS server", mutate: func(cfg *Config) {
+			cfg.Admin.Connectivity.DNS.Enabled = true
+			cfg.Admin.Connectivity.DNS.Server = "127.0.0.1:70000"
+			cfg.Admin.Connectivity.DNS.Names = []string{"project.test"}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Server.Mode = "gateway"
+			cfg.EdgeProxy.ConfigPath = "edge.json"
+			tc.mutate(&cfg)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "port must be between") {
+				t.Fatalf("expected port-range validation error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateNormalizesConnectivityDNSValues(t *testing.T) {
+	cfg := Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Admin.Connectivity.DNS.Enabled = true
+	cfg.Admin.Connectivity.DNS.Server = " 127.0.0.1:53 "
+	cfg.Admin.Connectivity.DNS.Names = []string{" Project.TEST ", "project.test"}
+	cfg.Admin.Connectivity.DNS.ExpectedAddresses = []string{" 2001:0db8::1 ", "2001:db8::1"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Admin.Connectivity.DNS.Server; got != "127.0.0.1:53" {
+		t.Fatalf("DNS server=%q", got)
+	}
+	if got := cfg.Admin.Connectivity.DNS.Names; len(got) != 1 || got[0] != "project.test" {
+		t.Fatalf("DNS names=%#v", got)
+	}
+	if got := cfg.Admin.Connectivity.DNS.ExpectedAddresses; len(got) != 1 || got[0] != "2001:db8::1" {
+		t.Fatalf("expected addresses=%#v", got)
+	}
+}
+
+func TestValidateRejectsBlankConnectivityDNSName(t *testing.T) {
+	cfg := Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Admin.Connectivity.DNS.Enabled = true
+	cfg.Admin.Connectivity.DNS.Server = "127.0.0.1:53"
+	cfg.Admin.Connectivity.DNS.Names = []string{"   "}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "empty domain") {
+		t.Fatalf("expected blank DNS name to be rejected, got %v", err)
+	}
+}

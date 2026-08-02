@@ -165,7 +165,11 @@ func (m *Monitor) Snapshot(ctx context.Context, force bool) Snapshot {
 		}
 	}
 
-	checkCtx, cancel := context.WithTimeout(ctx, cfg.Timeout.Duration)
+	// Connectivity is shared operational state, so an individual dashboard or API
+	// caller disconnecting must not turn a healthy path into a cached DOWN result.
+	// Preserve request-scoped values while making the configured probe timeout the
+	// sole cancellation boundary for this check.
+	checkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.Timeout.Duration)
 	defer cancel()
 	return m.run(checkCtx, cfg)
 }
@@ -698,10 +702,18 @@ func joinURLPath(base, suffix string) string {
 func containsAny(values, expected []string) bool {
 	set := map[string]bool{}
 	for _, value := range values {
-		set[value] = true
+		canonical := strings.TrimSpace(value)
+		if ip := net.ParseIP(canonical); ip != nil {
+			canonical = ip.String()
+		}
+		set[canonical] = true
 	}
 	for _, value := range expected {
-		if set[value] {
+		canonical := strings.TrimSpace(value)
+		if ip := net.ParseIP(canonical); ip != nil {
+			canonical = ip.String()
+		}
+		if set[canonical] {
 			return true
 		}
 	}

@@ -13,6 +13,7 @@ import (
 	"path"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -275,6 +276,8 @@ func (c *Config) Validate() error {
 		u, err := url.Parse(c.Server.UpstreamProxyURL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
 			errs = append(errs, errors.New("server.upstream_proxy_url must be an absolute http(s) origin URL without credentials, non-root paths, queries, or fragments"))
+		} else if portErr := validateURLPort("server.upstream_proxy_url", u); portErr != nil {
+			errs = append(errs, portErr)
 		}
 	}
 	if c.Server.ReadHeaderTimeout.Duration <= 0 || c.Server.ShutdownTimeout.Duration <= 0 {
@@ -351,17 +354,44 @@ func (c *Config) Validate() error {
 				errs = append(errs, errors.New("admin.connectivity.history_capacity must be between 1 and 10000"))
 			}
 			if c.Admin.Connectivity.DNS.Enabled {
-				if _, _, err := net.SplitHostPort(strings.TrimSpace(c.Admin.Connectivity.DNS.Server)); err != nil {
-					errs = append(errs, errors.New("admin.connectivity.dns.server must be host:port"))
+				if err := validateHostPort("admin.connectivity.dns.server", c.Admin.Connectivity.DNS.Server, false); err != nil {
+					errs = append(errs, err)
 				}
-				if len(c.Admin.Connectivity.DNS.Names) == 0 {
+				names := make([]string, 0, len(c.Admin.Connectivity.DNS.Names))
+				seenNames := map[string]struct{}{}
+				for _, raw := range c.Admin.Connectivity.DNS.Names {
+					name := strings.ToLower(strings.TrimSpace(raw))
+					if name == "" {
+						errs = append(errs, errors.New("admin.connectivity.dns.names cannot contain an empty domain"))
+						continue
+					}
+					if _, exists := seenNames[name]; exists {
+						continue
+					}
+					seenNames[name] = struct{}{}
+					names = append(names, name)
+				}
+				c.Admin.Connectivity.DNS.Names = names
+				if len(names) == 0 {
 					errs = append(errs, errors.New("admin.connectivity.dns.names must contain at least one domain when DNS probing is enabled"))
 				}
-				for _, address := range c.Admin.Connectivity.DNS.ExpectedAddresses {
-					if net.ParseIP(strings.TrimSpace(address)) == nil {
-						errs = append(errs, fmt.Errorf("invalid admin.connectivity.dns.expected_addresses entry %q", address))
+
+				expected := make([]string, 0, len(c.Admin.Connectivity.DNS.ExpectedAddresses))
+				seenExpected := map[string]struct{}{}
+				for _, raw := range c.Admin.Connectivity.DNS.ExpectedAddresses {
+					ip := net.ParseIP(strings.TrimSpace(raw))
+					if ip == nil {
+						errs = append(errs, fmt.Errorf("invalid admin.connectivity.dns.expected_addresses entry %q", raw))
+						continue
 					}
+					canonical := ip.String()
+					if _, exists := seenExpected[canonical]; exists {
+						continue
+					}
+					seenExpected[canonical] = struct{}{}
+					expected = append(expected, canonical)
 				}
+				c.Admin.Connectivity.DNS.ExpectedAddresses = expected
 			}
 		}
 		if c.Admin.MaxRequestBodyBytes <= 0 || c.Admin.MaxRequestBodyBytes > 16<<20 {
@@ -381,6 +411,8 @@ func (c *Config) Validate() error {
 		u, err := url.Parse(c.EdgeProxy.AdminURL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 			errs = append(errs, errors.New("edgeproxy.admin_url must be an absolute http(s) URL without credentials, queries, or fragments"))
+		} else if portErr := validateURLPort("edgeproxy.admin_url", u); portErr != nil {
+			errs = append(errs, portErr)
 		}
 	}
 	if c.EdgeProxy.Timeout.Duration <= 0 || c.EdgeProxy.Timeout.Duration > 5*time.Minute {
@@ -656,14 +688,43 @@ func validHTTPToken(value string) bool {
 }
 
 func validateListen(name, addr string) error {
-	if _, _, err := net.SplitHostPort(strings.TrimSpace(addr)); err != nil {
+	return validateHostPort(name, addr, true)
+}
+
+func validateHostPort(name, addr string, allowZero bool) error {
+	_, port, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
 		return fmt.Errorf("invalid %s: %w", name, err)
+	}
+	return validateNumericPort(name, port, allowZero)
+}
+
+func validateURLPort(name string, value *url.URL) error {
+	if value == nil || value.Port() == "" {
+		return nil
+	}
+	return validateNumericPort(name, value.Port(), false)
+}
+
+func validateNumericPort(name, raw string, allowZero bool) error {
+	port, err := strconv.Atoi(raw)
+	if err != nil {
+		// net.Listen and DNS dialing can resolve registered service names. URL
+		// parsers already reject non-numeric explicit ports.
+		return nil
+	}
+	minimum := 1
+	if allowZero {
+		minimum = 0
+	}
+	if port < minimum || port > 65535 {
+		return fmt.Errorf("%s port must be between %d and 65535", name, minimum)
 	}
 	return nil
 }
 
 func isLoopback(host string) bool {
-	if host == "localhost" {
+	if strings.EqualFold(host, "localhost") {
 		return true
 	}
 	ip := net.ParseIP(host)

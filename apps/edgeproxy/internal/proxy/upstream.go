@@ -138,7 +138,13 @@ func (p *upstreamPool) runHealthChecks(ctx context.Context, cfg config.HealthChe
 				setNodeHealth(node, false, healthChange{Upstream: node.url.String(), Healthy: false, Duration: time.Since(started), Error: err.Error()}, onChange)
 				continue
 			}
-			client := &http.Client{Transport: node.transport, Timeout: cfg.Timeout.Duration}
+			client := &http.Client{
+				Transport: node.transport,
+				Timeout:   cfg.Timeout.Duration,
+				CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+					return http.ErrUseLastResponse
+				},
+			}
 			resp, err := client.Do(req)
 			elapsed := time.Since(started)
 			if err != nil {

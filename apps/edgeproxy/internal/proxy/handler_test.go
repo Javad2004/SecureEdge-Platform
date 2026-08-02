@@ -1222,3 +1222,39 @@ func TestInvalidOriginFreshnessDoesNotFallBackToDefaultTTL(t *testing.T) {
 		})
 	}
 }
+
+func TestConfiguredClientIPHeaderIsNotForwardedToOrigin(t *testing.T) {
+	var customHeader string
+	var forwarded string
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		customHeader = r.Header.Get("X-Real-IP")
+		forwarded = r.Header.Get("X-Forwarded-For")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer origin.Close()
+
+	cfg := testConfig(origin.URL)
+	cfg.Server.TrustedProxyCIDRs = []string{"127.0.0.0/8"}
+	cfg.Server.ForwardedForHeader = "X-Real-IP"
+	h, err := NewHandler(cfg, slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/client-ip", nil)
+	req.RemoteAddr = "127.0.0.1:43210"
+	req.Header.Set("X-Real-IP", "198.51.100.25")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+	if customHeader != "" {
+		t.Fatalf("configured client-IP source header leaked to origin: %q", customHeader)
+	}
+	if forwarded != "198.51.100.25" {
+		t.Fatalf("canonical forwarded client IP=%q", forwarded)
+	}
+}

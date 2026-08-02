@@ -250,7 +250,7 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 			}
 			break
 		}
-		outReq, err := cloneRequest(ctx, req, node, rt.cfg, id)
+		outReq, err := cloneRequest(ctx, req, node, rt.cfg, id, h.clients.header)
 		if err != nil {
 			lastErr = err
 			break
@@ -547,13 +547,16 @@ func maxInt64(value, minimum int64) int64 {
 	return value
 }
 
-func cloneRequest(ctx context.Context, in *http.Request, node *upstream, cfg *config.RouteConfig, id string) (*http.Request, error) {
+func cloneRequest(ctx context.Context, in *http.Request, node *upstream, cfg *config.RouteConfig, id, forwardedForHeader string) (*http.Request, error) {
 	out := in.Clone(ctx)
 	out.URL = rewriteURL(in.URL, node.url, cfg.PathPrefix, cfg.StripPrefix)
 	out.RequestURI = ""
 	out.Close = false
 	out.Header = in.Header.Clone()
 	removeHopByHop(out.Header)
+	// The configured client-IP header is trusted input to this edge only. Remove
+	// it before forwarding so an origin cannot reinterpret an unverified chain.
+	out.Header.Del(forwardedForHeader)
 	if !cfg.PreserveHost {
 		out.Host = node.url.Host
 	}

@@ -195,3 +195,38 @@ func TestProbeDataPlaneHTTPRejectsUnmatchedResponse(t *testing.T) {
 		t.Fatalf("result=%#v", result)
 	}
 }
+
+func TestCanceledCallerDoesNotPoisonConnectivitySnapshot(t *testing.T) {
+	dataPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead || r.URL.Path != "/" || r.Host != "project.test" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("X-Request-ID", "connectivity-test")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer dataPlane.Close()
+
+	source := &fakeSource{cfg: healthyConfig(t, dataPlane)}
+	monitor := New(source)
+	first := monitor.Snapshot(context.Background(), true)
+	if first.OverallStatus != StatusHealthy {
+		t.Fatalf("initial overall=%s components=%#v", first.OverallStatus, first.Components)
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	second := monitor.Snapshot(canceled, true)
+	if second.OverallStatus != StatusHealthy || second.EdgeProxyConnectionStatus != StatusHealthy {
+		t.Fatalf("canceled caller poisoned snapshot: overall=%s edge=%s components=%#v", second.OverallStatus, second.EdgeProxyConnectionStatus, second.Components)
+	}
+	if len(second.History) != 0 {
+		t.Fatalf("unexpected transitions from canceled caller: %#v", second.History)
+	}
+}
+
+func TestContainsAnyCanonicalizesIPAddressForms(t *testing.T) {
+	if !containsAny([]string{"2001:db8::1"}, []string{" 2001:0db8:0:0:0:0:0:1 "}) {
+		t.Fatal("equivalent IPv6 address forms should match")
+	}
+}

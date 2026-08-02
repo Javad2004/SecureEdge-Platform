@@ -181,7 +181,7 @@ The cache is an in-memory, thread-safe LRU with:
 - TTL derived from `s-maxage`, `max-age`, `Expires`, or the route default;
 - `X-Cache: HIT`, `MISS`, `BYPASS`, or `STALE`;
 - `Age` response headers;
-- conditional `304 Not Modified` support;
+- conditional `304 Not Modified` support, including `If-None-Match: *` for fresh successful cached representations without an explicit ETag;
 - per-key locking to prevent cache stampedes;
 - stale-if-error fallback, except when the Origin requires revalidation with `must-revalidate` or `proxy-revalidate`;
 - route/host/path purge support.

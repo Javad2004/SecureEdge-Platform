@@ -43,7 +43,7 @@ SecurityEdge also calls the EdgeProxy Admin API over loopback to obtain routes, 
 - multi-stage URL and HTML-entity normalization;
 - SQL injection, XSS, path traversal, command injection, SSRF, XXE, NoSQL injection, LDAP injection, CRLF injection, template injection, Log4Shell/JNDI, PHP wrapper, sensitive-file, scanner, and reconnaissance detection;
 - validated custom rules;
-- method, path, query, header, content-type, content-encoding, and body-size limits;
+- method, path, query, header, content-type, content-encoding, and body-size limits; repeated header field lines count individually, and all accepted repeated header and raw Cookie fields remain inspectable by the WAF;
 - IP allowlists and denylists;
 - bounded inspection and fail-closed options.
 

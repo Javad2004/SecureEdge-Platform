@@ -479,6 +479,57 @@ func TestConditionalRequestDoesNotPartiallyMatchETag(t *testing.T) {
 	}
 }
 
+func TestIfNoneMatchWildcardMatchesCachedResponseWithoutETag(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		_, _ = io.WriteString(w, "cached-body")
+	}))
+	defer origin.Close()
+
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://proxy.test/wildcard", nil))
+
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/wildcard", nil)
+	req.Header.Set("If-None-Match", "*")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, req)
+	if response.Code != http.StatusNotModified || response.Body.Len() != 0 || response.Header().Get("X-Cache") != "HIT" {
+		t.Fatalf("code=%d body=%q cache=%q", response.Code, response.Body.String(), response.Header().Get("X-Cache"))
+	}
+}
+
+func TestIfNoneMatchWildcardDoesNotMatchCachedNotFound(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, "missing")
+	}))
+	defer origin.Close()
+
+	cfg := testConfig(origin.URL)
+	cfg.Routes[0].Cache.CacheableStatusCodes = append(cfg.Routes[0].Cache.CacheableStatusCodes, http.StatusNotFound)
+	h, err := NewHandler(cfg, slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://proxy.test/missing", nil))
+
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/missing", nil)
+	req.Header.Set("If-None-Match", "*")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, req)
+	if response.Code != http.StatusNotFound || response.Body.String() != "missing" || response.Header().Get("X-Cache") != "HIT" {
+		t.Fatalf("code=%d body=%q cache=%q", response.Code, response.Body.String(), response.Header().Get("X-Cache"))
+	}
+}
+
 func TestTrustedProxyPreservesOriginalClientIP(t *testing.T) {
 	var forwarded string
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -566,7 +617,7 @@ func TestIfNoneMatchTakesPrecedenceOverIfModifiedSince(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/resource", nil)
 	req.Header.Set("If-None-Match", `"different"`)
 	req.Header.Set("If-Modified-Since", time.Now().UTC().Format(http.TimeFormat))
-	if conditionalNotModified(req, header) {
+	if conditionalNotModified(req, header, http.StatusOK) {
 		t.Fatal("If-Modified-Since must be ignored when If-None-Match is present and does not match")
 	}
 }

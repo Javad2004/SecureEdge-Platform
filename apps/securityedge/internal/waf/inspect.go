@@ -77,8 +77,8 @@ func (i *Inspector) Inspect(req *http.Request, policy config.Policy) (Result, er
 	targets := map[string][]sample{
 		"path":    pathSamples(req.URL),
 		"query":   querySamples(req.URL),
-		"headers": headerSamples(req.Header),
-		"cookies": cookieSamples(req),
+		"headers": headerSamples(req.Header, policy.MaxHeaderCount),
+		"cookies": cookieSamples(req, policy.MaxHeaderCount),
 	}
 	if policy.InspectRequestBody && policy.MaxInspectionBodyBytes > 0 && requestBodyTypeAllowed(req.Header.Get("Content-Type"), policy.BodyContentTypes) && req.Body != nil && req.Body != http.NoBody {
 		body, truncated, err := readAndRestore(req, policy.MaxInspectionBodyBytes)
@@ -186,32 +186,56 @@ func querySamples(u *url.URL) []sample {
 	return out
 }
 
-func headerSamples(h http.Header) []sample {
-	out := make([]sample, 0, len(h)*2)
+func headerSamples(h http.Header, maxFields int) []sample {
+	if maxFields <= 0 {
+		maxFields = 100
+	}
+	out := make([]sample, 0, minInt(maxFields*2, 512))
 	keys := make([]string, 0, len(h))
 	for key := range h {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
+	fields := 0
 	for _, name := range keys {
 		if strings.EqualFold(name, "Authorization") || strings.EqualFold(name, "Proxy-Authorization") || strings.EqualFold(name, "Cookie") {
 			continue
 		}
 		out = append(out, sample{location: "header.name", value: name})
-		for idx, value := range h.Values(name) {
-			out = append(out, sample{location: "header:" + strings.ToLower(name), value: normalize(value)})
-			if idx >= 15 {
+		values := h.Values(name)
+		if len(values) == 0 {
+			fields++
+			if fields >= maxFields {
 				break
+			}
+			continue
+		}
+		for _, value := range values {
+			out = append(out, sample{location: "header:" + strings.ToLower(name), value: normalize(value)})
+			fields++
+			if fields >= maxFields {
+				return out
 			}
 		}
 	}
 	return out
 }
 
-func cookieSamples(req *http.Request) []sample {
-	cookies := req.Cookies()
-	out := make([]sample, 0, len(cookies)*2)
-	for idx, cookie := range cookies {
+func cookieSamples(req *http.Request, maxHeaderFields int) []sample {
+	if maxHeaderFields <= 0 {
+		maxHeaderFields = 100
+	}
+	// Inspect each raw Cookie field as well as parsed cookie names and values.
+	// The raw samples cover arbitrarily long cookie lists without retaining or
+	// logging secret values; matches expose only a fingerprint.
+	out := make([]sample, 0, 130)
+	for idx, raw := range req.Header.Values("Cookie") {
+		out = append(out, sample{location: "cookie.raw", value: normalize(raw)})
+		if idx+1 >= maxHeaderFields {
+			break
+		}
+	}
+	for idx, cookie := range req.Cookies() {
 		out = append(out, sample{location: "cookie.name", value: normalize(cookie.Name)})
 		out = append(out, sample{location: "cookie:" + cookie.Name, value: normalize(cookie.Value)})
 		if idx >= 63 {
@@ -336,6 +360,13 @@ func normalize(value string) string {
 		value = string([]rune(value))
 	}
 	return value
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func fingerprint(value string) string {

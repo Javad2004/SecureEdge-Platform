@@ -578,7 +578,7 @@ func serveCacheEntry(w http.ResponseWriter, req *http.Request, entry cache.Entry
 	w.Header().Set("Age", strconv.Itoa(age))
 	w.Header().Set("X-Cache", status)
 	w.Header().Set("Via", "1.1 edgeproxy-go")
-	if conditionalNotModified(req, entry.Header) {
+	if conditionalNotModified(req, entry.Header, entry.StatusCode) {
 		w.Header().Del("Content-Length")
 		w.WriteHeader(http.StatusNotModified)
 		return

@@ -239,14 +239,26 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func conditionalNotModified(req *http.Request, header http.Header) bool {
+func conditionalNotModified(req *http.Request, header http.Header, statusCode int) bool {
 	if inm := req.Header.Get("If-None-Match"); inm != "" {
+		if ifNoneMatchWildcard(inm) && statusCode >= 200 && statusCode < 300 {
+			return true
+		}
 		return weakETagMatch(inm, header.Get("ETag"))
 	}
 	if ims := req.Header.Get("If-Modified-Since"); ims != "" {
 		modified, err1 := http.ParseTime(header.Get("Last-Modified"))
 		since, err2 := http.ParseTime(ims)
 		if err1 == nil && err2 == nil && !modified.After(since) {
+			return true
+		}
+	}
+	return false
+}
+
+func ifNoneMatchWildcard(value string) bool {
+	for _, raw := range strings.Split(value, ",") {
+		if strings.TrimSpace(raw) == "*" {
 			return true
 		}
 	}
@@ -260,9 +272,6 @@ func weakETagMatch(ifNoneMatch, current string) bool {
 	}
 	for _, raw := range strings.Split(ifNoneMatch, ",") {
 		candidate := strings.TrimSpace(raw)
-		if candidate == "*" {
-			return true
-		}
 		if normalizeETag(candidate) == current {
 			return true
 		}

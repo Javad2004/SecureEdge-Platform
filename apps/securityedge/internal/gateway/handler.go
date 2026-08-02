@@ -227,7 +227,7 @@ func validateRequestShape(req *http.Request, policy config.Policy, server config
 	if len(req.URL.RawQuery) > policy.MaxQueryBytes {
 		return http.StatusRequestURITooLong, "query_too_large"
 	}
-	if len(req.Header) > policy.MaxHeaderCount {
+	if headerFieldCount(req.Header) > policy.MaxHeaderCount {
 		return http.StatusRequestHeaderFieldsTooLarge, "too_many_headers"
 	}
 	for _, values := range req.Header {
@@ -253,6 +253,21 @@ func validateRequestShape(req *http.Request, policy config.Policy, server config
 		return http.StatusBadRequest, "invalid_host"
 	}
 	return 0, ""
+}
+
+func headerFieldCount(header http.Header) int {
+	count := 0
+	for _, values := range header {
+		// net/http stores repeated field lines as multiple values under one
+		// canonical name. Count every field line so repeating a single name cannot
+		// bypass max_header_count. A zero-value map entry still represents a field.
+		if len(values) == 0 {
+			count++
+			continue
+		}
+		count += len(values)
+	}
+	return count
 }
 
 func requestHasBody(req *http.Request) bool {

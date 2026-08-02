@@ -2,6 +2,7 @@ package waf
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http/httptest"
 	"strings"
@@ -105,6 +106,42 @@ func FuzzInspectorNeverPanics(f *testing.F) {
 		req.Header.Set("Content-Type", "text/plain")
 		_, _ = inspector(t).Inspect(req, config.Default().DefaultPolicy)
 	})
+}
+
+func TestRepeatedHeaderValuesAreAllInspected(t *testing.T) {
+	req := httptest.NewRequest("GET", "http://project.test/", nil)
+	values := make([]string, 17)
+	for index := 0; index < 16; index++ {
+		values[index] = "safe"
+	}
+	values[16] = "javascript:alert(1)"
+	req.Header["X-Repeated"] = values
+
+	got, err := inspector(t).Inspect(req, config.Default().DefaultPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Matches) == 0 {
+		t.Fatal("a malicious repeated header value after the sixteenth field was not inspected")
+	}
+}
+
+func TestRawCookieFieldCoversValuesBeyondParsedSampleCap(t *testing.T) {
+	req := httptest.NewRequest("GET", "http://project.test/", nil)
+	parts := make([]string, 0, 65)
+	for index := 0; index < 64; index++ {
+		parts = append(parts, fmt.Sprintf("safe%d=ok", index))
+	}
+	parts = append(parts, "attack=%0d%0a")
+	req.Header.Set("Cookie", strings.Join(parts, "; "))
+
+	got, err := inspector(t).Inspect(req, config.Default().DefaultPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Matches) == 0 {
+		t.Fatal("a malicious cookie after the parsed-cookie sample cap was not inspected")
+	}
 }
 
 func TestExcludedPathRequiresSegmentBoundary(t *testing.T) {

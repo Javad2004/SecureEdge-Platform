@@ -81,6 +81,24 @@ func TestRejectsOversizedPath(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestRepeatedHeaderFieldsCountTowardLimit(t *testing.T) {
+	policy := config.Default().DefaultPolicy
+	policy.RateLimit.Enabled = false
+	policy.MaxHeaderCount = 2
+	h := newTestHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next called for an over-limit repeated header")
+	}), policy)
+
+	req := httptest.NewRequest(http.MethodGet, "http://project.test/", nil)
+	req.Header["X-Repeated"] = []string{"one", "two", "three"}
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, req)
+	if response.Code != http.StatusRequestHeaderFieldsTooLarge || !strings.Contains(response.Body.String(), "too_many_headers") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestRateLimitReturns429(t *testing.T) {
 	p := config.Default().DefaultPolicy
 	p.RateLimit.RequestsPerSecond = 1

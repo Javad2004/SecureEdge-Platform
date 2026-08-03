@@ -163,6 +163,38 @@ func TestBlocksBodyWhenInspectionLimitIsExceeded(t *testing.T) {
 	}
 }
 
+func TestRejectsEncodedBodyAcrossRepeatedHeaderFields(t *testing.T) {
+	p := config.Default().DefaultPolicy
+	p.RateLimit.Enabled = false
+	p.RejectEncodedRequestBodies = true
+	h := newTestHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next called for an encoded request body")
+	}), p)
+	req := httptest.NewRequest(http.MethodPost, "http://project.test/upload", strings.NewReader("compressed-payload"))
+	req.Header["Content-Encoding"] = []string{"identity", "gzip"}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnsupportedMediaType || !strings.Contains(rec.Body.String(), "encoded_body_rejected") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRejectsAmbiguousRepeatedContentType(t *testing.T) {
+	p := config.Default().DefaultPolicy
+	p.RateLimit.Enabled = false
+	p.RejectUnsupportedBodyTypes = false
+	h := newTestHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next called for an ambiguous content type")
+	}), p)
+	req := httptest.NewRequest(http.MethodPost, "http://project.test/upload", strings.NewReader(`{"ok":true}`))
+	req.Header["Content-Type"] = []string{"application/json", "application/octet-stream"}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnsupportedMediaType || !strings.Contains(rec.Body.String(), "unsupported_body_type") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestRejectsUnsupportedRequestBodyTypeWhenConfigured(t *testing.T) {
 	p := config.Default().DefaultPolicy
 	p.RateLimit.Enabled = false

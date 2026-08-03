@@ -109,6 +109,22 @@ func TestAuthAcceptsCaseInsensitiveBearerAndReturnsChallenge(t *testing.T) {
 	}
 }
 
+func TestAuthRejectsMultipleAuthorizationFields(t *testing.T) {
+	server := testAdminServer(accesslog.New(10))
+	for _, values := range [][]string{
+		{"Bearer test-token", "Bearer test-token"},
+		{"Bearer test-token", "Bearer conflicting-token"},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/logs", nil)
+		req.Header["Authorization"] = values
+		rr := httptest.NewRecorder()
+		server.HTTPServer().Handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("expected ambiguous credentials %q to be rejected with 401, got %d: %s", values, rr.Code, rr.Body.String())
+		}
+	}
+}
+
 func TestSecureTokenEqualHandlesDifferentLengths(t *testing.T) {
 	if !secureTokenEqual("test-token", "test-token") {
 		t.Fatal("equal tokens did not match")

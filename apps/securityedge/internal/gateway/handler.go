@@ -438,14 +438,20 @@ func validateRequestShape(req *http.Request, policy config.Policy, server config
 	if req.ContentLength > server.MaxRequestBodyBytes {
 		return http.StatusRequestEntityTooLarge, "body_too_large"
 	}
-	if policy.RejectEncodedRequestBodies {
-		encoding := strings.TrimSpace(req.Header.Get("Content-Encoding"))
-		if encoding != "" && !strings.EqualFold(encoding, "identity") {
-			return http.StatusUnsupportedMediaType, "encoded_body_rejected"
-		}
+	if policy.RejectEncodedRequestBodies && requestHasNonIdentityContentEncoding(req.Header.Values("Content-Encoding")) {
+		return http.StatusUnsupportedMediaType, "encoded_body_rejected"
 	}
-	if policy.InspectRequestBody && policy.RejectUnsupportedBodyTypes && requestHasBody(req) && !contentTypeAllowed(req.Header.Get("Content-Type"), policy.BodyContentTypes) {
-		return http.StatusUnsupportedMediaType, "unsupported_body_type"
+	if requestHasBody(req) {
+		contentTypes := req.Header.Values("Content-Type")
+		// Content-Type is a singleton representation field. Repeated field lines
+		// create a parser differential because the WAF and downstream frameworks may
+		// choose different values, so reject the ambiguous request before inspection.
+		if len(contentTypes) > 1 {
+			return http.StatusUnsupportedMediaType, "unsupported_body_type"
+		}
+		if policy.InspectRequestBody && policy.RejectUnsupportedBodyTypes && !contentTypeAllowed(req.Header.Get("Content-Type"), policy.BodyContentTypes) {
+			return http.StatusUnsupportedMediaType, "unsupported_body_type"
+		}
 	}
 	if req.Host == "" || strings.ContainsAny(req.Host, "\r\n\x00") {
 		return http.StatusBadRequest, "invalid_host"
@@ -493,6 +499,18 @@ func requestNeedsBodyStaging(req *http.Request) bool {
 		return false
 	}
 	return req.ContentLength < 0 || len(req.Trailer) > 0
+}
+
+func requestHasNonIdentityContentEncoding(values []string) bool {
+	for _, value := range values {
+		for _, raw := range strings.Split(value, ",") {
+			encoding := strings.TrimSpace(raw)
+			if encoding != "" && !strings.EqualFold(encoding, "identity") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func contentTypeAllowed(raw string, allowed []string) bool {

@@ -107,6 +107,26 @@ func TestAdminRequiresBearerTokenAndServesBuildInfo(t *testing.T) {
 	}
 }
 
+func TestAdminRejectsMultipleAuthorizationFields(t *testing.T) {
+	ts := newAdminTestServer(t, 10)
+	defer ts.Close()
+	for _, values := range [][]string{
+		{"Bearer secret-token", "Bearer secret-token"},
+		{"Bearer secret-token", "Bearer conflicting-token"},
+	} {
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/info", nil)
+		req.Header["Authorization"] = values
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected ambiguous credentials %q to be rejected with 401, got %d", values, resp.StatusCode)
+		}
+	}
+}
+
 func TestAdminAuthenticationLockout(t *testing.T) {
 	ts := newAdminTestServer(t, 2)
 	defer ts.Close()

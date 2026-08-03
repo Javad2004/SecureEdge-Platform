@@ -54,17 +54,25 @@ func (s *Server) HTTPServer() *http.Server { return s.http }
 
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.cfg.AuthToken != "" {
-			parts := strings.Fields(r.Header.Get("Authorization"))
-			if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") ||
-				!secureTokenEqual(parts[1], s.cfg.AuthToken) {
-				w.Header().Set("WWW-Authenticate", `Bearer realm="edgeproxy-admin"`)
-				writeAPIError(w, http.StatusUnauthorized, "unauthorized", "a valid Bearer token is required")
-				return
-			}
+		if s.cfg.AuthToken != "" && !validBearerAuthorization(r.Header, s.cfg.AuthToken) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="edgeproxy-admin"`)
+			writeAPIError(w, http.StatusUnauthorized, "unauthorized", "a valid Bearer token is required")
+			return
 		}
 		next(w, r)
 	}
+}
+
+func validBearerAuthorization(header http.Header, expected string) bool {
+	values := header.Values("Authorization")
+	// Authorization is a singleton credential field. Reject repeated field lines
+	// instead of accepting whichever value Header.Get happens to return; otherwise
+	// intermediaries and the application can authenticate different credentials.
+	if len(values) != 1 {
+		return false
+	}
+	parts := strings.Fields(values[0])
+	return len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && secureTokenEqual(parts[1], expected)
 }
 
 func secureTokenEqual(got, want string) bool {

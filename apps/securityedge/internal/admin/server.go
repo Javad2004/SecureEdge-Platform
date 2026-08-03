@@ -126,15 +126,11 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusTooManyRequests, "admin_auth_locked", "too many failed authentication attempts")
 			return
 		}
-		if s.cfg.AuthToken != "" {
-			parts := strings.Fields(r.Header.Get("Authorization"))
-			valid := len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && secureTokenEqual(parts[1], s.cfg.AuthToken)
-			if !valid {
-				s.recordAuthFailure(client, now)
-				w.Header().Set("WWW-Authenticate", `Bearer realm="securityedge-admin"`)
-				writeError(w, http.StatusUnauthorized, "unauthorized", "a valid Bearer token is required")
-				return
-			}
+		if s.cfg.AuthToken != "" && !validBearerAuthorization(r.Header, s.cfg.AuthToken) {
+			s.recordAuthFailure(client, now)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="securityedge-admin"`)
+			writeError(w, http.StatusUnauthorized, "unauthorized", "a valid Bearer token is required")
+			return
 		}
 		s.clearAuthFailures(client)
 		next(w, r)
@@ -203,6 +199,18 @@ func (s *Server) evictOldestUnlockedAuthFailureLocked(now time.Time) bool {
 	delete(s.authFails, oldestClient)
 	return true
 }
+func validBearerAuthorization(header http.Header, expected string) bool {
+	values := header.Values("Authorization")
+	// Authorization is a singleton credential field. Reject repeated field lines
+	// instead of accepting whichever value Header.Get happens to return; otherwise
+	// intermediaries and the application can authenticate different credentials.
+	if len(values) != 1 {
+		return false
+	}
+	parts := strings.Fields(values[0])
+	return len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && secureTokenEqual(parts[1], expected)
+}
+
 func secureTokenEqual(got, want string) bool {
 	gotHash := sha256.Sum256([]byte(got))
 	wantHash := sha256.Sum256([]byte(want))

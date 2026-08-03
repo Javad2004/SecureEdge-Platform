@@ -5,8 +5,10 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -20,8 +22,9 @@ type upstream struct {
 }
 
 type upstreamPool struct {
-	nodes []*upstream
-	next  atomic.Uint64
+	nodes      []*upstream
+	next       atomic.Uint64
+	healthHost string
 }
 
 type healthChange struct {
@@ -33,7 +36,7 @@ type healthChange struct {
 }
 
 func newUpstreamPool(route config.RouteConfig) (*upstreamPool, error) {
-	pool := &upstreamPool{}
+	pool := &upstreamPool{healthHost: healthCheckHost(route)}
 	for _, raw := range route.Upstreams {
 		parsed, err := url.Parse(raw.URL)
 		if err != nil {
@@ -138,6 +141,9 @@ func (p *upstreamPool) runHealthChecks(ctx context.Context, cfg config.HealthChe
 				setNodeHealth(node, false, healthChange{Upstream: node.url.String(), Healthy: false, Duration: time.Since(started), Error: err.Error()}, onChange)
 				continue
 			}
+			if p.healthHost != "" {
+				req.Host = p.healthHost
+			}
 			client := &http.Client{
 				Transport: node.transport,
 				Timeout:   cfg.Timeout.Duration,
@@ -171,6 +177,34 @@ func (p *upstreamPool) runHealthChecks(ctx context.Context, cfg config.HealthChe
 			check()
 		}
 	}
+}
+
+// healthCheckHost returns a representative public Host value for active
+// checks when normal proxy traffic preserves the incoming Host header. This
+// keeps virtual-hosted origins from being marked unhealthy merely because the
+// probe connected through an internal IP address or service name.
+func healthCheckHost(route config.RouteConfig) string {
+	if !route.PreserveHost {
+		return ""
+	}
+	var wildcard string
+	for _, raw := range route.Hosts {
+		host := strings.TrimSpace(raw)
+		switch {
+		case host == "*":
+			continue
+		case strings.HasPrefix(host, "*."):
+			if wildcard == "" {
+				wildcard = "health-probe." + strings.TrimPrefix(host, "*.")
+			}
+		default:
+			if ip := net.ParseIP(host); ip != nil && strings.Contains(host, ":") {
+				return "[" + ip.String() + "]"
+			}
+			return host
+		}
+	}
+	return wildcard
 }
 
 func setNodeHealth(node *upstream, healthy bool, change healthChange, onChange func(healthChange)) {

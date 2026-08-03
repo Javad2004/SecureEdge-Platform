@@ -86,7 +86,7 @@ func (i *Inspector) Inspect(req *http.Request, policy config.Policy) (Result, er
 	targets := map[string][]sample{
 		"path":    pathSamples(req.URL),
 		"query":   querySamples(req.URL),
-		"headers": headerSamples(req.Header, policy.MaxHeaderCount),
+		"headers": headerSamples(req, policy.MaxHeaderCount),
 		"cookies": cookieSamples(req, policy.MaxHeaderCount),
 	}
 	if policy.InspectRequestBody && policy.MaxInspectionBodyBytes > 0 && requestBodyTypeAllowed(req.Header.Get("Content-Type"), policy.BodyContentTypes) && req.Body != nil && req.Body != http.NoBody {
@@ -199,17 +199,36 @@ func querySamples(u *url.URL) []sample {
 	return out
 }
 
-func headerSamples(h http.Header, maxFields int) []sample {
+func headerSamples(req *http.Request, maxFields int) []sample {
 	if maxFields <= 0 {
 		maxFields = 100
 	}
 	out := make([]sample, 0, minInt(maxFields*2, 512))
+	fields := 0
+	// net/http promotes Host out of Request.Header into Request.Host. It remains
+	// a client-controlled HTTP header and must be inspected by rules targeting
+	// headers, especially for wildcard routes that can forward the original Host
+	// to a virtual-hosted Origin. Count it toward the same field cap used by the
+	// gateway's request-shape validation.
+	if req != nil && strings.TrimSpace(req.Host) != "" {
+		out = append(out,
+			sample{location: "header.name", value: "Host"},
+			sample{location: "header:host", value: normalize(req.Host)},
+		)
+		fields++
+		if fields >= maxFields {
+			return out
+		}
+	}
+	if req == nil {
+		return out
+	}
+	h := req.Header
 	keys := make([]string, 0, len(h))
 	for key := range h {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	fields := 0
 	for _, name := range keys {
 		if strings.EqualFold(name, "Authorization") || strings.EqualFold(name, "Proxy-Authorization") || strings.EqualFold(name, "Cookie") {
 			continue

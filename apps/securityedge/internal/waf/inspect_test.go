@@ -285,3 +285,45 @@ func TestOversizedStructuredLocationIsFingerprinted(t *testing.T) {
 	}
 	t.Fatalf("expected decoded JSON string to match XSS-001: %#v", got.Matches)
 }
+
+func TestHostHeaderIsInspectedByHeaderRules(t *testing.T) {
+	custom := []config.CustomRuleConfig{{
+		ID:          "CUSTOM-HOST-001",
+		Name:        "Malicious virtual host",
+		Category:    "protocol",
+		Description: "detects an attacker-controlled Host value",
+		Score:       7,
+		Targets:     []string{"headers"},
+		Pattern:     `(?i)attacker-marker`,
+	}}
+	i, err := NewInspector(custom, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("GET", "http://project.test/", nil)
+	// This is a syntactically valid hostname and can match a wildcard/catch-all
+	// route, but net/http stores it in Request.Host rather than Request.Header.
+	req.Host = "attacker-marker.example.test"
+
+	got, err := i.Inspect(req, config.Default().DefaultPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Matches) != 1 || got.Matches[0].RuleID != "CUSTOM-HOST-001" {
+		t.Fatalf("Host header was not inspected: %#v", got)
+	}
+	if got.Matches[0].Location != "header:host" {
+		t.Fatalf("unexpected Host match location %q", got.Matches[0].Location)
+	}
+}
+
+func TestHostCountsTowardHeaderInspectionLimit(t *testing.T) {
+	req := httptest.NewRequest("GET", "http://project.test/", nil)
+	req.Host = "safe.example.test"
+	req.Header.Set("X-Later", "javascript:alert(1)")
+
+	samples := headerSamples(req, 1)
+	if len(samples) != 2 || samples[0].value != "Host" || samples[1].location != "header:host" {
+		t.Fatalf("unexpected samples at one-field limit: %#v", samples)
+	}
+}

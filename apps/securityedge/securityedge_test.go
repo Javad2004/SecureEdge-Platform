@@ -1,13 +1,18 @@
 package securityedge
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
 )
@@ -355,4 +360,89 @@ func TestConcurrentPolicyUpdatesAreSerialized(t *testing.T) {
 			t.Fatalf("runtime %s threshold=%d, want %d", route, got, want)
 		}
 	}
+}
+
+func TestReloadAndCloseReleaseEdgeAdminIdleConnections(t *testing.T) {
+	newServer := func() (*httptest.Server, <-chan http.ConnState) {
+		states := make(chan http.ConnState, 32)
+		server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		}))
+		server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+			select {
+			case states <- state:
+			default:
+			}
+		}
+		server.Start()
+		return server, states
+	}
+	waitForState := func(t *testing.T, states <-chan http.ConnState, want http.ConnState) {
+		t.Helper()
+		timer := time.NewTimer(3 * time.Second)
+		defer timer.Stop()
+		for {
+			select {
+			case state := <-states:
+				if state == want {
+					return
+				}
+			case <-timer.C:
+				t.Fatalf("timed out waiting for connection state %v", want)
+			}
+		}
+	}
+
+	first, firstStates := newServer()
+	defer first.Close()
+	second, secondStates := newServer()
+	defer second.Close()
+
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.EdgeProxy.AdminURL = first.URL
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			runtime.Close()
+		}
+	}()
+
+	if _, status, err := runtime.EdgeJSON(context.Background(), http.MethodGet, "/healthz", nil, nil); err != nil || status != http.StatusOK {
+		t.Fatalf("first EdgeJSON status=%d err=%v", status, err)
+	}
+	waitForState(t, firstStates, http.StateIdle)
+
+	cfg.EdgeProxy.AdminURL = second.URL
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, firstStates, http.StateClosed)
+
+	if _, status, err := runtime.EdgeJSON(context.Background(), http.MethodGet, "/healthz", nil, nil); err != nil || status != http.StatusOK {
+		t.Fatalf("second EdgeJSON status=%d err=%v", status, err)
+	}
+	waitForState(t, secondStates, http.StateIdle)
+	runtime.Close()
+	closed = true
+	waitForState(t, secondStates, http.StateClosed)
 }

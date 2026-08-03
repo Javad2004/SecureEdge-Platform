@@ -115,6 +115,12 @@ func New(configPath string, logger *slog.Logger) (*Runtime, error) {
 
 func (r *Runtime) Close() {
 	r.limiter.Close()
+	r.mu.RLock()
+	edge := r.edge
+	r.mu.RUnlock()
+	if edge != nil {
+		edge.CloseIdleConnections()
+	}
 	if err := r.logs.Close(); err != nil {
 		r.logger.Error("close security log", "error", err)
 	}
@@ -300,10 +306,14 @@ func (r *Runtime) applyReload(prepared preparedReload) error {
 		return err
 	}
 	r.mu.Lock()
+	previousEdge := r.edge
 	r.cfg = prepared.cfg
 	r.table = prepared.table
 	r.edge = prepared.edge
 	r.mu.Unlock()
+	if previousEdge != nil && previousEdge != prepared.edge {
+		previousEdge.CloseIdleConnections()
+	}
 	return nil
 }
 

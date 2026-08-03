@@ -99,6 +99,18 @@ func readJSONResponse(body io.Reader, contentLength, maxBytes int64) ([]byte, er
 	}
 	return data, nil
 }
+
+// CloseIdleConnections releases keep-alive connections owned by this client.
+// Runtime reloads replace the control-plane client, so retiring the old
+// transport prevents repeated reloads from retaining idle sockets until their
+// transport timeout expires. Active requests are not interrupted.
+func (c *Client) CloseIdleConnections() {
+	if c == nil || c.http == nil {
+		return
+	}
+	c.http.CloseIdleConnections()
+}
+
 func (c *Client) Healthy(ctx context.Context) error {
 	_, status, err := c.JSON(ctx, http.MethodGet, "/healthz", nil, nil)
 	if err != nil {

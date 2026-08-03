@@ -116,3 +116,28 @@ func TestClientReturnsValidJSON(t *testing.T) {
 		t.Fatalf("status=%d raw=%s error=%v", status, raw, err)
 	}
 }
+
+type closeTrackingTransport struct {
+	closed atomic.Int64
+}
+
+func (t *closeTrackingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, http.ErrNotSupported
+}
+
+func (t *closeTrackingTransport) CloseIdleConnections() {
+	t.closed.Add(1)
+}
+
+func TestCloseIdleConnectionsDelegatesToHTTPClient(t *testing.T) {
+	transport := &closeTrackingTransport{}
+	client := &Client{http: &http.Client{Transport: transport}}
+	client.CloseIdleConnections()
+	if got := transport.closed.Load(); got != 1 {
+		t.Fatalf("CloseIdleConnections calls=%d, want 1", got)
+	}
+
+	var nilClient *Client
+	nilClient.CloseIdleConnections()
+	(&Client{}).CloseIdleConnections()
+}

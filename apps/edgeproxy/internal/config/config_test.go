@@ -378,3 +378,23 @@ func TestValidateRejectsOutOfRangePorts(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateRejectsUnknownServicePorts(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{name: "public listener", mutate: func(cfg *Config) { cfg.Server.ListenAddr = "127.0.0.1:definitely-not-a-service" }},
+		{name: "admin listener", mutate: func(cfg *Config) { cfg.Admin.ListenAddr = "127.0.0.1:definitely-not-a-service" }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Routes = []RouteConfig{validRouteForValidation()}
+			tc.mutate(&cfg)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "registered TCP service") {
+				t.Fatalf("expected unknown-service validation error, got %v", err)
+			}
+		})
+	}
+}

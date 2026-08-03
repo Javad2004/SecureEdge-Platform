@@ -370,3 +370,29 @@ func TestValidateRejectsBlankConnectivityDNSName(t *testing.T) {
 		t.Fatalf("expected blank DNS name to be rejected, got %v", err)
 	}
 }
+
+func TestValidateRejectsUnknownServicePorts(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{name: "gateway listener", mutate: func(cfg *Config) { cfg.Server.ListenAddr = "127.0.0.1:definitely-not-a-service" }},
+		{name: "admin listener", mutate: func(cfg *Config) { cfg.Admin.ListenAddr = "127.0.0.1:definitely-not-a-service" }},
+		{name: "DNS server", mutate: func(cfg *Config) {
+			cfg.Admin.Connectivity.DNS.Enabled = true
+			cfg.Admin.Connectivity.DNS.Server = "127.0.0.1:definitely-not-a-service"
+			cfg.Admin.Connectivity.DNS.Names = []string{"project.test"}
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Server.Mode = "gateway"
+			cfg.EdgeProxy.ConfigPath = "edge.json"
+			tc.mutate(&cfg)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "registered TCP service") {
+				t.Fatalf("expected unknown-service validation error, got %v", err)
+			}
+		})
+	}
+}

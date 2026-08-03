@@ -753,8 +753,14 @@ func validateNumericPort(name, raw string, allowZero bool) error {
 	}
 	port, err := strconv.Atoi(raw)
 	if err != nil {
-		// net.Listen and DNS dialing can resolve registered service names. URL
-		// parsers already reject non-numeric explicit ports.
+		// net.Listen accepts registered service names, but an arbitrary token is
+		// not necessarily resolvable. Validate the name now so -validate cannot
+		// succeed for a network endpoint that will fail immediately at runtime
+		// with an unknown-port error. TCP is authoritative here because
+		// every supported endpoint either listens on TCP or requires TCP fallback.
+		if _, lookupErr := net.LookupPort("tcp", raw); lookupErr != nil {
+			return fmt.Errorf("%s port %q is neither numeric nor a registered TCP service: %w", name, raw, lookupErr)
+		}
 		return nil
 	}
 	minimum := 1

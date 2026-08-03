@@ -261,6 +261,13 @@ func TestRestartRequiredChangesIncludeProcessWideCapacities(t *testing.T) {
 	if !containsString(fields, "default_policy.auto_ban.max_tracked_clients") {
 		t.Fatalf("missing ban capacity restart field: %#v", fields)
 	}
+
+	next = cloneConfig(current)
+	next.Server.ForwardedForHeader = "X-Trusted-Client-IP"
+	fields = restartRequiredChanges(current, next)
+	if !containsString(fields, "server.forwarded_for_header") {
+		t.Fatalf("missing forwarded-header restart field: %#v", fields)
+	}
 }
 
 func containsString(values []string, want string) bool {

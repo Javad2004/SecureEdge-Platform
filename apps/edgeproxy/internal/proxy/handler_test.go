@@ -1240,6 +1240,16 @@ func TestPurgeCacheRejectsAmbiguousPathPrefix(t *testing.T) {
 	}
 }
 
+func TestRequestCacheModeTreatsZeroPaddedMaxAgeAsRevalidation(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/resource", nil)
+	req.Header.Set("Cache-Control", "max-age=000")
+	cfg := config.CacheConfig{Enabled: true}
+	lookup, store, reason := requestCacheMode(req, cfg)
+	if lookup || !store || reason != "" {
+		t.Fatalf("lookup=%v store=%v reason=%q, want false, true, empty", lookup, store, reason)
+	}
+}
+
 func TestParseCacheControlTrimsOptionalWhitespace(t *testing.T) {
 	directives := parseCacheControl([]string{`public, max-age = "60", no-store`})
 	if got := directives["max-age"]; got != "60" {

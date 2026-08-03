@@ -77,3 +77,19 @@ func TestPurgeRequestRemovesAllExactVariants(t *testing.T) {
 		t.Fatalf("remaining entries=%d, want 2", stats.Entries)
 	}
 }
+
+func TestCacheByteLimitIncludesKey(t *testing.T) {
+	now := time.Now()
+	entry := Entry{StatusCode: http.StatusOK, Header: make(http.Header), Body: []byte("x"), StoredAt: now, ExpiresAt: now.Add(time.Hour), StaleUntil: now.Add(time.Hour)}
+	c := New(10, 8)
+	if c.Set(strings.Repeat("k", 8), entry) {
+		t.Fatal("entry whose key and value exceed maxBytes must be rejected")
+	}
+	if !c.Set("k", entry) {
+		t.Fatal("small key and value should fit within maxBytes")
+	}
+	stats := c.Stats()
+	if stats.Bytes != 2 {
+		t.Fatalf("accounted bytes=%d, want 2 for one-byte key plus one-byte body", stats.Bytes)
+	}
+}

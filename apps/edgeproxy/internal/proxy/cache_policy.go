@@ -112,7 +112,16 @@ func requestCacheMode(req *http.Request, cfg config.CacheConfig) (lookup, store 
 	if req.Header.Get("Cookie") != "" && !cfg.CacheCookieRequests {
 		return false, false, "cookie"
 	}
-	lookup = !hasCacheDirective(cc, "no-cache") && cc["max-age"] != "0" && !headerHasToken(req.Header.Values("Pragma"), "no-cache")
+	forceRevalidation := hasCacheDirective(cc, "no-cache") || headerHasToken(req.Header.Values("Pragma"), "no-cache")
+	if raw, exists := cc["max-age"]; exists {
+		// delta-seconds permits leading zeroes. Treat max-age=00 exactly like
+		// max-age=0 instead of serving a cached response against the client's
+		// explicit revalidation request.
+		if seconds, valid := cacheDeltaSeconds(raw); valid && seconds == 0 {
+			forceRevalidation = true
+		}
+	}
+	lookup = !forceRevalidation
 	return lookup, true, ""
 }
 

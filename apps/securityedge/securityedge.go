@@ -361,6 +361,10 @@ func restartRequiredChanges(current, next config.Config) []string {
 	add("server.shutdown_timeout", current.Server.ShutdownTimeout != next.Server.ShutdownTimeout)
 	add("server.max_header_bytes", current.Server.MaxHeaderBytes != next.Server.MaxHeaderBytes)
 	add("server.max_request_body_bytes", current.Server.MaxRequestBodyBytes != next.Server.MaxRequestBodyBytes)
+	// The gateway ReverseProxy captures the configured source-header name when
+	// its handler is built. Reloading only the resolver would create a split
+	// trust policy and could leave the newly configured custom header downstream.
+	add("server.forwarded_for_header", current.Server.ForwardedForHeader != next.Server.ForwardedForHeader)
 	add("server.preserve_host", current.Server.PreserveHost != next.Server.PreserveHost)
 	add("server.upstream_transport", !reflect.DeepEqual(current.Server.UpstreamTransport, next.Server.UpstreamTransport))
 	add("admin", !reflect.DeepEqual(current.Admin, next.Admin))

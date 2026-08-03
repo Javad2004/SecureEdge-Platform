@@ -83,7 +83,10 @@ func (c *Cache) Get(key string, now time.Time) (entry Entry, fresh bool, stale b
 }
 
 func (c *Cache) Set(key string, entry Entry) bool {
-	size := entry.Size()
+	// The key is retained for the full lifetime of the entry and can be large
+	// because it includes the encoded request URI. Count it toward maxBytes so
+	// request-target size cannot bypass the cache's configured memory bound.
+	size := entry.Size() + int64(len(key))
 	if size <= 0 || size > c.maxBytes {
 		return false
 	}

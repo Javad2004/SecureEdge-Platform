@@ -355,7 +355,21 @@ func cacheHost(hostport string) string {
 	hostport = strings.ToLower(strings.TrimSpace(hostport))
 	if host, port, err := net.SplitHostPort(hostport); err == nil {
 		host = strings.TrimSuffix(host, ".")
+		if ip := net.ParseIP(host); ip != nil {
+			host = ip.String()
+		}
 		return net.JoinHostPort(host, port)
+	}
+	// Host permits a bracketed IPv6 literal without a port. Route validation
+	// stores IP literals in canonical unbracketed form, so cache keys and admin
+	// purge filters must normalize the request-side representation identically.
+	if strings.HasPrefix(hostport, "[") && strings.HasSuffix(hostport, "]") {
+		if ip := net.ParseIP(strings.TrimSuffix(strings.TrimPrefix(hostport, "["), "]")); ip != nil {
+			return ip.String()
+		}
+	}
+	if ip := net.ParseIP(hostport); ip != nil {
+		return ip.String()
 	}
 	return strings.TrimSuffix(hostport, ".")
 }

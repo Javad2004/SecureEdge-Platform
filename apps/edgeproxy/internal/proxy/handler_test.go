@@ -1320,6 +1320,60 @@ func TestCacheKeySeparatesRequestAuthoritiesByPort(t *testing.T) {
 	}
 }
 
+func TestCacheHostCanonicalizesBracketedIPv6(t *testing.T) {
+	for _, tc := range []struct {
+		input string
+		want  string
+	}{
+		{input: "[2001:0DB8::1]", want: "2001:db8::1"},
+		{input: "2001:0DB8::1", want: "2001:db8::1"},
+		{input: "[2001:0DB8::1]:8080", want: "[2001:db8::1]:8080"},
+	} {
+		if got := cacheHost(tc.input); got != tc.want {
+			t.Fatalf("cacheHost(%q)=%q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestPurgeCacheMatchesCanonicalIPv6Host(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		_, _ = io.WriteString(w, "cached")
+	}))
+	defer origin.Close()
+
+	cfg := testConfig(origin.URL)
+	cfg.Routes[0].Hosts = []string{"2001:db8::1"}
+	h, err := NewHandler(cfg, slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	request := func() string {
+		req := httptest.NewRequest(http.MethodGet, "http://[2001:db8::1]/resource", nil)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("request returned %d: %s", rr.Code, rr.Body.String())
+		}
+		return rr.Header().Get("X-Cache")
+	}
+	if got := request(); got != "MISS" {
+		t.Fatalf("first request cache=%q, want MISS", got)
+	}
+	if got := request(); got != "HIT" {
+		t.Fatalf("second request cache=%q, want HIT", got)
+	}
+	purged, ok, err := h.PurgeCache("test", "2001:0DB8::1", "/resource")
+	if err != nil || !ok || purged != 1 {
+		t.Fatalf("purge entries=%d ok=%v err=%v, want 1 true nil", purged, ok, err)
+	}
+	if got := request(); got != "MISS" {
+		t.Fatalf("IPv6 cache entry was not purged: cache=%q", got)
+	}
+}
+
 func TestOriginTransportIgnoresAmbientProxySettings(t *testing.T) {
 	route := testConfig("http://origin.internal:9000").Routes[0]
 	pool, err := newUpstreamPool(route)

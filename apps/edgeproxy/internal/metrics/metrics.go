@@ -149,6 +149,7 @@ type Registry struct {
 // RequestObservation finalizes one client-facing request.
 type RequestObservation struct {
 	Status      int
+	BytesIn     uint64
 	BytesOut    uint64
 	Duration    time.Duration
 	ProxyError  bool
@@ -269,18 +270,18 @@ func New() *Registry {
 
 // Begin starts accounting for one client request. The returned callback must be
 // called exactly once when the response is complete.
-func (r *Registry) Begin(route, method string, bytesIn uint64) func(RequestObservation) {
+func (r *Registry) Begin(route, method string) func(RequestObservation) {
 	method = metricMethod(method)
 	r.inflight.Add(1)
 	routeMetrics := r.route(route)
 	for _, target := range []*Counters{&r.total, &routeMetrics.counters} {
 		target.requests.Add(1)
-		target.bytesIn.Add(bytesIn)
 		target.methods.Add(method, 1)
 	}
 	return func(observation RequestObservation) {
 		defer r.inflight.Add(-1)
 		for _, target := range []*Counters{&r.total, &routeMetrics.counters} {
+			target.bytesIn.Add(observation.BytesIn)
 			target.bytesOut.Add(observation.BytesOut)
 			target.responseLatency.Observe(observation.Duration)
 			target.retries.Add(observation.Retries)

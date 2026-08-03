@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/accesslog"
@@ -99,13 +100,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("X-Request-ID", id)
 
 	bytesIn := uint64(0)
+	var streamedBody *countingReadCloser
 	if req.ContentLength > 0 {
 		bytesIn = uint64(req.ContentLength)
+	} else if req.ContentLength < 0 && req.Body != nil && req.Body != http.NoBody {
+		streamedBody = &countingReadCloser{ReadCloser: req.Body}
+		req.Body = streamedBody
 	}
-	finish := h.metrics.Begin(rt.cfg.Name, req.Method, bytesIn)
+	finish := h.metrics.Begin(rt.cfg.Name, req.Method)
 	rw := &responseCapture{ResponseWriter: w}
 	result := requestResult{cacheStatus: "BYPASS"}
 	defer func() {
+		if streamedBody != nil {
+			bytesIn = streamedBody.BytesRead()
+		}
 		status := rw.status
 		if status == 0 {
 			status = http.StatusOK
@@ -113,6 +121,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		duration := time.Since(started)
 		finish(metrics.RequestObservation{
 			Status:      status,
+			BytesIn:     bytesIn,
 			BytesOut:    uint64(maxInt64(rw.bytes, 0)),
 			Duration:    duration,
 			ProxyError:  result.proxyError,
@@ -660,6 +669,25 @@ func serveCacheEntry(w http.ResponseWriter, req *http.Request, entry cache.Entry
 func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%.3fms", float64(d.Microseconds())/1000)
 }
+
+// countingReadCloser records bytes consumed from a request body whose size was
+// not declared up front (for example, an HTTP/1.1 chunked upload). The atomic
+// counter remains safe if the transport finishes reading or closing the body
+// concurrently with response processing.
+type countingReadCloser struct {
+	io.ReadCloser
+	bytes atomic.Uint64
+}
+
+func (r *countingReadCloser) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	if n > 0 {
+		r.bytes.Add(uint64(n))
+	}
+	return n, err
+}
+
+func (r *countingReadCloser) BytesRead() uint64 { return r.bytes.Load() }
 
 type responseCapture struct {
 	http.ResponseWriter

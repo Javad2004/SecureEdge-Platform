@@ -63,6 +63,51 @@ func TestProxyCacheMissThenHit(t *testing.T) {
 	}
 }
 
+func TestChunkedRequestReportsActualInboundBytes(t *testing.T) {
+	const payload = "streamed-request-body"
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read origin body: %v", err)
+			http.Error(w, "read failed", http.StatusInternalServerError)
+			return
+		}
+		if string(body) != payload {
+			t.Errorf("origin body=%q, want %q", body, payload)
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer origin.Close()
+
+	registry := metrics.New()
+	logs := accesslog.New(10)
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), registry, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.test/upload", io.NopCloser(strings.NewReader(payload)))
+	req.ContentLength = -1
+	req.GetBody = nil
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+
+	want := uint64(len(payload))
+	snapshot := registry.Snapshot()
+	if snapshot.Total.BytesIn != want || snapshot.Routes["test"].BytesIn != want {
+		t.Fatalf("bytes_in total=%d route=%d, want %d", snapshot.Total.BytesIn, snapshot.Routes["test"].BytesIn, want)
+	}
+	entries := logs.Query(accesslog.Filter{Event: "request_completed", Limit: 10}).Entries
+	if len(entries) != 1 || entries[0].BytesIn != want {
+		t.Fatalf("access log entries=%#v, want bytes_in=%d", entries, want)
+	}
+}
+
 func TestSuccessfulUnsafeRequestInvalidatesCachedVariants(t *testing.T) {
 	var value atomic.Value
 	value.Store("v1")

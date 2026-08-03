@@ -8,10 +8,10 @@ import (
 
 func TestRegistryCapturesRouteAndPerUpstreamMetrics(t *testing.T) {
 	registry := New()
-	finish := registry.Begin("demo", "GET", 12)
+	finish := registry.Begin("demo", "GET")
 	registry.RecordUpstream("demo", "http://origin-a", UpstreamObservation{Status: 503, Duration: 25 * time.Millisecond, Failed: true})
 	registry.RecordUpstream("demo", "http://origin-b", UpstreamObservation{Status: 200, Duration: 5 * time.Millisecond, Retry: true})
-	finish(RequestObservation{Status: 200, BytesOut: 100, Duration: 40 * time.Millisecond, Retries: 1, CacheStatus: "MISS"})
+	finish(RequestObservation{Status: 200, BytesIn: 12, BytesOut: 100, Duration: 40 * time.Millisecond, Retries: 1, CacheStatus: "MISS"})
 	registry.RecordCacheStore("demo")
 
 	snapshot := registry.Snapshot()
@@ -34,6 +34,9 @@ func TestRegistryCapturesRouteAndPerUpstreamMetrics(t *testing.T) {
 	if snapshot.Total.CacheMisses != 1 || snapshot.Total.CacheStores != 1 {
 		t.Fatalf("unexpected cache metrics: %#v", snapshot.Total.Cache)
 	}
+	if snapshot.Total.BytesIn != 12 || snapshot.Total.BytesOut != 100 {
+		t.Fatalf("unexpected traffic metrics: %#v", snapshot.Total.Traffic)
+	}
 	if snapshot.Total.ResponseLatencyMS.P95 <= 0 || snapshot.Total.Upstream.LatencyMS.P95 <= 0 {
 		t.Fatalf("latency percentiles missing")
 	}
@@ -50,7 +53,7 @@ func TestHistogramEmptySnapshot(t *testing.T) {
 func TestUnknownMethodsUseBoundedMetricLabel(t *testing.T) {
 	r := New()
 	for i := 0; i < 1000; i++ {
-		finish := r.Begin("demo", fmt.Sprintf("X-CUSTOM-%d", i), 0)
+		finish := r.Begin("demo", fmt.Sprintf("X-CUSTOM-%d", i))
 		finish(RequestObservation{Status: 200})
 	}
 	methods := r.Snapshot().Total.Methods

@@ -311,7 +311,7 @@ func TestDecisionWriterPreservesFinalStatusAfterInformationalResponse(t *testing
 func TestGeneratedRequestIDDoesNotConsumeInboundHeaderLimit(t *testing.T) {
 	policy := config.Default().DefaultPolicy
 	policy.RateLimit.Enabled = false
-	policy.MaxHeaderCount = 1
+	policy.MaxHeaderCount = 2
 	called := false
 	h := newTestHandler(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
@@ -324,6 +324,57 @@ func TestGeneratedRequestIDDoesNotConsumeInboundHeaderLimit(t *testing.T) {
 	h.ServeHTTP(response, req)
 	if response.Code != http.StatusNoContent || !called {
 		t.Fatalf("status=%d called=%v body=%s", response.Code, called, response.Body.String())
+	}
+}
+
+func TestHostCountsTowardInboundHeaderLimit(t *testing.T) {
+	policy := config.Default().DefaultPolicy
+	policy.RateLimit.Enabled = false
+	policy.MaxHeaderCount = 1
+	h := newTestHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next called for a request whose Host and header exceed the field limit")
+	}), policy)
+
+	req := httptest.NewRequest(http.MethodGet, "http://project.test/", nil)
+	req.Header.Set("X-Client-Metadata", "one")
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, req)
+	if response.Code != http.StatusRequestHeaderFieldsTooLarge || !strings.Contains(response.Body.String(), "too_many_headers") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestHostValueObeysHeaderValueLimit(t *testing.T) {
+	policy := config.Default().DefaultPolicy
+	policy.RateLimit.Enabled = false
+	policy.MaxHeaderValueBytes = 8
+	h := newTestHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next called for an oversized Host value")
+	}), policy)
+
+	req := httptest.NewRequest(http.MethodGet, "http://project.test/", nil)
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, req)
+	if response.Code != http.StatusRequestHeaderFieldsTooLarge || !strings.Contains(response.Body.String(), "header_value_too_large") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestDownstreamWithoutResponseGetsTrustedDecisionHeaders(t *testing.T) {
+	policy := config.Default().DefaultPolicy
+	policy.RateLimit.Enabled = false
+	h := newTestHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), policy)
+
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://project.test/", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if requestID := response.Header().Get("X-Request-ID"); requestID == "" {
+		t.Fatal("implicit success response is missing X-Request-ID")
+	}
+	if action := response.Header().Get("X-Security-Action"); action != "ALLOW" {
+		t.Fatalf("X-Security-Action=%q, want ALLOW", action)
 	}
 }
 
@@ -368,6 +419,66 @@ func TestInspectionMaxBytesErrorReturnsPayloadTooLarge(t *testing.T) {
 	snapshot := h.metrics.Snapshot()
 	if snapshot.Total.Errors != 0 || snapshot.Total.BodyTooLarge != 1 {
 		t.Fatalf("unexpected metrics for policy body limit: %#v", snapshot.Total)
+	}
+}
+
+func TestUnknownLengthBodyIsValidatedBeforeDownstreamCommitsResponse(t *testing.T) {
+	policy := config.Default().DefaultPolicy
+	policy.RateLimit.Enabled = false
+	policy.InspectRequestBody = false
+	server := config.Default().Server
+	server.MaxRequestBodyBytes = 8
+	called := false
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.Copy(io.Discard, r.Body)
+	})
+	h, _ := newTestHandlerWithServerAndTraffic(t, next, policy, server)
+
+	req := httptest.NewRequest(http.MethodPost, "http://project.test/upload", strings.NewReader(strings.Repeat("x", 32)))
+	req.ContentLength = -1
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, req)
+	if called {
+		t.Fatal("downstream was called before the unknown-length body limit was validated")
+	}
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if action := response.Header().Get("X-Security-Action"); action != "BLOCK" {
+		t.Fatalf("X-Security-Action=%q, want BLOCK", action)
+	}
+}
+
+func TestUnknownLengthBodyWithinLimitReachesDownstream(t *testing.T) {
+	policy := config.Default().DefaultPolicy
+	policy.RateLimit.Enabled = false
+	policy.InspectRequestBody = false
+	server := config.Default().Server
+	server.MaxRequestBodyBytes = 64
+	const payload = "streamed-payload"
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read staged body: %v", err)
+			return
+		}
+		if string(body) != payload {
+			t.Errorf("body=%q, want %q", body, payload)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	h, _ := newTestHandlerWithServerAndTraffic(t, next, policy, server)
+
+	req := httptest.NewRequest(http.MethodPost, "http://project.test/upload", strings.NewReader(payload))
+	req.ContentLength = -1
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, req)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

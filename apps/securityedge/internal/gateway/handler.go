@@ -7,13 +7,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"mime"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -75,7 +78,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	policy := h.policies.Policy(routeName)
 	serverCfg := h.policies.ServerConfig()
-	bodyLimit := trackRequestBodyLimit(w, req, serverCfg.MaxRequestBodyBytes)
+	var bodyLimit *trackedRequestBody
+	var stagedBody *temporaryRequestBody
+	bodyPrepared := false
 	requestID := newRequestID()
 	client := h.clients.Resolve(req)
 	req = req.WithContext(context.WithValue(req.Context(), resolvedClientIPKey{}, client))
@@ -111,6 +116,39 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	defer complete()
+	defer func() {
+		if stagedBody != nil {
+			_ = stagedBody.Close()
+		}
+	}()
+
+	prepareBody := func() bool {
+		if bodyPrepared {
+			return true
+		}
+		bodyPrepared = true
+		if req.ContentLength < 0 && requestHasBody(req) {
+			var tooLarge bool
+			var err error
+			stagedBody, tooLarge, err = stageUnknownLengthBody(req, serverCfg.MaxRequestBodyBytes)
+			if tooLarge {
+				action, reason, status = "BLOCK", "body_too_large", http.StatusRequestEntityTooLarge
+				autoBanned, _ = h.recordViolation(client, policy, time.Now())
+				setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
+				writeBlocked(w, status, "body_too_large", requestID)
+				return false
+			}
+			if err != nil {
+				processingErr = err
+				action, reason, status = "BLOCK", "body_read_failed", http.StatusBadRequest
+				setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
+				writeBlocked(w, status, "body_read_failed", requestID)
+				return false
+			}
+		}
+		bodyLimit = trackRequestBodyLimit(w, req, serverCfg.MaxRequestBodyBytes)
+		return true
+	}
 
 	release, admitted, overloadReason := h.admission.Acquire(client, serverCfg.MaxConcurrentRequests, serverCfg.MaxConcurrentPerClient)
 	if !admitted {
@@ -149,6 +187,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	if !policy.Enabled || policy.Mode == "off" || allowlisted {
+		if !prepareBody() {
+			return
+		}
 		setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
 		securityDuration = time.Since(started)
 		writer := &decisionWriter{ResponseWriter: w, requestID: requestID, action: action, score: score, addSecurityHeaders: serverCfg.AddSecurityHeaders, bodyLimit: bodyLimit}
@@ -157,6 +198,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			action, reason = "BLOCK", "body_too_large"
 			autoBanned, _ = h.recordViolation(client, policy, time.Now())
 		}
+		writer.Finalize()
 		status = writer.Status()
 		cacheStatus = writer.Header().Get("X-Cache")
 		return
@@ -192,6 +234,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
 		w.Header().Set("Retry-After", retrySeconds(retryAfter))
 		writeBlocked(w, status, "rate_limited", requestID)
+		return
+	}
+	if !prepareBody() {
 		return
 	}
 
@@ -241,6 +286,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		action, reason = "BLOCK", "body_too_large"
 		autoBanned, _ = h.recordViolation(client, policy, time.Now())
 	}
+	writer.Finalize()
 	status = writer.Status()
 	cacheStatus = writer.Header().Get("X-Cache")
 }
@@ -248,6 +294,75 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 type trackedRequestBody struct {
 	io.ReadCloser
 	exceeded atomic.Bool
+}
+
+type temporaryRequestBody struct {
+	file *os.File
+	path string
+	once sync.Once
+	err  error
+}
+
+func (b *temporaryRequestBody) Read(p []byte) (int, error) {
+	return b.file.Read(p)
+}
+
+func (b *temporaryRequestBody) Close() error {
+	b.once.Do(func() {
+		b.err = errors.Join(b.file.Close(), removeTemporaryFile(b.path))
+	})
+	return b.err
+}
+
+func removeTemporaryFile(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// stageUnknownLengthBody makes the global request-body limit authoritative
+// before downstream code can commit a success response. Go cannot know the
+// size of a chunked request from headers alone, and an embedded handler may
+// write a response before reading the body. Spooling the bounded body to a
+// private temporary file avoids unbounded memory use while preserving the
+// original streaming interface for the downstream handler.
+func stageUnknownLengthBody(req *http.Request, maxBytes int64) (*temporaryRequestBody, bool, error) {
+	if req == nil || req.Body == nil || req.Body == http.NoBody || req.ContentLength >= 0 || maxBytes <= 0 {
+		return nil, false, nil
+	}
+	original := req.Body
+	file, err := os.CreateTemp("", "securityedge-request-body-*")
+	if err != nil {
+		return nil, false, fmt.Errorf("create temporary request-body buffer: %w", err)
+	}
+	path := file.Name()
+	cleanup := func() {
+		_ = file.Close()
+		_ = removeTemporaryFile(path)
+	}
+	written, copyErr := io.Copy(file, io.LimitReader(original, maxBytes+1))
+	closeErr := original.Close()
+	var maxErr *http.MaxBytesError
+	if errors.As(copyErr, &maxErr) {
+		cleanup()
+		return nil, true, nil
+	}
+	if copyErr != nil || closeErr != nil {
+		cleanup()
+		return nil, false, fmt.Errorf("read request body: %w", errors.Join(copyErr, closeErr))
+	}
+	if written > maxBytes {
+		cleanup()
+		return nil, true, nil
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		cleanup()
+		return nil, false, fmt.Errorf("rewind temporary request-body buffer: %w", err)
+	}
+	staged := &temporaryRequestBody{file: file, path: path}
+	req.Body = staged
+	return staged, false, nil
 }
 
 func (b *trackedRequestBody) Read(p []byte) (int, error) {
@@ -279,8 +394,13 @@ func validateRequestShape(req *http.Request, policy config.Policy, server config
 	if len(req.URL.RawQuery) > policy.MaxQueryBytes {
 		return http.StatusRequestURITooLong, "query_too_large"
 	}
-	if headerFieldCount(req.Header) > policy.MaxHeaderCount {
+	if requestHeaderFieldCount(req) > policy.MaxHeaderCount {
 		return http.StatusRequestHeaderFieldsTooLarge, "too_many_headers"
+	}
+	// Host is promoted out of Request.Header by net/http, but it remains a
+	// client-controlled header value and must obey the same per-field limit.
+	if len(req.Host) > policy.MaxHeaderValueBytes {
+		return http.StatusRequestHeaderFieldsTooLarge, "header_value_too_large"
 	}
 	for _, values := range req.Header {
 		for _, value := range values {
@@ -318,6 +438,20 @@ func headerFieldCount(header http.Header) int {
 			continue
 		}
 		count += len(values)
+	}
+	return count
+}
+
+func requestHeaderFieldCount(req *http.Request) int {
+	if req == nil {
+		return 0
+	}
+	count := headerFieldCount(req.Header)
+	// net/http promotes Host out of Header into Request.Host for server-side
+	// requests. It is still a client-supplied header field and must count toward
+	// the configured policy limit.
+	if strings.TrimSpace(req.Host) != "" {
+		count++
 	}
 	return count
 }
@@ -405,6 +539,11 @@ func (w *decisionWriter) EnforceBodyLimit() bool {
 		w.WriteHeader(http.StatusRequestEntityTooLarge)
 	}
 	return true
+}
+func (w *decisionWriter) Finalize() {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
 }
 func (w *decisionWriter) WriteHeader(status int) {
 	// HTTP permits multiple informational responses before one final response.

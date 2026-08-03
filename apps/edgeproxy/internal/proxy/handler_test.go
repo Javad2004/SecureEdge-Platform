@@ -1645,6 +1645,46 @@ func TestRequestCacheModeTreatsZeroPaddedMaxAgeAsRevalidation(t *testing.T) {
 	}
 }
 
+func TestRequestCacheModeRejectsConflictingMaxAgeDirectives(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/resource", nil)
+	req.Header.Add("Cache-Control", "max-age=0")
+	req.Header.Add("Cache-Control", "max-age=60")
+
+	lookup, store, reason := requestCacheMode(req, config.CacheConfig{Enabled: true})
+	if lookup || store || reason != "invalid-cache-control" {
+		t.Fatalf("lookup=%v store=%v reason=%q, want false, false, invalid-cache-control", lookup, store, reason)
+	}
+	entry := cache.Entry{StoredAt: time.Now()}
+	if requestAllowsCachedEntry(req, entry, time.Now()) {
+		t.Fatal("conflicting max-age directives must not select a cached entry")
+	}
+}
+
+func TestResponseCachePolicyRejectsDuplicateFreshnessDirectives(t *testing.T) {
+	now := time.Now()
+	cfg := config.CacheConfig{
+		DefaultTTL:           config.Duration{Duration: time.Minute},
+		RespectOriginHeaders: true,
+		CacheableStatusCodes: []int{http.StatusOK},
+	}
+	for _, directive := range []string{"max-age", "s-maxage"} {
+		t.Run(directive, func(t *testing.T) {
+			resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}
+			resp.Header.Add("Cache-Control", "public, "+directive+"=60")
+			resp.Header.Add("Cache-Control", directive+"=3600")
+			cacheable, _, _, _ := responseCachePolicy(
+				httptest.NewRequest(http.MethodGet, "http://proxy.test/resource", nil),
+				resp,
+				cfg,
+				now,
+			)
+			if cacheable {
+				t.Fatalf("response with duplicate %s directives must not be cached", directive)
+			}
+		})
+	}
+}
+
 func TestParseCacheControlTrimsOptionalWhitespace(t *testing.T) {
 	directives := parseCacheControl([]string{`public, max-age = "60", no-store`})
 	if got := directives["max-age"]; got != "60" {
@@ -1652,6 +1692,47 @@ func TestParseCacheControlTrimsOptionalWhitespace(t *testing.T) {
 	}
 	if !hasCacheDirective(directives, "no-store") {
 		t.Fatal("no-store directive was not parsed")
+	}
+}
+
+func TestParseCacheControlPreservesQuotedCommas(t *testing.T) {
+	parsed := parseCacheControlDetailed([]string{`extension="a,b", max-age=60`})
+	if parsed.invalid {
+		t.Fatal("valid quoted comma was marked invalid")
+	}
+	if got := parsed.directives["extension"]; got != "a,b" {
+		t.Fatalf("extension=%q, want a,b", got)
+	}
+	if got := parsed.directives["max-age"]; got != "60" {
+		t.Fatalf("max-age=%q, want 60", got)
+	}
+
+	malformed := parseCacheControlDetailed([]string{`extension="unterminated, no-store`})
+	if !malformed.invalid {
+		t.Fatal("unterminated quoted Cache-Control value must be invalid")
+	}
+}
+
+func TestConditionalRequestCombinesRepeatedIfNoneMatchFields(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/resource", nil)
+	req.Header.Add("If-None-Match", `"different"`)
+	req.Header.Add("If-None-Match", `W/"v1"`)
+	header := make(http.Header)
+	header.Set("ETag", `"v1"`)
+
+	if !conditionalNotModified(req, header, http.StatusOK) {
+		t.Fatal("a matching ETag in a later If-None-Match field must produce 304")
+	}
+}
+
+func TestConditionalRequestHandlesCommaInsideETag(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/resource", nil)
+	req.Header.Set("If-None-Match", `"other", W/"v1,part"`)
+	header := make(http.Header)
+	header.Set("ETag", `"v1,part"`)
+
+	if !conditionalNotModified(req, header, http.StatusOK) {
+		t.Fatal("a quoted comma inside an entity tag must not split the tag")
 	}
 }
 

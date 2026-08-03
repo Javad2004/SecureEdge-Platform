@@ -102,8 +102,14 @@ func requestAllowsCachedEntry(req *http.Request, entry cache.Entry, now time.Tim
 	if req == nil {
 		return true
 	}
-	directives := parseCacheControl(req.Header.Values("Cache-Control"))
-	raw, exists := directives["max-age"]
+	parsed := parseCacheControlDetailed(req.Header.Values("Cache-Control"))
+	// Ambiguous freshness constraints must not select a cached representation.
+	// RFC 9111 treats repeated freshness directives as invalid; choosing the last
+	// value makes behavior depend on how intermediaries coalesce field lines.
+	if parsed.invalid || parsed.duplicates["max-age"] {
+		return false
+	}
+	raw, exists := parsed.directives["max-age"]
 	if !exists {
 		return true
 	}
@@ -128,7 +134,13 @@ func requestCacheMode(req *http.Request, cfg config.CacheConfig) (lookup, store 
 	if headerHasNonEmptyValue(req.Header, "Range") {
 		return false, false, "range"
 	}
-	cc := parseCacheControl(req.Header.Values("Cache-Control"))
+	parsed := parseCacheControlDetailed(req.Header.Values("Cache-Control"))
+	if parsed.invalid || parsed.duplicates["max-age"] {
+		// A malformed or conflicting request cache policy is not safe to resolve
+		// against shared state and must not populate that state either.
+		return false, false, "invalid-cache-control"
+	}
+	cc := parsed.directives
 	if hasCacheDirective(cc, "no-store") {
 		return false, false, "request-no-store"
 	}
@@ -172,7 +184,13 @@ func responseCachePolicy(req *http.Request, resp *http.Response, cfg config.Cach
 	ttl := cfg.DefaultTTL.Duration
 	allowStale := true
 	if cfg.RespectOriginHeaders {
-		cc := parseCacheControl(resp.Header.Values("Cache-Control"))
+		parsed := parseCacheControlDetailed(resp.Header.Values("Cache-Control"))
+		// Repeated max-age/s-maxage values are invalid freshness information. Do
+		// not let field ordering select an arbitrarily long cache lifetime.
+		if parsed.invalid || parsed.duplicates["max-age"] || parsed.duplicates["s-maxage"] {
+			return false, time.Time{}, time.Time{}, 0
+		}
+		cc := parsed.directives
 		if hasCacheDirective(cc, "no-store") || hasCacheDirective(cc, "private") || hasCacheDirective(cc, "no-cache") || headerHasToken(resp.Header.Values("Pragma"), "no-cache") {
 			return false, time.Time{}, time.Time{}, 0
 		}
@@ -249,23 +267,96 @@ func responseInitialAge(header http.Header, now time.Time) time.Duration {
 	return age
 }
 
-func parseCacheControl(values []string) map[string]string {
-	out := make(map[string]string)
+type parsedCacheControl struct {
+	directives map[string]string
+	duplicates map[string]bool
+	invalid    bool
+}
+
+func parseCacheControlDetailed(values []string) parsedCacheControl {
+	parsed := parsedCacheControl{directives: make(map[string]string), duplicates: make(map[string]bool)}
 	for _, value := range values {
-		for _, directive := range strings.Split(value, ",") {
+		directives, valid := splitHeaderList(value)
+		if !valid {
+			parsed.invalid = true
+			continue
+		}
+		for _, directive := range directives {
 			parts := strings.SplitN(strings.TrimSpace(directive), "=", 2)
 			key := strings.ToLower(strings.TrimSpace(parts[0]))
 			if key == "" {
+				parsed.invalid = true
+				continue
+			}
+			if _, exists := parsed.directives[key]; exists {
+				parsed.duplicates[key] = true
 				continue
 			}
 			if len(parts) == 1 {
-				out[key] = "1"
+				parsed.directives[key] = "1"
 			} else {
-				out[key] = strings.Trim(strings.TrimSpace(parts[1]), `"`)
+				parsed.directives[key] = unquoteHeaderValue(strings.TrimSpace(parts[1]))
 			}
 		}
 	}
-	return out
+	return parsed
+}
+
+func parseCacheControl(values []string) map[string]string {
+	return parseCacheControlDetailed(values).directives
+}
+
+// splitHeaderList separates comma-delimited HTTP list values without splitting
+// commas inside quoted strings. It also rejects unterminated quoted strings so
+// malformed Cache-Control metadata cannot hide a later no-store directive.
+func splitHeaderList(value string) ([]string, bool) {
+	items := make([]string, 0, 4)
+	start := 0
+	quoted, escaped := false, false
+	for i := 0; i < len(value); i++ {
+		switch {
+		case escaped:
+			escaped = false
+		case quoted && value[i] == '\\':
+			escaped = true
+		case value[i] == '"':
+			quoted = !quoted
+		case value[i] == ',' && !quoted:
+			items = append(items, value[start:i])
+			start = i + 1
+		}
+	}
+	if quoted || escaped {
+		return nil, false
+	}
+	items = append(items, value[start:])
+	return items, true
+}
+
+func unquoteHeaderValue(value string) string {
+	if len(value) < 2 || value[0] != '"' || value[len(value)-1] != '"' {
+		return value
+	}
+	value = value[1 : len(value)-1]
+	var b strings.Builder
+	b.Grow(len(value))
+	escaped := false
+	for i := 0; i < len(value); i++ {
+		if escaped {
+			b.WriteByte(value[i])
+			escaped = false
+			continue
+		}
+		if value[i] == '\\' {
+			escaped = true
+			continue
+		}
+		b.WriteByte(value[i])
+	}
+	if escaped {
+		b.WriteByte('\\')
+	}
+	return b.String()
 }
 
 func hasCacheDirective(directives map[string]string, name string) bool {
@@ -314,11 +405,15 @@ func conditionalNotModified(req *http.Request, header http.Header, statusCode in
 	if statusCode < 200 || statusCode >= 300 {
 		return false
 	}
-	if inm := req.Header.Get("If-None-Match"); inm != "" {
-		if ifNoneMatchWildcard(inm) {
+	if values := req.Header.Values("If-None-Match"); len(values) > 0 {
+		items, valid := parseHeaderListValues(values)
+		if !valid {
+			return false
+		}
+		if ifNoneMatchWildcard(items) {
 			return true
 		}
-		return weakETagMatch(inm, header.Get("ETag"))
+		return weakETagMatch(items, header.Get("ETag"))
 	}
 	if ims := req.Header.Get("If-Modified-Since"); ims != "" {
 		modified, err1 := http.ParseTime(header.Get("Last-Modified"))
@@ -330,8 +425,20 @@ func conditionalNotModified(req *http.Request, header http.Header, statusCode in
 	return false
 }
 
-func ifNoneMatchWildcard(value string) bool {
-	for _, raw := range strings.Split(value, ",") {
+func parseHeaderListValues(values []string) ([]string, bool) {
+	items := make([]string, 0, len(values))
+	for _, value := range values {
+		parts, valid := splitHeaderList(value)
+		if !valid {
+			return nil, false
+		}
+		items = append(items, parts...)
+	}
+	return items, true
+}
+
+func ifNoneMatchWildcard(items []string) bool {
+	for _, raw := range items {
 		if strings.TrimSpace(raw) == "*" {
 			return true
 		}
@@ -339,12 +446,12 @@ func ifNoneMatchWildcard(value string) bool {
 	return false
 }
 
-func weakETagMatch(ifNoneMatch, current string) bool {
+func weakETagMatch(items []string, current string) bool {
 	current = normalizeETag(current)
 	if current == "" {
 		return false
 	}
-	for _, raw := range strings.Split(ifNoneMatch, ",") {
+	for _, raw := range items {
 		candidate := strings.TrimSpace(raw)
 		if normalizeETag(candidate) == current {
 			return true

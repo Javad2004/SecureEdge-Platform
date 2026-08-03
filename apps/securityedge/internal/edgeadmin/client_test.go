@@ -1,10 +1,11 @@
 package edgeadmin
 
 import (
+	"bytes"
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -59,9 +60,13 @@ func TestClientDisablesAmbientProxyAndRedirects(t *testing.T) {
 }
 
 func TestClientRejectsOversizedJSONResponse(t *testing.T) {
+	const advertisedSize = maxResponseBytes + 1
+	var handlerCalled atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handlerCalled.Store(true)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"value":"%s"}`, strings.Repeat("a", (16<<20)+1))
+		w.Header().Set("Content-Length", strconv.FormatInt(advertisedSize, 10))
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
@@ -72,6 +77,23 @@ func TestClientRejectsOversizedJSONResponse(t *testing.T) {
 	_, status, err := client.JSON(context.Background(), http.MethodGet, "/large", nil, nil)
 	if status != http.StatusOK || err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("status=%d error=%v", status, err)
+	}
+	if !handlerCalled.Load() {
+		t.Fatal("test server was not called")
+	}
+}
+
+func TestReadJSONResponseRejectsUnknownLengthBodyAtLimit(t *testing.T) {
+	data, err := readJSONResponse(bytes.NewBufferString(`{"value":"abcdef"}`), -1, 8)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("data=%q error=%v", data, err)
+	}
+}
+
+func TestReadJSONResponseAcceptsBodyAtExactLimit(t *testing.T) {
+	data, err := readJSONResponse(bytes.NewBufferString(`{"ok":1}`), -1, 8)
+	if err != nil || string(data) != `{"ok":1}` {
+		t.Fatalf("data=%q error=%v", data, err)
 	}
 }
 

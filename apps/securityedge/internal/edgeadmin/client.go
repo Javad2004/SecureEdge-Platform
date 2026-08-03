@@ -18,6 +18,8 @@ type Client struct {
 	http  *http.Client
 }
 
+const maxResponseBytes int64 = 16 << 20
+
 func New(rawURL, token string, timeout time.Duration) (*Client, error) {
 	u, err := url.Parse(strings.TrimRight(strings.TrimSpace(rawURL), "/"))
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
@@ -67,18 +69,35 @@ func (c *Client) JSON(ctx context.Context, method, path string, query url.Values
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	const maxResponseBytes = 16 << 20
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	data, err := readJSONResponse(resp.Body, resp.ContentLength, maxResponseBytes)
 	if err != nil {
 		return nil, resp.StatusCode, err
-	}
-	if len(data) > maxResponseBytes {
-		return nil, resp.StatusCode, fmt.Errorf("edgeproxy response exceeds %d bytes", maxResponseBytes)
 	}
 	if !json.Valid(data) {
 		return nil, resp.StatusCode, fmt.Errorf("edgeproxy returned non-JSON response")
 	}
 	return json.RawMessage(data), resp.StatusCode, nil
+}
+
+func readJSONResponse(body io.Reader, contentLength, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		return nil, fmt.Errorf("edgeproxy response limit must be positive")
+	}
+	// Reject an explicitly oversized response before reading its body. Besides
+	// avoiding unnecessary control-plane traffic, this ensures callers receive
+	// the intended size-limit error instead of an unrelated client timeout while
+	// downloading a response that can never be accepted.
+	if contentLength > maxBytes {
+		return nil, fmt.Errorf("edgeproxy response exceeds %d bytes", maxBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("edgeproxy response exceeds %d bytes", maxBytes)
+	}
+	return data, nil
 }
 func (c *Client) Healthy(ctx context.Context) error {
 	_, status, err := c.JSON(ctx, http.MethodGet, "/healthz", nil, nil)

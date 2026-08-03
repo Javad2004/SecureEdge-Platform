@@ -676,7 +676,15 @@ func TestChunkedMaliciousTrailerIsBlockedBeforeDownstream(t *testing.T) {
 	}
 }
 
-func TestParserRejectedOversizedTrailerReturns431(t *testing.T) {
+type terminalErrorReader struct {
+	err error
+}
+
+func (r terminalErrorReader) Read([]byte) (int, error) {
+	return 0, r.err
+}
+
+func TestTrailerParserErrorReturns431(t *testing.T) {
 	policy := config.Default().DefaultPolicy
 	policy.RateLimit.Enabled = false
 	policy.InspectRequestBody = false
@@ -684,29 +692,23 @@ func TestParserRejectedOversizedTrailerReturns431(t *testing.T) {
 	h := newTestHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		called = true
 	}), policy)
-	server := httptest.NewServer(h)
-	defer server.Close()
 
-	req, err := http.NewRequest(http.MethodPost, server.URL+"/upload", strings.NewReader("payload"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Host = "project.test"
+	// A real HTTP/1.x transport may reset the connection as soon as net/http
+	// rejects an oversized trailer, before the application response reaches the
+	// client. Inject the exact parser error at the handler boundary so the
+	// SecurityEdge error mapping remains deterministic and independently tested.
+	bodyReader := io.MultiReader(
+		strings.NewReader("payload"),
+		terminalErrorReader{err: errors.New("net/http: suspiciously long trailer after chunked body")},
+	)
+	req := httptest.NewRequest(http.MethodPost, "http://project.test/upload", io.NopCloser(bodyReader))
 	req.ContentLength = -1
 	req.Header.Set("User-Agent", "test")
-	// net/http deliberately rejects a trailer block larger than its bounded
-	// parser buffer before exposing the value in Request.Trailer.
-	req.Trailer = http.Header{"X-Large-Trailer": {strings.Repeat("x", 9000)}}
-	response, err := server.Client().Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if response.StatusCode != http.StatusRequestHeaderFieldsTooLarge || !strings.Contains(string(body), "header_value_too_large") || called {
-		t.Fatalf("status=%d called=%v body=%s", response.StatusCode, called, body)
+	recorder := httptest.NewRecorder()
+
+	h.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusRequestHeaderFieldsTooLarge || !strings.Contains(recorder.Body.String(), "header_value_too_large") || called {
+		t.Fatalf("status=%d called=%v body=%s", recorder.Code, called, recorder.Body.String())
 	}
 }

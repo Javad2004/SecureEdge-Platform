@@ -231,9 +231,9 @@ func ApplyEnvironmentOverrides(cfg *Config) {
 // LoadFile reads JSON without applying secret environment overrides. This keeps
 // environment-provided secrets out of atomically persisted policy updates.
 func LoadFile(path string) (Config, error) {
-	data, err := os.ReadFile(path)
+	data, recoveryPath, err := readConfigForLoad(path)
 	if err != nil {
-		return Config{}, fmt.Errorf("read security config: %w", err)
+		return Config{}, err
 	}
 	cfg := Default()
 	decoder := json.NewDecoder(bytes.NewReader(data))
@@ -250,7 +250,32 @@ func LoadFile(path string) (Config, error) {
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
+	if recoveryPath != "" {
+		if err := os.Rename(recoveryPath, path); err != nil {
+			return Config{}, fmt.Errorf("restore staged security config: %w", err)
+		}
+	}
 	return cfg, nil
+}
+
+// readConfigForLoad recovers the backup left by an interrupted atomic update.
+// Validation happens before the backup is restored, so malformed recovery data
+// never replaces the configured path.
+func readConfigForLoad(path string) ([]byte, string, error) {
+	data, err := os.ReadFile(path)
+	if err == nil {
+		return data, "", nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, "", fmt.Errorf("read security config: %w", err)
+	}
+
+	recoveryPath := path + ".bak"
+	data, recoveryErr := os.ReadFile(recoveryPath)
+	if recoveryErr != nil {
+		return nil, "", fmt.Errorf("read security config: %w", err)
+	}
+	return data, recoveryPath, nil
 }
 
 func (c *Config) Validate() error {

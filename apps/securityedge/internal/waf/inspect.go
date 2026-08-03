@@ -25,6 +25,15 @@ type Inspector struct {
 	maxMatches int
 }
 
+const (
+	// Raw request samples are always inspected in full up to the configured
+	// byte limits. Structured expansion is additionally bounded so a request
+	// containing thousands of JSON properties, form fields, or query keys
+	// cannot multiply into an unbounded number of regular-expression scans.
+	maxStructuredSamples  = 512
+	maxMatchLocationBytes = 256
+)
+
 func NewInspector(custom []config.CustomRuleConfig, maxMatches int) (*Inspector, error) {
 	rules, err := CompileRules(custom)
 	if err != nil {
@@ -99,7 +108,7 @@ func (i *Inspector) Inspect(req *http.Request, policy config.Policy) (Result, er
 					continue
 				}
 				result.Score += rule.Score
-				result.Matches = append(result.Matches, Match{RuleID: rule.ID, RuleName: rule.Name, Category: rule.Category, Score: rule.Score, Target: target, Location: item.location, Fingerprint: fingerprint(item.value)})
+				result.Matches = append(result.Matches, Match{RuleID: rule.ID, RuleName: rule.Name, Category: rule.Category, Score: rule.Score, Target: target, Location: boundedMatchLocation(item.location), Fingerprint: fingerprint(item.value)})
 				matched = true
 				if len(result.Matches) >= maxMatches {
 					result.MatchLimitReached = true
@@ -175,9 +184,13 @@ func querySamples(u *url.URL) []sample {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		out = append(out, sample{location: "query.name", value: normalize(key)})
+		if !appendStructuredSample(&out, sample{location: "query.name", value: normalize(key)}) {
+			break
+		}
 		for idx, value := range values[key] {
-			out = append(out, sample{location: "query.value:" + key, value: normalize(value)})
+			if !appendStructuredSample(&out, sample{location: boundedMatchLocation("query.value:" + key), value: normalize(value)}) {
+				return out
+			}
 			if idx >= 31 {
 				break
 			}
@@ -211,7 +224,7 @@ func headerSamples(h http.Header, maxFields int) []sample {
 			continue
 		}
 		for _, value := range values {
-			out = append(out, sample{location: "header:" + strings.ToLower(name), value: normalize(value)})
+			out = append(out, sample{location: boundedMatchLocation("header:" + strings.ToLower(name)), value: normalize(value)})
 			fields++
 			if fields >= maxFields {
 				return out
@@ -237,7 +250,7 @@ func cookieSamples(req *http.Request, maxHeaderFields int) []sample {
 	}
 	for idx, cookie := range req.Cookies() {
 		out = append(out, sample{location: "cookie.name", value: normalize(cookie.Name)})
-		out = append(out, sample{location: "cookie:" + cookie.Name, value: normalize(cookie.Value)})
+		out = append(out, sample{location: boundedMatchLocation("cookie:" + cookie.Name), value: normalize(cookie.Value)})
 		if idx >= 63 {
 			break
 		}
@@ -257,10 +270,20 @@ func bodySamples(body []byte, contentType string) []sample {
 		}
 	case "application/x-www-form-urlencoded":
 		if values, err := url.ParseQuery(text); err == nil {
-			for key, list := range values {
-				out = append(out, sample{location: "form.name", value: normalize(key)})
+			keys := make([]string, 0, len(values))
+			for key := range values {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				if !appendStructuredSample(&out, sample{location: "form.name", value: normalize(key)}) {
+					break
+				}
+				list := values[key]
 				for _, value := range list {
-					out = append(out, sample{location: "form.value:" + key, value: normalize(value)})
+					if !appendStructuredSample(&out, sample{location: boundedMatchLocation("form.value:" + key), value: normalize(value)}) {
+						return out
+					}
 				}
 			}
 		}
@@ -269,7 +292,7 @@ func bodySamples(body []byte, contentType string) []sample {
 }
 
 func flattenJSON(out *[]sample, path string, value any, depth int) {
-	if depth > 12 || len(*out) >= 512 {
+	if depth > 12 || len(*out) >= maxStructuredSamples {
 		return
 	}
 	switch v := value.(type) {
@@ -280,19 +303,46 @@ func flattenJSON(out *[]sample, path string, value any, depth int) {
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			*out = append(*out, sample{location: path + ".key", value: normalize(key)})
-			flattenJSON(out, path+"."+key, v[key], depth+1)
+			if !appendStructuredSample(out, sample{location: path + ".key", value: normalize(key)}) {
+				return
+			}
+			flattenJSON(out, boundedMatchLocation(path+"."+key), v[key], depth+1)
+			if len(*out) >= maxStructuredSamples {
+				return
+			}
 		}
 	case []any:
 		for idx, item := range v {
 			flattenJSON(out, path, item, depth+1)
+			if len(*out) >= maxStructuredSamples {
+				return
+			}
 			if idx >= 127 {
 				break
 			}
 		}
 	case string:
-		*out = append(*out, sample{location: path, value: normalize(v)})
+		appendStructuredSample(out, sample{location: path, value: normalize(v)})
 	}
+}
+
+func appendStructuredSample(out *[]sample, item sample) bool {
+	if len(*out) >= maxStructuredSamples {
+		return false
+	}
+	*out = append(*out, item)
+	return true
+}
+
+func boundedMatchLocation(value string) string {
+	if len(value) <= maxMatchLocationBytes {
+		return value
+	}
+	// Locations may include attacker-controlled query, form, cookie, or JSON
+	// field names. Replace an oversized location with a stable fingerprint so
+	// one match cannot inflate an in-memory or persisted security event by
+	// megabytes while still remaining correlatable for diagnostics.
+	return "oversized-field:" + fingerprint(value)
 }
 
 func requestBodyTypeAllowed(raw string, allowed []string) bool {

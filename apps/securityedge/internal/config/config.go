@@ -362,9 +362,9 @@ func (c *Config) Validate() error {
 				names := make([]string, 0, len(c.Admin.Connectivity.DNS.Names))
 				seenNames := map[string]struct{}{}
 				for _, raw := range c.Admin.Connectivity.DNS.Names {
-					name := strings.ToLower(strings.TrimSpace(raw))
-					if name == "" {
-						errs = append(errs, errors.New("admin.connectivity.dns.names cannot contain an empty domain"))
+					name, nameErr := normalizeDNSProbeName(raw)
+					if nameErr != nil {
+						errs = append(errs, fmt.Errorf("invalid admin.connectivity.dns.names entry %q: %w", raw, nameErr))
 						continue
 					}
 					if _, exists := seenNames[name]; exists {
@@ -771,6 +771,40 @@ func validateNumericPort(name, raw string, allowZero bool) error {
 		return fmt.Errorf("%s port must be between %d and 65535", name, minimum)
 	}
 	return nil
+}
+
+func normalizeDNSProbeName(raw string) (string, error) {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" {
+		return "", errors.New("empty domain is not allowed")
+	}
+	if ip := net.ParseIP(value); ip != nil {
+		return ip.String(), nil
+	}
+	if strings.ContainsAny(value, " \t\r\n\x00/\\?#@*:") {
+		return "", errors.New("must be a hostname or IP address without whitespace, wildcards, ports, or URL syntax")
+	}
+	absolute := strings.HasSuffix(value, ".")
+	core := strings.TrimSuffix(value, ".")
+	if core == "" || len(core) > 253 {
+		return "", errors.New("hostname must contain between 1 and 253 characters")
+	}
+	for _, label := range strings.Split(core, ".") {
+		if label == "" || len(label) > 63 {
+			return "", errors.New("hostname contains an empty or overlong label")
+		}
+		for index := 0; index < len(label); index++ {
+			b := label[index]
+			alnum := (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+			if !alnum && b != '-' && b != '_' {
+				return "", errors.New("hostname labels may contain only ASCII letters, digits, hyphens, and underscores")
+			}
+		}
+	}
+	if absolute {
+		return core + ".", nil
+	}
+	return core, nil
 }
 
 func isLoopback(host string) bool {

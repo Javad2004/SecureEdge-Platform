@@ -240,3 +240,48 @@ func TestReadAndRestoreTruncatedBodyPreservesCloseSemantics(t *testing.T) {
 		t.Fatal("closing the restored body did not close the original request body")
 	}
 }
+
+func TestStructuredSampleExpansionIsBounded(t *testing.T) {
+	pairs := make([]string, 2000)
+	jsonFields := make([]string, 2000)
+	for index := range pairs {
+		pairs[index] = fmt.Sprintf("k%d=v%d", index, index)
+		jsonFields[index] = fmt.Sprintf("%q:%q", fmt.Sprintf("k%d", index), fmt.Sprintf("v%d", index))
+	}
+
+	queryRequest := httptest.NewRequest("GET", "http://project.test/?"+strings.Join(pairs, "&"), nil)
+	if samples := querySamples(queryRequest.URL); len(samples) > maxStructuredSamples {
+		t.Fatalf("query expansion produced %d samples; limit is %d", len(samples), maxStructuredSamples)
+	}
+	if samples := bodySamples([]byte(strings.Join(pairs, "&")), "application/x-www-form-urlencoded"); len(samples) > maxStructuredSamples {
+		t.Fatalf("form expansion produced %d samples; limit is %d", len(samples), maxStructuredSamples)
+	}
+	if samples := bodySamples([]byte("{"+strings.Join(jsonFields, ",")+"}"), "application/json"); len(samples) > maxStructuredSamples {
+		t.Fatalf("JSON expansion produced %d samples; limit is %d", len(samples), maxStructuredSamples)
+	}
+}
+
+func TestOversizedStructuredLocationIsFingerprinted(t *testing.T) {
+	key := strings.Repeat("field", 300)
+	body := fmt.Sprintf(`{%q:"\u003cscript\u003e"}`, key)
+	req := httptest.NewRequest("POST", "http://project.test/submit", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	got, err := inspector(t).Inspect(req, config.Default().DefaultPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, match := range got.Matches {
+		if match.RuleID != "XSS-001" {
+			continue
+		}
+		if !strings.HasPrefix(match.Location, "oversized-field:") {
+			t.Fatalf("oversized location was not fingerprinted: %q", match.Location)
+		}
+		if len(match.Location) > maxMatchLocationBytes {
+			t.Fatalf("fingerprinted location is too large: %d", len(match.Location))
+		}
+		return
+	}
+	t.Fatalf("expected decoded JSON string to match XSS-001: %#v", got.Matches)
+}

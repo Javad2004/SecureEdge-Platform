@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -394,5 +395,44 @@ func TestValidateRejectsUnknownServicePorts(t *testing.T) {
 				t.Fatalf("expected unknown-service validation error, got %v", err)
 			}
 		})
+	}
+}
+
+func TestValidateRejectsMalformedConnectivityDNSNames(t *testing.T) {
+	for _, name := range []string{
+		"bad name",
+		"project.test:53",
+		"https://project.test",
+		"*.project.test",
+		"project..test",
+		"project.test/path",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Server.Mode = "embedded"
+			cfg.EdgeProxy.ConfigPath = "edge.json"
+			cfg.Admin.Connectivity.DNS.Enabled = true
+			cfg.Admin.Connectivity.DNS.Server = "127.0.0.1:53"
+			cfg.Admin.Connectivity.DNS.Names = []string{name}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "dns.names") {
+				t.Fatalf("expected malformed DNS name %q to be rejected, got %v", name, err)
+			}
+		})
+	}
+}
+
+func TestValidateAllowsAbsoluteAndUnderscoredDNSNames(t *testing.T) {
+	cfg := Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Admin.Connectivity.DNS.Enabled = true
+	cfg.Admin.Connectivity.DNS.Server = "127.0.0.1:53"
+	cfg.Admin.Connectivity.DNS.Names = []string{" Project.TEST. ", "_health.project.test"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected valid DNS probe names to be accepted: %v", err)
+	}
+	want := []string{"project.test.", "_health.project.test"}
+	if !reflect.DeepEqual(cfg.Admin.Connectivity.DNS.Names, want) {
+		t.Fatalf("DNS names=%#v want %#v", cfg.Admin.Connectivity.DNS.Names, want)
 	}
 }

@@ -56,6 +56,8 @@ type Runtime interface {
 
 const maxTrackedAuthClients = 4096
 
+var errAdminRequestBodyTooLarge = errors.New("admin request body too large")
+
 type authFailure struct {
 	count                    int
 	windowStart, lockedUntil time.Time
@@ -282,7 +284,7 @@ func (s *Server) policies(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) updateDefaultPolicy(w http.ResponseWriter, r *http.Request) {
 	var p config.Policy
 	if err := s.decodeJSON(r, &p); err != nil {
-		writeError(w, 400, "invalid_body", err.Error())
+		writeAdminDecodeError(w, err)
 		return
 	}
 	if err := s.runtime.UpdateDefaultPolicy(p); err != nil {
@@ -300,7 +302,7 @@ func (s *Server) updateRoutePolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	var p config.Policy
 	if err := s.decodeJSON(r, &p); err != nil {
-		writeError(w, 400, "invalid_body", err.Error())
+		writeAdminDecodeError(w, err)
 		return
 	}
 	if err := s.runtime.UpdateRoutePolicy(route, p); err != nil {
@@ -533,7 +535,7 @@ func (s *Server) decodeJSON(r *http.Request, v any) error {
 		return err
 	}
 	if int64(len(data)) > maxBody {
-		return fmt.Errorf("request body exceeds %d bytes", maxBody)
+		return fmt.Errorf("%w: request body exceeds %d bytes", errAdminRequestBodyTooLarge, maxBody)
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -548,6 +550,14 @@ func (s *Server) decodeJSON(r *http.Request, v any) error {
 	}
 	return nil
 }
+func writeAdminDecodeError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errAdminRequestBodyTooLarge) {
+		writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", err.Error())
+		return
+	}
+	writeError(w, http.StatusBadRequest, "invalid_body", err.Error())
+}
+
 func requestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimSpace(r.Header.Get("X-Request-ID"))

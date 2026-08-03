@@ -1646,3 +1646,59 @@ func TestConfiguredClientIPHeaderIsNotForwardedToOrigin(t *testing.T) {
 		t.Fatalf("canonical forwarded client IP=%q", forwarded)
 	}
 }
+
+type blockingFillLocker struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (l *blockingFillLocker) Lock(string) func() {
+	close(l.entered)
+	<-l.release
+	return func() {}
+}
+
+func TestCacheFillWaiterDoesNotServePurgedStaleEntry(t *testing.T) {
+	cfg := testConfig("http://127.0.0.1:1").Routes[0]
+	rt := &routeRuntime{
+		cfg:   &cfg,
+		pool:  &upstreamPool{},
+		cache: cache.New(cfg.Cache.MaxEntries, cfg.Cache.MaxBytes),
+		fills: &blockingFillLocker{entered: make(chan struct{}), release: make(chan struct{})},
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/purged-stale", nil)
+	key := cacheKey(req, cfg.Cache)
+	now := time.Now()
+	if !rt.cache.Set(key, cache.Entry{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/plain"}},
+		Body:       []byte("stale-body"),
+		StoredAt:   now.Add(-2 * time.Minute),
+		ExpiresAt:  now.Add(-time.Minute),
+		StaleUntil: now.Add(time.Minute),
+	}) {
+		t.Fatal("store stale cache entry")
+	}
+
+	h := &Handler{logger: slog.New(slog.NewTextHandler(io.Discard, nil)), metrics: metrics.New()}
+	recorder := httptest.NewRecorder()
+	done := make(chan requestResult, 1)
+	go func() {
+		done <- h.handleRoute(recorder, req, rt, "request-id")
+	}()
+
+	locker := rt.fills.(*blockingFillLocker)
+	<-locker.entered // The first stale lookup completed; the request is waiting for the fill lock.
+	if !rt.cache.Delete(key) {
+		t.Fatal("purge stale cache entry")
+	}
+	close(locker.release)
+	result := <-done
+
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d cache=%q body=%q, want 502 after purge", recorder.Code, recorder.Header().Get("X-Cache"), recorder.Body.String())
+	}
+	if result.cacheStatus == "STALE" || recorder.Header().Get("X-Cache") == "STALE" {
+		t.Fatalf("purged stale entry was served: result=%+v headers=%v", result, recorder.Header())
+	}
+}

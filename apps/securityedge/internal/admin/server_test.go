@@ -357,3 +357,49 @@ func TestAuthFailureCapacityPreservesActiveLockouts(t *testing.T) {
 		t.Fatal("active lockout was evicted before its expiry")
 	}
 }
+
+func TestPolicyUpdateRejectsOversizedAdminBodyWith413(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Admin.AuthToken = "secret-token"
+	cfg.Admin.MaxRequestBodyBytes = 32
+	inspector, err := waf.NewInspector(nil, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(cfg.Admin, &fakeRuntime{cfg: cfg}, metrics.New(), securitylog.New(100), traffic.New(100, time.Minute), inspector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(s.HTTPServer().Handler)
+	defer ts.Close()
+
+	body := strings.NewReader(`{"enabled":true,"padding":"` + strings.Repeat("x", 128) + `"}`)
+	req, err := http.NewRequest(http.MethodPut, ts.URL+"/api/v1/policies/default", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer secret-token")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%d body=%q, want 413", resp.StatusCode, payload)
+	}
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error.Code != "body_too_large" {
+		t.Fatalf("error code=%q, want body_too_large", payload.Error.Code)
+	}
+}

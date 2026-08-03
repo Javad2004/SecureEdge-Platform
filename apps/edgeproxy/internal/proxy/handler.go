@@ -21,11 +21,15 @@ import (
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/router"
 )
 
+type cacheFillLocker interface {
+	Lock(string) func()
+}
+
 type routeRuntime struct {
 	cfg   *config.RouteConfig
 	pool  *upstreamPool
 	cache *cache.Cache
-	fills *cache.KeyLocker
+	fills cacheFillLocker
 }
 
 type Handler struct {
@@ -223,6 +227,11 @@ func (h *Handler) handleRoute(w http.ResponseWriter, req *http.Request, rt *rout
 
 	unlock := rt.fills.Lock(key)
 	defer unlock()
+	// The cache may change while this request waits behind another fill. Discard
+	// the pre-lock stale snapshot and rebuild the candidate from the current cache
+	// state so an admin purge, expiry, or replacement cannot be bypassed by a
+	// stale pointer retained from the first lookup.
+	stale = nil
 	if lookup {
 		now = time.Now()
 		entry, fresh, isStale := rt.cache.Get(key, now)

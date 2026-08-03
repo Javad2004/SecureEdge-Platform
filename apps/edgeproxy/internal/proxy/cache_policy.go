@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/cache"
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
 )
 
@@ -90,6 +91,31 @@ func cacheKeyRequest(key string) (host, requestURI string, ok bool) {
 		return "", "", false
 	}
 	return host, requestURI, true
+}
+
+// requestAllowsCachedEntry applies request-side freshness constraints to a
+// candidate cache entry. A client Cache-Control max-age value limits the
+// acceptable current age even when the response remains fresh according to the
+// Origin's longer lifetime. Invalid values are ignored as malformed extension
+// input, while max-age=0 is already handled by requestCacheMode as revalidation.
+func requestAllowsCachedEntry(req *http.Request, entry cache.Entry, now time.Time) bool {
+	if req == nil {
+		return true
+	}
+	directives := parseCacheControl(req.Header.Values("Cache-Control"))
+	raw, exists := directives["max-age"]
+	if !exists {
+		return true
+	}
+	seconds, valid := cacheDeltaSeconds(raw)
+	if !valid {
+		return true
+	}
+	age := now.Sub(entry.StoredAt)
+	if age < 0 {
+		age = 0
+	}
+	return age <= time.Duration(seconds)*time.Second
 }
 
 func requestCacheMode(req *http.Request, cfg config.CacheConfig) (lookup, store bool, reason string) {

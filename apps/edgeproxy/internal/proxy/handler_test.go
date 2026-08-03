@@ -1401,6 +1401,66 @@ func TestPurgeCacheRejectsAmbiguousPathPrefix(t *testing.T) {
 	}
 }
 
+func TestRequestAllowsCachedEntryHonorsPositiveMaxAge(t *testing.T) {
+	now := time.Now()
+	entry := cache.Entry{StoredAt: now.Add(-30 * time.Second)}
+	tests := []struct {
+		name    string
+		header  string
+		allowed bool
+	}{
+		{name: "no constraint", allowed: true},
+		{name: "younger than limit", header: "max-age=40", allowed: true},
+		{name: "older than limit", header: "max-age=10", allowed: false},
+		{name: "invalid constraint ignored", header: "max-age=invalid", allowed: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://proxy.test/resource", nil)
+			if tc.header != "" {
+				req.Header.Set("Cache-Control", tc.header)
+			}
+			if got := requestAllowsCachedEntry(req, entry, now); got != tc.allowed {
+				t.Fatalf("allowed=%v, want %v", got, tc.allowed)
+			}
+		})
+	}
+}
+
+func TestRequestMaxAgeRejectsOlderFreshEntry(t *testing.T) {
+	var calls atomic.Int64
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		call := calls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("Age", "30")
+		_, _ = fmt.Fprintf(w, "origin-%d", call)
+	}))
+	defer origin.Close()
+
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	first := httptest.NewRecorder()
+	h.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "http://proxy.test/max-age", nil))
+	if first.Code != http.StatusOK || first.Header().Get("X-Cache") != "MISS" || first.Body.String() != "origin-1" {
+		t.Fatalf("first response: code=%d cache=%q body=%q", first.Code, first.Header().Get("X-Cache"), first.Body.String())
+	}
+
+	secondReq := httptest.NewRequest(http.MethodGet, "http://proxy.test/max-age", nil)
+	secondReq.Header.Set("Cache-Control", "max-age=10")
+	second := httptest.NewRecorder()
+	h.ServeHTTP(second, secondReq)
+	if second.Code != http.StatusOK || second.Header().Get("X-Cache") != "MISS" || second.Body.String() != "origin-2" {
+		t.Fatalf("bounded-age response: code=%d cache=%q body=%q", second.Code, second.Header().Get("X-Cache"), second.Body.String())
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("origin calls=%d, want 2 because cached age exceeds request max-age", got)
+	}
+}
+
 func TestRequestCacheModeTreatsZeroPaddedMaxAgeAsRevalidation(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/resource", nil)
 	req.Header.Set("Cache-Control", "max-age=000")

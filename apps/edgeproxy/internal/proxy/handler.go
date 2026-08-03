@@ -211,11 +211,12 @@ func (h *Handler) handleRoute(w http.ResponseWriter, req *http.Request, rt *rout
 	var stale *cache.Entry
 	if lookup {
 		entry, fresh, isStale := rt.cache.Get(key, now)
-		if fresh {
+		allowed := requestAllowsCachedEntry(req, entry, now)
+		if fresh && allowed {
 			serveCacheEntry(w, req, entry, "HIT", now)
 			return requestResult{cacheStatus: "HIT"}
 		}
-		if isStale {
+		if isStale && allowed {
 			stale = &entry
 		}
 	}
@@ -223,12 +224,14 @@ func (h *Handler) handleRoute(w http.ResponseWriter, req *http.Request, rt *rout
 	unlock := rt.fills.Lock(key)
 	defer unlock()
 	if lookup {
-		entry, fresh, isStale := rt.cache.Get(key, time.Now())
-		if fresh {
-			serveCacheEntry(w, req, entry, "HIT", time.Now())
+		now = time.Now()
+		entry, fresh, isStale := rt.cache.Get(key, now)
+		allowed := requestAllowsCachedEntry(req, entry, now)
+		if fresh && allowed {
+			serveCacheEntry(w, req, entry, "HIT", now)
 			return requestResult{cacheStatus: "HIT"}
 		}
-		if isStale {
+		if isStale && allowed {
 			stale = &entry
 		}
 	}

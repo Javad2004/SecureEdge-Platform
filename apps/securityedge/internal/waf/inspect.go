@@ -205,6 +205,36 @@ func headerSamples(req *http.Request, maxFields int) []sample {
 	}
 	out := make([]sample, 0, minInt(maxFields*2, 512))
 	fields := 0
+	appendFields := func(header http.Header, nameLocation, valuePrefix string) bool {
+		keys := make([]string, 0, len(header))
+		for key := range header {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, name := range keys {
+			if strings.EqualFold(name, "Authorization") || strings.EqualFold(name, "Proxy-Authorization") || strings.EqualFold(name, "Cookie") {
+				continue
+			}
+			out = append(out, sample{location: nameLocation, value: name})
+			values := header.Values(name)
+			if len(values) == 0 {
+				fields++
+				if fields >= maxFields {
+					return false
+				}
+				continue
+			}
+			for _, value := range values {
+				out = append(out, sample{location: boundedMatchLocation(valuePrefix + strings.ToLower(name)), value: normalize(value)})
+				fields++
+				if fields >= maxFields {
+					return false
+				}
+			}
+		}
+		return true
+	}
+
 	// net/http promotes Host out of Request.Header into Request.Host. It remains
 	// a client-controlled HTTP header and must be inspected by rules targeting
 	// headers, especially for wildcard routes that can forward the original Host
@@ -223,33 +253,14 @@ func headerSamples(req *http.Request, maxFields int) []sample {
 	if req == nil {
 		return out
 	}
-	h := req.Header
-	keys := make([]string, 0, len(h))
-	for key := range h {
-		keys = append(keys, key)
+	if !appendFields(req.Header, "header.name", "header:") {
+		return out
 	}
-	sort.Strings(keys)
-	for _, name := range keys {
-		if strings.EqualFold(name, "Authorization") || strings.EqualFold(name, "Proxy-Authorization") || strings.EqualFold(name, "Cookie") {
-			continue
-		}
-		out = append(out, sample{location: "header.name", value: name})
-		values := h.Values(name)
-		if len(values) == 0 {
-			fields++
-			if fields >= maxFields {
-				break
-			}
-			continue
-		}
-		for _, value := range values {
-			out = append(out, sample{location: boundedMatchLocation("header:" + strings.ToLower(name)), value: normalize(value)})
-			fields++
-			if fields >= maxFields {
-				return out
-			}
-		}
-	}
+	// HTTP trailers are application-visible header fields delivered after the
+	// request body. The gateway stages trailer-bearing requests to EOF before WAF
+	// inspection, so their populated values must be evaluated under the same
+	// rules and field cap as ordinary headers.
+	appendFields(req.Trailer, "trailer.name", "trailer:")
 	return out
 }
 

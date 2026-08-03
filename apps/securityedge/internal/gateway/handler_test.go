@@ -557,3 +557,124 @@ func TestDownstreamBodyLimitViolationIsRecordedAndAutoBanned(t *testing.T) {
 		t.Fatal("oversized streamed body was not counted toward automatic banning")
 	}
 }
+
+func TestTrailerFieldsCountTowardHeaderLimit(t *testing.T) {
+	policy := config.Default().DefaultPolicy
+	policy.RateLimit.Enabled = false
+	policy.MaxHeaderCount = 2
+	h := newTestHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next called for an over-limit trailer set")
+	}), policy)
+
+	req := httptest.NewRequest(http.MethodPost, "http://project.test/upload", strings.NewReader("payload"))
+	req.ContentLength = -1
+	req.Trailer = http.Header{"X-First": nil, "X-Second": nil}
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, req)
+	if response.Code != http.StatusRequestHeaderFieldsTooLarge || !strings.Contains(response.Body.String(), "too_many_headers") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestChunkedTrailerValueLimitIsEnforcedAfterStaging(t *testing.T) {
+	policy := config.Default().DefaultPolicy
+	policy.RateLimit.Enabled = false
+	policy.InspectRequestBody = false
+	policy.MaxHeaderValueBytes = 32
+	called := false
+	h := newTestHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}), policy)
+	server := httptest.NewServer(h)
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/upload", strings.NewReader("payload"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "project.test"
+	req.ContentLength = -1
+	req.Header.Set("User-Agent", "test")
+	req.Trailer = http.Header{"X-Large-Trailer": {strings.Repeat("x", 64)}}
+	response, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusRequestHeaderFieldsTooLarge || !strings.Contains(string(body), "header_value_too_large") || called {
+		t.Fatalf("status=%d called=%v body=%s", response.StatusCode, called, body)
+	}
+}
+
+func TestChunkedMaliciousTrailerIsBlockedBeforeDownstream(t *testing.T) {
+	policy := config.Default().DefaultPolicy
+	policy.RateLimit.Enabled = false
+	policy.InspectRequestBody = false
+	policy.AnomalyThreshold = 3
+	called := false
+	h := newTestHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}), policy)
+	server := httptest.NewServer(h)
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/upload", strings.NewReader("payload"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "project.test"
+	req.ContentLength = -1
+	req.Header.Set("User-Agent", "test")
+	req.Trailer = http.Header{"X-Scanner": {"sqlmap"}}
+	response, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusForbidden || response.Header.Get("X-Security-Action") != "BLOCK" || called {
+		t.Fatalf("status=%d action=%q called=%v body=%s", response.StatusCode, response.Header.Get("X-Security-Action"), called, body)
+	}
+}
+
+func TestParserRejectedOversizedTrailerReturns431(t *testing.T) {
+	policy := config.Default().DefaultPolicy
+	policy.RateLimit.Enabled = false
+	policy.InspectRequestBody = false
+	called := false
+	h := newTestHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}), policy)
+	server := httptest.NewServer(h)
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/upload", strings.NewReader("payload"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "project.test"
+	req.ContentLength = -1
+	req.Header.Set("User-Agent", "test")
+	// net/http deliberately rejects a trailer block larger than its bounded
+	// parser buffer before exposing the value in Request.Trailer.
+	req.Trailer = http.Header{"X-Large-Trailer": {strings.Repeat("x", 9000)}}
+	response, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusRequestHeaderFieldsTooLarge || !strings.Contains(string(body), "header_value_too_large") || called {
+		t.Fatalf("status=%d called=%v body=%s", response.StatusCode, called, body)
+	}
+}

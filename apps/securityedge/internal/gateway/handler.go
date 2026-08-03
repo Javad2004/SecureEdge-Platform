@@ -31,6 +31,8 @@ import (
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/waf"
 )
 
+var errRequestTrailerTooLarge = errors.New("request trailer exceeds HTTP parser limit")
+
 type resolvedClientIPKey struct{}
 
 // ResolvedClientIP returns the client address selected by the trusted-proxy
@@ -127,10 +129,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return true
 		}
 		bodyPrepared = true
-		if req.ContentLength < 0 && requestHasBody(req) {
+		if requestNeedsBodyStaging(req) {
 			var tooLarge bool
 			var err error
-			stagedBody, tooLarge, err = stageUnknownLengthBody(req, serverCfg.MaxRequestBodyBytes)
+			stagedBody, tooLarge, err = stageRequestBody(req, serverCfg.MaxRequestBodyBytes)
 			if tooLarge {
 				action, reason, status = "BLOCK", "body_too_large", http.StatusRequestEntityTooLarge
 				autoBanned, _ = h.recordViolation(client, policy, time.Now())
@@ -139,10 +141,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				return false
 			}
 			if err != nil {
+				if errors.Is(err, errRequestTrailerTooLarge) {
+					action, reason, status = "BLOCK", "header_value_too_large", http.StatusRequestHeaderFieldsTooLarge
+					autoBanned, _ = h.recordViolation(client, policy, time.Now())
+					setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
+					writeBlocked(w, status, "header_value_too_large", requestID)
+					return false
+				}
 				processingErr = err
 				action, reason, status = "BLOCK", "body_read_failed", http.StatusBadRequest
 				setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
 				writeBlocked(w, status, "body_read_failed", requestID)
+				return false
+			}
+			// Trailer values are populated only after the request body reaches EOF.
+			// Re-run request-shape validation after staging so repeated or oversized
+			// trailer fields cannot bypass the configured header limits.
+			if code, rejectReason := validateRequestShape(req, policy, serverCfg); code != 0 {
+				action, reason, status = "BLOCK", rejectReason, code
+				autoBanned, _ = h.recordViolation(client, policy, time.Now())
+				setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
+				writeBlocked(w, status, rejectReason, requestID)
 				return false
 			}
 		}
@@ -321,14 +340,15 @@ func removeTemporaryFile(path string) error {
 	return nil
 }
 
-// stageUnknownLengthBody makes the global request-body limit authoritative
-// before downstream code can commit a success response. Go cannot know the
-// size of a chunked request from headers alone, and an embedded handler may
-// write a response before reading the body. Spooling the bounded body to a
-// private temporary file avoids unbounded memory use while preserving the
-// original streaming interface for the downstream handler.
-func stageUnknownLengthBody(req *http.Request, maxBytes int64) (*temporaryRequestBody, bool, error) {
-	if req == nil || req.Body == nil || req.Body == http.NoBody || req.ContentLength >= 0 || maxBytes <= 0 {
+// stageRequestBody makes the global request-body limit authoritative before
+// downstream code can commit a success response. Unknown-length bodies must be
+// staged because their size is not available in headers. Requests that declare
+// HTTP trailers are staged as well so trailer values are populated and can be
+// validated and inspected before they reach the downstream handler. Spooling
+// to a private temporary file avoids unbounded memory use while preserving the
+// original streaming interface.
+func stageRequestBody(req *http.Request, maxBytes int64) (*temporaryRequestBody, bool, error) {
+	if req == nil || req.Body == nil || req.Body == http.NoBody || maxBytes <= 0 {
 		return nil, false, nil
 	}
 	original := req.Body
@@ -343,6 +363,10 @@ func stageUnknownLengthBody(req *http.Request, maxBytes int64) (*temporaryReques
 	}
 	written, copyErr := io.Copy(file, io.LimitReader(original, maxBytes+1))
 	closeErr := original.Close()
+	if copyErr != nil && strings.Contains(copyErr.Error(), "suspiciously long trailer after chunked body") {
+		cleanup()
+		return nil, false, fmt.Errorf("%w: %v", errRequestTrailerTooLarge, copyErr)
+	}
 	var maxErr *http.MaxBytesError
 	if errors.As(copyErr, &maxErr) {
 		cleanup()
@@ -402,10 +426,12 @@ func validateRequestShape(req *http.Request, policy config.Policy, server config
 	if len(req.Host) > policy.MaxHeaderValueBytes {
 		return http.StatusRequestHeaderFieldsTooLarge, "header_value_too_large"
 	}
-	for _, values := range req.Header {
-		for _, value := range values {
-			if len(value) > policy.MaxHeaderValueBytes {
-				return http.StatusRequestHeaderFieldsTooLarge, "header_value_too_large"
+	for _, fields := range []http.Header{req.Header, req.Trailer} {
+		for _, values := range fields {
+			for _, value := range values {
+				if len(value) > policy.MaxHeaderValueBytes {
+					return http.StatusRequestHeaderFieldsTooLarge, "header_value_too_large"
+				}
 			}
 		}
 	}
@@ -446,7 +472,9 @@ func requestHeaderFieldCount(req *http.Request) int {
 	if req == nil {
 		return 0
 	}
-	count := headerFieldCount(req.Header)
+	count := headerFieldCount(req.Header) + headerFieldCount(req.Trailer)
+	// Trailer keys are available before the body is read; their values are
+	// populated at EOF and are counted by the second validation after staging.
 	// net/http promotes Host out of Header into Request.Host for server-side
 	// requests. It is still a client-supplied header field and must count toward
 	// the configured policy limit.
@@ -458,6 +486,13 @@ func requestHeaderFieldCount(req *http.Request) int {
 
 func requestHasBody(req *http.Request) bool {
 	return req.Body != nil && req.Body != http.NoBody && req.ContentLength != 0
+}
+
+func requestNeedsBodyStaging(req *http.Request) bool {
+	if req == nil || req.Body == nil || req.Body == http.NoBody {
+		return false
+	}
+	return req.ContentLength < 0 || len(req.Trailer) > 0
 }
 
 func contentTypeAllowed(raw string, allowed []string) bool {

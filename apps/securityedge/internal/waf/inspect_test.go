@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -326,4 +327,21 @@ func TestHostCountsTowardHeaderInspectionLimit(t *testing.T) {
 	if len(samples) != 2 || samples[0].value != "Host" || samples[1].location != "header:host" {
 		t.Fatalf("unexpected samples at one-field limit: %#v", samples)
 	}
+}
+
+func TestTrailerValuesAreInspectedAsHeaders(t *testing.T) {
+	req := httptest.NewRequest("POST", "http://project.test/upload", strings.NewReader("payload"))
+	req.ContentLength = -1
+	req.Trailer = http.Header{"X-Scanner": {"sqlmap"}}
+
+	got, err := inspector(t).Inspect(req, config.Default().DefaultPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, match := range got.Matches {
+		if match.RuleID == "SCAN-001" && match.Target == "headers" && match.Location == "trailer:x-scanner" {
+			return
+		}
+	}
+	t.Fatalf("malicious trailer was not inspected as a header: %#v", got.Matches)
 }

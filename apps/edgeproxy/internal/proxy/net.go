@@ -43,12 +43,12 @@ func (r *clientResolver) Resolve(req *http.Request) string {
 	if r == nil || !trustedIP(remote, r.trusted) {
 		return remote.String()
 	}
-	parts := strings.Split(req.Header.Get(r.header), ",")
-	chain := make([]net.IP, 0, len(parts)+1)
-	for _, raw := range parts {
-		if ip := net.ParseIP(strings.TrimSpace(raw)); ip != nil {
-			chain = append(chain, ip)
-		}
+	chain, valid := parseForwardedIPChain(req.Header.Values(r.header))
+	if !valid {
+		// A malformed forwarding chain has no safe trust boundary. Fall back to
+		// the directly connected trusted proxy instead of skipping invalid fields
+		// and potentially accepting a spoofed address farther to the left.
+		return remote.String()
 	}
 	chain = append(chain, remote)
 	for i := len(chain) - 1; i >= 0; i-- {
@@ -60,6 +60,24 @@ func (r *clientResolver) Resolve(req *http.Request) string {
 		return chain[0].String()
 	}
 	return remote.String()
+}
+
+func parseForwardedIPChain(values []string) ([]net.IP, bool) {
+	chain := make([]net.IP, 0, len(values))
+	for _, value := range values {
+		for _, raw := range strings.Split(value, ",") {
+			token := strings.TrimSpace(raw)
+			if token == "" {
+				return nil, false
+			}
+			ip := net.ParseIP(token)
+			if ip == nil {
+				return nil, false
+			}
+			chain = append(chain, ip)
+		}
+	}
+	return chain, true
 }
 
 func trustedIP(ip net.IP, networks []*net.IPNet) bool {

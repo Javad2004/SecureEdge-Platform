@@ -267,9 +267,10 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 			status = resp.StatusCode
 			result.upstreamStatus = status
 		}
-		failed := err != nil || (resp != nil && retryableStatus(resp.StatusCode))
+		retryableResponse := err == nil && resp != nil && retryableStatus(resp.StatusCode)
+		failed := err != nil || retryableResponse
 		attemptErr := err
-		if attemptErr == nil && resp != nil && retryableStatus(resp.StatusCode) {
+		if retryableResponse {
 			attemptErr = fmt.Errorf("upstream returned %s", resp.Status)
 		}
 		timedOut := isTimeoutError(err)
@@ -291,15 +292,15 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 			break
 		}
 
-		if resp != nil && resp.Body != nil {
-			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
-			resp.Body.Close()
-		}
-
 		// A cancellation or deadline inherited from the client request does not
 		// indicate an origin failure. Preserve the origin's health and stop here:
 		// every retry would inherit the same already-terminated context.
 		if err != nil && req.Context().Err() != nil {
+			if resp != nil && resp.Body != nil {
+				_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+				_ = resp.Body.Close()
+				resp = nil
+			}
 			lastErr = req.Context().Err()
 			result.errorMessage = errorText(lastErr)
 			break
@@ -310,6 +311,21 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		excluded[node] = true
 		if node.healthy.Swap(false) {
 			h.recordHealthChange(rt.cfg.Name, healthChange{Upstream: node.url.String(), Healthy: false, Status: status, Duration: elapsed, Error: errorText(lastErr)})
+		}
+
+		canRetry := attempt+1 < attempts
+		if retryableResponse && !canRetry {
+			// The Origin produced a complete HTTP response. Once retries are exhausted,
+			// preserve its status, headers, and body instead of replacing useful 502,
+			// 503, or 504 semantics with a generic proxy-generated 502 response.
+			lastErr = nil
+			result.errorMessage = ""
+			break
+		}
+		if resp != nil && resp.Body != nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+			resp.Body.Close()
+			resp = nil
 		}
 
 		// The route-wide timeout applies to the whole request, not each retry. Once

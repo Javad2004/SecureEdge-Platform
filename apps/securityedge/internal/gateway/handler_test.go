@@ -363,6 +363,32 @@ func TestInspectionMaxBytesErrorReturnsPayloadTooLarge(t *testing.T) {
 	}
 }
 
+func TestDownstreamBodyLimitViolationWithoutResponseIsForcedToPayloadTooLarge(t *testing.T) {
+	policy := config.Default().DefaultPolicy
+	policy.RateLimit.Enabled = false
+	policy.InspectRequestBody = false
+	server := config.Default().Server
+	server.MaxRequestBodyBytes = 8
+
+	next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		// An embedded downstream may observe the read error and return without
+		// committing a response. The runtime must still finalize the violation.
+	})
+	h, _ := newTestHandlerWithServerAndTraffic(t, next, policy, server)
+
+	req := httptest.NewRequest(http.MethodPost, "http://project.test/upload", strings.NewReader(strings.Repeat("x", 32)))
+	req.ContentLength = -1
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, req)
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if action := response.Header().Get("X-Security-Action"); action != "BLOCK" {
+		t.Fatalf("X-Security-Action=%q, want BLOCK", action)
+	}
+}
+
 func TestDownstreamBodyLimitViolationIsRecordedAndAutoBanned(t *testing.T) {
 	policy := config.Default().DefaultPolicy
 	policy.RateLimit.Enabled = false
@@ -379,7 +405,9 @@ func TestDownstreamBodyLimitViolationIsRecordedAndAutoBanned(t *testing.T) {
 		_, err := io.Copy(io.Discard, r.Body)
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			// Runtime policy owns the global body limit. Even if an embedded
+			// downstream maps the read error incorrectly, the edge must emit 413.
+			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)

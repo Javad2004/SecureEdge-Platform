@@ -153,12 +153,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		securityDuration = time.Since(started)
 		writer := &decisionWriter{ResponseWriter: w, requestID: requestID, action: action, score: score, addSecurityHeaders: serverCfg.AddSecurityHeaders, bodyLimit: bodyLimit}
 		h.next.ServeHTTP(writer, req)
-		status = writer.Status()
-		cacheStatus = writer.Header().Get("X-Cache")
-		if bodyLimitExceeded(bodyLimit, status) {
+		if writer.EnforceBodyLimit() {
 			action, reason = "BLOCK", "body_too_large"
 			autoBanned, _ = h.recordViolation(client, policy, time.Now())
 		}
+		status = writer.Status()
+		cacheStatus = writer.Header().Get("X-Cache")
 		return
 	}
 	if ipMatches(client, policy.IPDenylist) {
@@ -234,12 +234,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	securityDuration = time.Since(started)
 	writer := &decisionWriter{ResponseWriter: w, requestID: requestID, action: action, score: score, addSecurityHeaders: serverCfg.AddSecurityHeaders, bodyLimit: bodyLimit}
 	h.next.ServeHTTP(writer, req)
-	status = writer.Status()
-	cacheStatus = writer.Header().Get("X-Cache")
-	if bodyLimitExceeded(bodyLimit, status) {
+	if writer.EnforceBodyLimit() {
 		action, reason = "BLOCK", "body_too_large"
 		autoBanned, _ = h.recordViolation(client, policy, time.Now())
 	}
+	status = writer.Status()
+	cacheStatus = writer.Header().Get("X-Cache")
 }
 
 type trackedRequestBody struct {
@@ -265,8 +265,8 @@ func trackRequestBodyLimit(w http.ResponseWriter, req *http.Request, maxBytes in
 	return tracked
 }
 
-func bodyLimitExceeded(body *trackedRequestBody, status int) bool {
-	return body != nil && body.exceeded.Load() && status == http.StatusRequestEntityTooLarge
+func requestBodyLimitExceeded(body *trackedRequestBody) bool {
+	return body != nil && body.exceeded.Load()
 }
 
 func validateRequestShape(req *http.Request, policy config.Policy, server config.ServerConfig) (int, string) {
@@ -393,6 +393,16 @@ func (w *decisionWriter) Status() int {
 	}
 	return w.status
 }
+func (w *decisionWriter) EnforceBodyLimit() bool {
+	if !requestBodyLimitExceeded(w.bodyLimit) {
+		return false
+	}
+	w.action = "BLOCK"
+	if w.status == 0 {
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+	}
+	return true
+}
 func (w *decisionWriter) WriteHeader(status int) {
 	// HTTP permits multiple informational responses before one final response.
 	// Forward 1xx statuses without latching them as the request's final status;
@@ -405,7 +415,8 @@ func (w *decisionWriter) WriteHeader(status int) {
 	if w.status != 0 {
 		return
 	}
-	if bodyLimitExceeded(w.bodyLimit, status) {
+	if requestBodyLimitExceeded(w.bodyLimit) {
+		status = http.StatusRequestEntityTooLarge
 		w.action = "BLOCK"
 	}
 	w.status = status
@@ -430,9 +441,8 @@ func (w *decisionWriter) ReadFrom(reader io.Reader) (int64, error) {
 func (w *decisionWriter) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		if w.status == 0 {
-			w.status = http.StatusOK
+			w.WriteHeader(http.StatusOK)
 		}
-		setBaseHeaders(w.Header(), w.requestID, w.action, w.score, w.addSecurityHeaders)
 		f.Flush()
 	}
 }

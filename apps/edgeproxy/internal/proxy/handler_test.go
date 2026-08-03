@@ -220,6 +220,41 @@ func TestRetryOnTemporaryUpstreamFailure(t *testing.T) {
 	}
 }
 
+func TestFinalRetryableOriginResponseIsForwarded(t *testing.T) {
+	var calls atomic.Int64
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		call := calls.Add(1)
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = fmt.Fprintf(w, "temporary-%d", call)
+	}))
+	defer origin.Close()
+
+	cfg := testConfig(origin.URL)
+	cfg.Routes[0].Cache.Enabled = false
+	cfg.Routes[0].Proxy.RetryCount = 1
+	h, err := NewHandler(cfg, slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://proxy.test/unavailable", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != "temporary-2" {
+		t.Fatalf("body=%q, want final Origin response", got)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "7" {
+		t.Fatalf("Retry-After=%q", got)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("origin calls=%d, want 2", got)
+	}
+}
+
 func TestStaleIfError(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=1")

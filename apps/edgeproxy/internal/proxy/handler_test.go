@@ -410,6 +410,126 @@ func TestCookieRangeAndUnsupportedVaryBypass(t *testing.T) {
 	}
 }
 
+func TestMultiValueSensitiveHeadersCannotBypassCachePolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		header      string
+		secretValue string
+	}{
+		{name: "authorization", header: "Authorization", secretValue: "Bearer user-secret"},
+		{name: "cookie", header: "Cookie", secretValue: "session=user-secret"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int64
+			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				identity := "anonymous"
+				for _, value := range r.Header.Values(tc.header) {
+					if strings.TrimSpace(value) != "" {
+						identity = value
+					}
+				}
+				w.Header().Set("Cache-Control", "public, max-age=60")
+				_, _ = io.WriteString(w, identity)
+			}))
+			defer origin.Close()
+
+			h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer h.Close()
+
+			privateReq := httptest.NewRequest(http.MethodGet, "http://proxy.test/account", nil)
+			privateReq.Header[tc.header] = []string{"", tc.secretValue}
+			privateRec := httptest.NewRecorder()
+			h.ServeHTTP(privateRec, privateReq)
+			if privateRec.Code != http.StatusOK || privateRec.Header().Get("X-Cache") != "BYPASS" || privateRec.Body.String() != tc.secretValue {
+				t.Fatalf("private response: code=%d cache=%q body=%q", privateRec.Code, privateRec.Header().Get("X-Cache"), privateRec.Body.String())
+			}
+
+			anonymousRec := httptest.NewRecorder()
+			h.ServeHTTP(anonymousRec, httptest.NewRequest(http.MethodGet, "http://proxy.test/account", nil))
+			if anonymousRec.Code != http.StatusOK || anonymousRec.Header().Get("X-Cache") != "MISS" || anonymousRec.Body.String() != "anonymous" {
+				t.Fatalf("anonymous response: code=%d cache=%q body=%q", anonymousRec.Code, anonymousRec.Header().Get("X-Cache"), anonymousRec.Body.String())
+			}
+			if got := calls.Load(); got != 2 {
+				t.Fatalf("origin calls=%d, want 2", got)
+			}
+		})
+	}
+
+	t.Run("range", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "http://proxy.test/file", nil)
+		req.Header["Range"] = []string{"", "bytes=0-9"}
+		lookup, store, reason := requestCacheMode(req, config.CacheConfig{Enabled: true})
+		if lookup || store || reason != "range" {
+			t.Fatalf("lookup=%v store=%v reason=%q, want false false range", lookup, store, reason)
+		}
+	})
+
+	t.Run("request-no-store", func(t *testing.T) {
+		var calls atomic.Int64
+		origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			call := calls.Add(1)
+			w.Header().Set("Cache-Control", "public, max-age=60")
+			_, _ = fmt.Fprintf(w, "origin-%d", call)
+		}))
+		defer origin.Close()
+
+		h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer h.Close()
+
+		noStoreReq := httptest.NewRequest(http.MethodGet, "http://proxy.test/no-store", nil)
+		noStoreReq.Header.Set("Cache-Control", "no-store")
+		noStoreRec := httptest.NewRecorder()
+		h.ServeHTTP(noStoreRec, noStoreReq)
+		if noStoreRec.Code != http.StatusOK || noStoreRec.Header().Get("X-Cache") != "BYPASS" || noStoreRec.Body.String() != "origin-1" {
+			t.Fatalf("no-store response: code=%d cache=%q body=%q", noStoreRec.Code, noStoreRec.Header().Get("X-Cache"), noStoreRec.Body.String())
+		}
+
+		normalRec := httptest.NewRecorder()
+		h.ServeHTTP(normalRec, httptest.NewRequest(http.MethodGet, "http://proxy.test/no-store", nil))
+		if normalRec.Code != http.StatusOK || normalRec.Header().Get("X-Cache") != "MISS" || normalRec.Body.String() != "origin-2" {
+			t.Fatalf("normal response: code=%d cache=%q body=%q", normalRec.Code, normalRec.Header().Get("X-Cache"), normalRec.Body.String())
+		}
+		if got := calls.Load(); got != 2 {
+			t.Fatalf("origin calls=%d, want 2", got)
+		}
+	})
+
+	t.Run("set-cookie-response", func(t *testing.T) {
+		var calls atomic.Int64
+		origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			call := calls.Add(1)
+			w.Header().Set("Cache-Control", "public, max-age=60")
+			w.Header()["Set-Cookie"] = []string{"", "session=origin-secret; Path=/; HttpOnly"}
+			_, _ = fmt.Fprintf(w, "origin-%d", call)
+		}))
+		defer origin.Close()
+
+		h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer h.Close()
+
+		for i, wantBody := range []string{"origin-1", "origin-2"} {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://proxy.test/cookie-response", nil))
+			if rec.Code != http.StatusOK || rec.Header().Get("X-Cache") != "BYPASS" || rec.Body.String() != wantBody {
+				t.Fatalf("request %d: code=%d cache=%q body=%q", i, rec.Code, rec.Header().Get("X-Cache"), rec.Body.String())
+			}
+		}
+		if got := calls.Load(); got != 2 {
+			t.Fatalf("origin calls=%d, want 2", got)
+		}
+	})
+}
+
 func TestConditionalRequestFromCache(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=60")

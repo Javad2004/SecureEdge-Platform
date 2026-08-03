@@ -125,17 +125,17 @@ func requestCacheMode(req *http.Request, cfg config.CacheConfig) (lookup, store 
 	if req.Method != http.MethodGet && req.Method != http.MethodHead {
 		return false, false, "method"
 	}
-	if req.Header.Get("Range") != "" {
+	if headerHasNonEmptyValue(req.Header, "Range") {
 		return false, false, "range"
 	}
 	cc := parseCacheControl(req.Header.Values("Cache-Control"))
 	if hasCacheDirective(cc, "no-store") {
 		return false, false, "request-no-store"
 	}
-	if req.Header.Get("Authorization") != "" && !cfg.CacheAuthorizedRequests {
+	if headerHasNonEmptyValue(req.Header, "Authorization") && !cfg.CacheAuthorizedRequests {
 		return false, false, "authorization"
 	}
-	if req.Header.Get("Cookie") != "" && !cfg.CacheCookieRequests {
+	if headerHasNonEmptyValue(req.Header, "Cookie") && !cfg.CacheCookieRequests {
 		return false, false, "cookie"
 	}
 	forceRevalidation := hasCacheDirective(cc, "no-cache") || headerHasToken(req.Header.Values("Pragma"), "no-cache")
@@ -162,7 +162,7 @@ func responseCachePolicy(req *http.Request, resp *http.Response, cfg config.Cach
 	if !statusAllowed {
 		return false, time.Time{}, time.Time{}, 0
 	}
-	if resp.Header.Get("Set-Cookie") != "" && !cfg.CacheSetCookieResponses {
+	if headerHasNonEmptyValue(resp.Header, "Set-Cookie") && !cfg.CacheSetCookieResponses {
 		return false, time.Time{}, time.Time{}, 0
 	}
 	if !varyIsSupported(resp.Header.Values("Vary"), cfg) {
@@ -271,6 +271,19 @@ func parseCacheControl(values []string) map[string]string {
 func hasCacheDirective(directives map[string]string, name string) bool {
 	_, ok := directives[strings.ToLower(name)]
 	return ok
+}
+
+// headerHasNonEmptyValue checks every field-line value rather than Header.Get,
+// which only returns the first value. Security-sensitive cache decisions must
+// not be bypassable by placing an empty field before a later Authorization,
+// Cookie, Range, or Set-Cookie value.
+func headerHasNonEmptyValue(header http.Header, name string) bool {
+	for _, value := range header.Values(name) {
+		if strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func headerHasToken(values []string, token string) bool {

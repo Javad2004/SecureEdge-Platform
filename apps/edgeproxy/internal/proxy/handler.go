@@ -207,7 +207,7 @@ type requestResult struct {
 func (h *Handler) handleRoute(w http.ResponseWriter, req *http.Request, rt *routeRuntime, id string) requestResult {
 	lookup, store, _ := requestCacheMode(req, rt.cfg.Cache)
 	if !lookup && !store {
-		return h.fetchAndServe(w, req, rt, id, nil, "BYPASS")
+		return h.fetchAndServe(w, req, rt, id, nil, "BYPASS", false)
 	}
 
 	key := cacheKey(req, rt.cfg.Cache)
@@ -244,10 +244,10 @@ func (h *Handler) handleRoute(w http.ResponseWriter, req *http.Request, rt *rout
 			stale = &entry
 		}
 	}
-	return h.fetchAndServe(w, req, rt, id, stale, "MISS")
+	return h.fetchAndServe(w, req, rt, id, stale, "MISS", store)
 }
 
-func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *routeRuntime, id string, stale *cache.Entry, cacheStatus string) requestResult {
+func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *routeRuntime, id string, stale *cache.Entry, cacheStatus string, store bool) requestResult {
 	result := requestResult{cacheStatus: cacheStatus}
 	ctx := req.Context()
 	if timeout := rt.cfg.Proxy.RequestTimeout.Duration; timeout > 0 {
@@ -421,6 +421,11 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 
 	policyNow := time.Now()
 	cacheable, expiresAt, staleUntil, initialAge := responseCachePolicy(req, resp, rt.cfg.Cache, policyNow)
+	// requestCacheMode is the authoritative request-side decision. A request
+	// bypassed because it carries credentials, cookies, a Range field, an
+	// unsupported method, or an explicit no-store directive must never populate
+	// the shared cache even when the Origin response is otherwise cacheable.
+	cacheable = cacheable && store
 	if !cacheable || req.Method == http.MethodHead || rt.cache == nil {
 		if !cacheable {
 			result.cacheStatus = "BYPASS"

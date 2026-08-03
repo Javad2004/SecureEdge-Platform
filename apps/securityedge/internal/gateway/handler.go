@@ -197,7 +197,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	result, err := h.inspector.Inspect(req, policy)
 	if err != nil {
-		processingErr = err
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			action, reason, status = "BLOCK", "body_too_large", http.StatusRequestEntityTooLarge
@@ -206,6 +205,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			writeBlocked(w, status, "body_too_large", requestID)
 			return
 		}
+		// Oversized input is an expected client-policy violation, not an
+		// internal inspection failure. Only unexpected inspector errors should
+		// set processingErr and increment error telemetry.
+		processingErr = err
 		action, reason, status = "BLOCK", "inspection_failed", http.StatusBadRequest
 		setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
 		writeBlocked(w, status, "inspection_failed", requestID)

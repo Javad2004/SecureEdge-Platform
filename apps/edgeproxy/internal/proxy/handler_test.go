@@ -650,6 +650,46 @@ func TestRouteTimeoutStopsRetriesAfterMarkingFailedOrigin(t *testing.T) {
 	}
 }
 
+func TestRetryBackoffTimeoutDoesNotCountUnsentRetry(t *testing.T) {
+	var calls atomic.Int64
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		http.Error(w, "temporary", http.StatusServiceUnavailable)
+	}))
+	defer origin.Close()
+
+	cfg := testConfig(origin.URL)
+	cfg.Routes[0].Cache.Enabled = false
+	cfg.Routes[0].Proxy.RequestTimeout = config.Duration{Duration: 30 * time.Millisecond}
+	cfg.Routes[0].Proxy.RetryCount = 1
+	cfg.Routes[0].Proxy.RetryBackoff = config.Duration{Duration: 100 * time.Millisecond}
+	registry := metrics.New()
+	logs := accesslog.New(20)
+	h, err := NewHandler(cfg, slog.Default(), registry, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://proxy.test/backoff-timeout", nil))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusBadGateway)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("origin calls=%d, want one actual attempt", got)
+	}
+
+	snapshot := registry.Snapshot()
+	if snapshot.Total.Retries != 0 || snapshot.Total.Upstream.Retries != 0 {
+		t.Fatalf("retry telemetry counted an unsent request: total=%d upstream=%d", snapshot.Total.Retries, snapshot.Total.Upstream.Retries)
+	}
+	completed := logs.Query(accesslog.Filter{Event: "request_completed", Limit: 10})
+	if len(completed.Entries) != 1 || completed.Entries[0].Retries != 0 || completed.Entries[0].UpstreamCalls != 1 {
+		t.Fatalf("unexpected completion log: %#v", completed.Entries)
+	}
+}
+
 func TestReadinessRequiresOneHealthyOriginPerRoute(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

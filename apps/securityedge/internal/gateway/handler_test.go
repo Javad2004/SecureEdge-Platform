@@ -361,6 +361,14 @@ func TestInspectionMaxBytesErrorReturnsPayloadTooLarge(t *testing.T) {
 	if response.Code != http.StatusRequestEntityTooLarge || !strings.Contains(response.Body.String(), "body_too_large") {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
+	entries := h.logs.Query(securitylog.Filter{Limit: 10}).Entries
+	if len(entries) != 1 || entries[0].Event != "waf_blocked" || entries[0].Reason != "body_too_large" || entries[0].Error != "" {
+		t.Fatalf("oversized request was logged as an internal inspection error: %#v", entries)
+	}
+	snapshot := h.metrics.Snapshot()
+	if snapshot.Total.Errors != 0 || snapshot.Total.BodyTooLarge != 1 {
+		t.Fatalf("unexpected metrics for policy body limit: %#v", snapshot.Total)
+	}
 }
 
 func TestDownstreamBodyLimitViolationWithoutResponseIsForcedToPayloadTooLarge(t *testing.T) {

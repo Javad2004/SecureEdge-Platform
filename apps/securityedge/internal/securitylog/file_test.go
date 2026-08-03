@@ -66,6 +66,47 @@ func TestClearRemovesPersistentLogAndBackups(t *testing.T) {
 	}
 }
 
+func TestClearRewindsRotatedActiveLogBeforeNextAppend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.ndjson")
+	s, err := NewWithConfig(config.LogStoreConfig{Capacity: 10, FilePath: path, MaxFileBytes: 1 << 20, MaxBackups: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Rotation reopens the active file without O_APPEND. Write one entry so its
+	// current offset is non-zero, then clear and append again.
+	if err := s.rotateLocked(); err != nil {
+		t.Fatal(err)
+	}
+	s.Append(Entry{Event: "before-clear"})
+	if _, err := s.Clear(); err != nil {
+		t.Fatal(err)
+	}
+	s.Append(Entry{Event: "after-clear"})
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.IndexByte(data, 0) >= 0 {
+		t.Fatalf("cleared log contains a sparse NUL-filled gap: %q", data)
+	}
+	lines := bytes.Split(bytes.TrimSpace(data), []byte{'\n'})
+	if len(lines) != 1 {
+		t.Fatalf("expected one NDJSON entry after clear, got %d: %q", len(lines), data)
+	}
+	var entry Entry
+	if err := json.Unmarshal(lines[0], &entry); err != nil {
+		t.Fatalf("active log is not valid NDJSON after clear: %v; data=%q", err, data)
+	}
+	if entry.Event != "after-clear" {
+		t.Fatalf("event=%q, want after-clear", entry.Event)
+	}
+}
+
 func TestCSVExportNeutralizesSpreadsheetFormulas(t *testing.T) {
 	s := New(10)
 	s.Append(Entry{Event: "waf_blocked", Host: "=HYPERLINK(\"https://example.test\")", Path: " +SUM(1,1)"})

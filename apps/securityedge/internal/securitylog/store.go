@@ -454,6 +454,13 @@ func (s *Store) Clear() (int, error) {
 			errs = append(errs, fmt.Errorf("truncate security log: %w", err))
 		} else {
 			s.fileBytes = 0
+			// Truncate does not reset the current file offset. The active file
+			// opened after rotation is not O_APPEND, so leaving its old offset in
+			// place would make the next entry create a sparse NUL-filled gap and
+			// corrupt the NDJSON stream restored on the next process start.
+			if _, err := s.file.Seek(0, io.SeekStart); err != nil {
+				errs = append(errs, fmt.Errorf("rewind security log after truncate: %w", err))
+			}
 		}
 	}
 	if s.filePath != "" {

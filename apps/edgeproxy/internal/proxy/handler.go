@@ -261,6 +261,12 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		elapsed := time.Since(started)
 		result.upstreamDuration += elapsed
 		result.upstreamCalls++
+		// Count only retry requests that actually reached RoundTrip. A route
+		// timeout may expire during retry_backoff, in which case no second
+		// origin call occurred and request-level retry telemetry must remain 0.
+		if result.upstreamCalls > 1 {
+			result.retries = result.upstreamCalls - 1
+		}
 		result.upstream = node.url.String()
 		status := 0
 		if resp != nil {
@@ -338,7 +344,6 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		}
 
 		if attempt+1 < attempts {
-			result.retries++
 			if backoff := rt.cfg.Proxy.RetryBackoff.Duration; backoff > 0 {
 				timer := time.NewTimer(backoff * time.Duration(attempt+1))
 				select {

@@ -68,12 +68,10 @@ func main() {
 			os.Exit(1)
 		}
 		reverse := newReverseProxy(target, cfg.Server, logger)
-		wrapped := runtime.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Body != nil {
-				r.Body = http.MaxBytesReader(w, r.Body, cfg.Server.MaxRequestBodyBytes)
-			}
-			reverse.ServeHTTP(w, r)
-		}))
+		// Runtime.Wrap enforces the request-body limit so the same protection and
+		// security-event accounting also apply when SecurityEdge is embedded or
+		// used with a different downstream handler.
+		wrapped := runtime.Wrap(reverse)
 		gatewayServer = &http.Server{
 			Addr: cfg.Server.ListenAddr, Handler: wrapped,
 			ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout.Duration, ReadTimeout: cfg.Server.ReadTimeout.Duration,

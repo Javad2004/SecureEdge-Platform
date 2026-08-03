@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -34,6 +36,10 @@ func newTestHandler(t *testing.T, next http.Handler, p config.Policy) *Handler {
 }
 
 func newTestHandlerWithTraffic(t *testing.T, next http.Handler, p config.Policy) (*Handler, *traffic.Tracker) {
+	return newTestHandlerWithServerAndTraffic(t, next, p, config.Default().Server)
+}
+
+func newTestHandlerWithServerAndTraffic(t *testing.T, next http.Handler, p config.Policy, server config.ServerConfig) (*Handler, *traffic.Tracker) {
 	t.Helper()
 	tableFile := t.TempDir() + "/edge.json"
 	if err := os.WriteFile(tableFile, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0600); err != nil {
@@ -54,7 +60,7 @@ func newTestHandlerWithTraffic(t *testing.T, next http.Handler, p config.Policy)
 		t.Fatal(err)
 	}
 	tracker := traffic.New(100, time.Minute)
-	return New(next, table, policies{p: p, s: config.Default().Server}, i, l, ratelimit.NewBanManager(), admission.New(), resolver, metrics.New(), securitylog.New(100), tracker, slog.Default()), tracker
+	return New(next, table, policies{p: p, s: server}, i, l, ratelimit.NewBanManager(), admission.New(), resolver, metrics.New(), securitylog.New(100), tracker, slog.Default()), tracker
 }
 func TestBlocksXSSBeforeNext(t *testing.T) {
 	called := false
@@ -354,5 +360,53 @@ func TestInspectionMaxBytesErrorReturnsPayloadTooLarge(t *testing.T) {
 	h.ServeHTTP(response, req)
 	if response.Code != http.StatusRequestEntityTooLarge || !strings.Contains(response.Body.String(), "body_too_large") {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestDownstreamBodyLimitViolationIsRecordedAndAutoBanned(t *testing.T) {
+	policy := config.Default().DefaultPolicy
+	policy.RateLimit.Enabled = false
+	policy.InspectRequestBody = false
+	policy.AutoBan.Enabled = true
+	policy.AutoBan.ViolationThreshold = 1
+	policy.AutoBan.Window = config.Duration{Duration: time.Minute}
+	policy.AutoBan.BanDuration = config.Duration{Duration: time.Minute}
+	policy.AutoBan.MaxTrackedClients = 100
+	server := config.Default().Server
+	server.MaxRequestBodyBytes = 8
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, err := io.Copy(io.Discard, r.Body)
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	h, tracker := newTestHandlerWithServerAndTraffic(t, next, policy, server)
+
+	req := httptest.NewRequest(http.MethodPost, "http://project.test/upload", strings.NewReader(strings.Repeat("x", 32)))
+	req.ContentLength = -1
+	req.RemoteAddr = "198.51.100.25:1234"
+	response := httptest.NewRecorder()
+	h.ServeHTTP(response, req)
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if action := response.Header().Get("X-Security-Action"); action != "BLOCK" {
+		t.Fatalf("X-Security-Action=%q, want BLOCK", action)
+	}
+
+	snapshot := tracker.Snapshot(time.Now())
+	if snapshot.LastRequest == nil || snapshot.LastRequest.Action != "BLOCK" || snapshot.LastRequest.Reason != "body_too_large" {
+		t.Fatalf("traffic snapshot=%#v", snapshot.LastRequest)
+	}
+	logs := h.logs.Query(securitylog.Filter{Limit: 10})
+	if len(logs.Entries) != 1 || logs.Entries[0].Action != "BLOCK" || logs.Entries[0].Reason != "body_too_large" {
+		t.Fatalf("security logs=%#v", logs.Entries)
+	}
+	if banned, _ := h.bans.IsBanned("198.51.100.25", time.Now()); !banned {
+		t.Fatal("oversized streamed body was not counted toward automatic banning")
 	}
 }

@@ -752,6 +752,47 @@ func TestIfNoneMatchWildcardDoesNotMatchCachedNotFound(t *testing.T) {
 	}
 }
 
+func TestConditionalHeadersDoNotConvertCachedNotFoundToNotModified(t *testing.T) {
+	modified := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.Header().Set("ETag", `"missing-v1"`)
+		w.Header().Set("Last-Modified", modified.Format(http.TimeFormat))
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, "missing")
+	}))
+	defer origin.Close()
+
+	cfg := testConfig(origin.URL)
+	cfg.Routes[0].Cache.CacheableStatusCodes = append(cfg.Routes[0].Cache.CacheableStatusCodes, http.StatusNotFound)
+	h, err := NewHandler(cfg, slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://proxy.test/missing-conditional", nil))
+
+	for name, header := range map[string]string{
+		"etag":          `"missing-v1"`,
+		"last-modified": modified.Add(time.Minute).Format(http.TimeFormat),
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://proxy.test/missing-conditional", nil)
+			if name == "etag" {
+				req.Header.Set("If-None-Match", header)
+			} else {
+				req.Header.Set("If-Modified-Since", header)
+			}
+			response := httptest.NewRecorder()
+			h.ServeHTTP(response, req)
+			if response.Code != http.StatusNotFound || response.Body.String() != "missing" || response.Header().Get("X-Cache") != "HIT" {
+				t.Fatalf("code=%d body=%q cache=%q", response.Code, response.Body.String(), response.Header().Get("X-Cache"))
+			}
+		})
+	}
+}
+
 func TestTrustedProxyPreservesOriginalClientIP(t *testing.T) {
 	var forwarded string
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

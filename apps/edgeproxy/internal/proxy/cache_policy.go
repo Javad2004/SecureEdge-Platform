@@ -268,8 +268,15 @@ func firstNonEmpty(values ...string) string {
 }
 
 func conditionalNotModified(req *http.Request, header http.Header, statusCode int) bool {
+	// HTTP preconditions are ignored when the response without them would not
+	// have been a successful (2xx) response. In particular, a cached 404 or 410
+	// that happens to carry an ETag or Last-Modified value must remain that error
+	// response instead of being transformed into a misleading 304.
+	if statusCode < 200 || statusCode >= 300 {
+		return false
+	}
 	if inm := req.Header.Get("If-None-Match"); inm != "" {
-		if ifNoneMatchWildcard(inm) && statusCode >= 200 && statusCode < 300 {
+		if ifNoneMatchWildcard(inm) {
 			return true
 		}
 		return weakETagMatch(inm, header.Get("ETag"))

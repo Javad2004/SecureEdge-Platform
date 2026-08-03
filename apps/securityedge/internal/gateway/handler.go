@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/admission"
@@ -74,6 +75,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	policy := h.policies.Policy(routeName)
 	serverCfg := h.policies.ServerConfig()
+	bodyLimit := trackRequestBodyLimit(w, req, serverCfg.MaxRequestBodyBytes)
 	requestID := newRequestID()
 	client := h.clients.Resolve(req)
 	req = req.WithContext(context.WithValue(req.Context(), resolvedClientIPKey{}, client))
@@ -149,10 +151,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if !policy.Enabled || policy.Mode == "off" || allowlisted {
 		setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
 		securityDuration = time.Since(started)
-		writer := &decisionWriter{ResponseWriter: w, requestID: requestID, action: action, score: score, addSecurityHeaders: serverCfg.AddSecurityHeaders}
+		writer := &decisionWriter{ResponseWriter: w, requestID: requestID, action: action, score: score, addSecurityHeaders: serverCfg.AddSecurityHeaders, bodyLimit: bodyLimit}
 		h.next.ServeHTTP(writer, req)
 		status = writer.Status()
 		cacheStatus = writer.Header().Get("X-Cache")
+		if bodyLimitExceeded(bodyLimit, status) {
+			action, reason = "BLOCK", "body_too_large"
+			autoBanned, _ = h.recordViolation(client, policy, time.Now())
+		}
 		return
 	}
 	if ipMatches(client, policy.IPDenylist) {
@@ -195,6 +201,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			action, reason, status = "BLOCK", "body_too_large", http.StatusRequestEntityTooLarge
+			autoBanned, _ = h.recordViolation(client, policy, time.Now())
 			setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
 			writeBlocked(w, status, "body_too_large", requestID)
 			return
@@ -225,10 +232,41 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
 	securityDuration = time.Since(started)
-	writer := &decisionWriter{ResponseWriter: w, requestID: requestID, action: action, score: score, addSecurityHeaders: serverCfg.AddSecurityHeaders}
+	writer := &decisionWriter{ResponseWriter: w, requestID: requestID, action: action, score: score, addSecurityHeaders: serverCfg.AddSecurityHeaders, bodyLimit: bodyLimit}
 	h.next.ServeHTTP(writer, req)
 	status = writer.Status()
 	cacheStatus = writer.Header().Get("X-Cache")
+	if bodyLimitExceeded(bodyLimit, status) {
+		action, reason = "BLOCK", "body_too_large"
+		autoBanned, _ = h.recordViolation(client, policy, time.Now())
+	}
+}
+
+type trackedRequestBody struct {
+	io.ReadCloser
+	exceeded atomic.Bool
+}
+
+func (b *trackedRequestBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		b.exceeded.Store(true)
+	}
+	return n, err
+}
+
+func trackRequestBodyLimit(w http.ResponseWriter, req *http.Request, maxBytes int64) *trackedRequestBody {
+	if req == nil || req.Body == nil || req.Body == http.NoBody || maxBytes <= 0 {
+		return nil
+	}
+	tracked := &trackedRequestBody{ReadCloser: http.MaxBytesReader(w, req.Body, maxBytes)}
+	req.Body = tracked
+	return tracked
+}
+
+func bodyLimitExceeded(body *trackedRequestBody, status int) bool {
+	return body != nil && body.exceeded.Load() && status == http.StatusRequestEntityTooLarge
 }
 
 func validateRequestShape(req *http.Request, policy config.Policy, server config.ServerConfig) (int, string) {
@@ -344,6 +382,7 @@ type decisionWriter struct {
 	action             string
 	score              int
 	addSecurityHeaders bool
+	bodyLimit          *trackedRequestBody
 	status             int
 }
 
@@ -365,6 +404,9 @@ func (w *decisionWriter) WriteHeader(status int) {
 	}
 	if w.status != 0 {
 		return
+	}
+	if bodyLimitExceeded(w.bodyLimit, status) {
+		w.action = "BLOCK"
 	}
 	w.status = status
 	setBaseHeaders(w.Header(), w.requestID, w.action, w.score, w.addSecurityHeaders)

@@ -1,14 +1,97 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
 )
+
+func TestParseLevel(t *testing.T) {
+	tests := []struct {
+		input string
+		want  slog.Level
+	}{
+		{input: "debug", want: slog.LevelDebug},
+		{input: " INFO ", want: slog.LevelInfo},
+		{input: "Warn", want: slog.LevelWarn},
+		{input: "ERROR", want: slog.LevelError},
+	}
+	for _, tc := range tests {
+		level, err := parseLevel(tc.input)
+		if err != nil {
+			t.Fatalf("parseLevel(%q): %v", tc.input, err)
+		}
+		if level != tc.want {
+			t.Fatalf("parseLevel(%q)=%v, want %v", tc.input, level, tc.want)
+		}
+	}
+	if _, err := parseLevel("verbose"); err == nil {
+		t.Fatal("expected unsupported log level to be rejected")
+	}
+}
+
+func TestShutdownServersReportsDeadline(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	})}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(listener) }()
+
+	requestDone := make(chan error, 1)
+	go func() {
+		response, requestErr := http.Get("http://" + listener.Addr().String())
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		requestDone <- requestErr
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("request handler did not start")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	shutdownErr := shutdownServers(ctx, namedHTTPServer{name: "test", server: server})
+	if !errors.Is(shutdownErr, context.DeadlineExceeded) {
+		t.Fatalf("shutdown error=%v, want context deadline exceeded", shutdownErr)
+	}
+	close(release)
+
+	select {
+	case requestErr := <-requestDone:
+		if requestErr != nil {
+			t.Fatalf("request failed after handler release: %v", requestErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("request did not finish")
+	}
+	select {
+	case serveErr := <-serveDone:
+		if !errors.Is(serveErr, http.ErrServerClosed) {
+			t.Fatalf("Serve returned %v, want http.ErrServerClosed", serveErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not stop accepting connections")
+	}
+}
 
 func TestGatewayTransportIgnoresAmbientProxySettings(t *testing.T) {
 	target, err := url.Parse("http://edgeproxy:8080")

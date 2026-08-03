@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -23,6 +24,10 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	configPath := flag.String("config", "configs/local-dev.json", "path to security configuration")
 	validate := flag.Bool("validate", false, "validate configuration and exit")
 	pretty := flag.Bool("pretty-logs", false, "use human-readable logs")
@@ -31,9 +36,13 @@ func main() {
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(version.String())
-		return
+		return 0
 	}
-	level := parseLevel(*logLevel)
+	level, err := parseLevel(*logLevel)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 	var handler slog.Handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})
 	if *pretty {
 		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
@@ -42,22 +51,25 @@ func main() {
 	if *validate {
 		if err := securityedge.Validate(*configPath); err != nil {
 			logger.Error("configuration failed", "error", err)
-			os.Exit(1)
+			return 1
 		}
 		fmt.Println("configuration is valid")
-		return
+		return 0
 	}
 	runtime, err := securityedge.New(*configPath, logger)
 	if err != nil {
 		logger.Error("configuration failed", "error", err)
-		os.Exit(1)
+		return 1
 	}
 	defer runtime.Close()
 	cfg := runtime.Config()
-	adminServer, err := runtime.AdminServer()
-	if err != nil {
-		logger.Error("admin setup failed", "error", err)
-		os.Exit(1)
+	var adminServer *http.Server
+	if cfg.Admin.Enabled {
+		adminServer, err = runtime.AdminServer()
+		if err != nil {
+			logger.Error("admin setup failed", "error", err)
+			return 1
+		}
 	}
 	errCh := make(chan error, 2)
 	var gatewayServer *http.Server
@@ -65,7 +77,7 @@ func main() {
 		target, err := url.Parse(cfg.Server.UpstreamProxyURL)
 		if err != nil {
 			logger.Error("invalid upstream proxy URL", "error", err)
-			os.Exit(1)
+			return 1
 		}
 		reverse := newReverseProxy(target, cfg.Server, logger)
 		// Runtime.Wrap enforces the request-body limit so the same protection and
@@ -85,7 +97,7 @@ func main() {
 			}
 		}()
 	}
-	if cfg.Admin.Enabled {
+	if adminServer != nil {
 		go func() {
 			logger.Info("security admin and dashboard starting", "address", cfg.Admin.ListenAddr)
 			if err := adminServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -104,19 +116,50 @@ func main() {
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout.Duration)
 	defer cancel()
-	if gatewayServer != nil {
-		if err := gatewayServer.Shutdown(shutdownCtx); err != nil {
-			logger.Error("gateway shutdown", "error", err)
+	shutdownErr := shutdownServers(shutdownCtx,
+		namedHTTPServer{name: "gateway", server: gatewayServer},
+		namedHTTPServer{name: "admin", server: adminServer},
+	)
+	if shutdownErr != nil {
+		logger.Error("graceful shutdown failed", "error", shutdownErr)
+	}
+	if runErr != nil || shutdownErr != nil {
+		return 1
+	}
+	return 0
+}
+
+type namedHTTPServer struct {
+	name   string
+	server *http.Server
+}
+
+// shutdownServers stops independent listeners concurrently so one slow
+// listener cannot consume the entire shared shutdown deadline before the
+// remaining listeners receive a chance to drain.
+func shutdownServers(ctx context.Context, servers ...namedHTTPServer) error {
+	errCh := make(chan error, len(servers))
+	var wg sync.WaitGroup
+	for _, item := range servers {
+		if item.server == nil {
+			continue
 		}
+		wg.Add(1)
+		go func(item namedHTTPServer) {
+			defer wg.Done()
+			if err := item.server.Shutdown(ctx); err != nil {
+				errCh <- fmt.Errorf("%s shutdown: %w", item.name, err)
+			}
+		}(item)
 	}
-	if cfg.Admin.Enabled {
-		if err := adminServer.Shutdown(shutdownCtx); err != nil {
-			logger.Error("admin shutdown", "error", err)
-		}
+	wg.Wait()
+	close(errCh)
+
+	var errs []error
+	for err := range errCh {
+		errs = append(errs, err)
 	}
-	if runErr != nil {
-		os.Exit(1)
-	}
+	return errors.Join(errs...)
 }
 
 func newReverseProxy(target *url.URL, cfg config.ServerConfig, logger *slog.Logger) *httputil.ReverseProxy {
@@ -193,15 +236,17 @@ func writeProxyError(w http.ResponseWriter, status int, code, id string) {
 	w.WriteHeader(status)
 	_, _ = fmt.Fprintf(w, `{"error":{"code":%q,"message":%q,"request_id":%q}}\n`, code, http.StatusText(status), id)
 }
-func parseLevel(v string) slog.Level {
-	switch v {
+func parseLevel(v string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "debug":
-		return slog.LevelDebug
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
 	case "warn":
-		return slog.LevelWarn
+		return slog.LevelWarn, nil
 	case "error":
-		return slog.LevelError
+		return slog.LevelError, nil
 	default:
-		return slog.LevelInfo
+		return slog.LevelInfo, fmt.Errorf("invalid -log-level %q: expected debug, info, warn, or error", v)
 	}
 }

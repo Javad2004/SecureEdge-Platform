@@ -10,12 +10,37 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
 )
+
+func TestCheckedInConfigurationsValidate(t *testing.T) {
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate SecurityEdge test source")
+	}
+	moduleRoot := filepath.Dir(sourceFile)
+	paths := []string{
+		filepath.Join(moduleRoot, "configs", "compose.json"),
+		filepath.Join(moduleRoot, "configs", "embedded.json"),
+		filepath.Join(moduleRoot, "configs", "local-dev.json"),
+		filepath.Join(moduleRoot, "configs", "securityedge.json"),
+	}
+	t.Setenv("SECURITYEDGE_ADMIN_TOKEN", "")
+	t.Setenv("EDGEPROXY_ADMIN_TOKEN", "")
+	for _, path := range paths {
+		path := path
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			if err := Validate(path); err != nil {
+				t.Fatalf("validate %s: %v", path, err)
+			}
+		})
+	}
+}
 
 func TestValidateDoesNotCreatePersistentLogFiles(t *testing.T) {
 	dir := t.TempDir()

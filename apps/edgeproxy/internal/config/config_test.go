@@ -4,11 +4,41 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestCheckedInConfigurationsValidate(t *testing.T) {
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot locate configuration test source")
+	}
+	moduleRoot := filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", ".."))
+	repositoryRoot := filepath.Clean(filepath.Join(moduleRoot, "..", ".."))
+	paths := []string{
+		filepath.Join(moduleRoot, "configs", "compose.json"),
+		filepath.Join(moduleRoot, "configs", "edgeproxy.json"),
+		filepath.Join(moduleRoot, "configs", "local-dev.json"),
+		filepath.Join(moduleRoot, "configs", "examples", "multi-origin.json"),
+		filepath.Join(moduleRoot, "configs", "examples", "multi-route.json"),
+		filepath.Join(repositoryRoot, "integration", "edgeproxy-behind-waf.json"),
+		filepath.Join(repositoryRoot, "integration", "edgeproxy-compose-behind-waf.json"),
+		filepath.Join(repositoryRoot, "integration", "edgeproxy-local-behind-waf.json"),
+	}
+	t.Setenv("EDGEPROXY_ADMIN_TOKEN", "")
+	for _, path := range paths {
+		path := path
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			if _, err := Load(path); err != nil {
+				t.Fatalf("validate %s: %v", path, err)
+			}
+		})
+	}
+}
 
 func TestDurationJSON(t *testing.T) {
 	var d Duration

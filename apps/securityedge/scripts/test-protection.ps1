@@ -1,10 +1,37 @@
 param(
-    [string]$BaseUrl = "http://project.test",
-    [string]$AdminUrl = "http://127.0.0.1:9191",
-    [string]$Token = "SecurityEdgeDemo2026",
-    [int]$BurstRequests = 60
+    [string]$Config = "",
+    [string]$BaseUrl = "",
+    [string]$AdminUrl = "",
+    [string]$Token = "",
+    [int]$BurstRequests = 60,
+    [string]$EnvFile = "",
+    [switch]$NoEnv
 )
+
 $ErrorActionPreference = "Stop"
+if ($NoEnv -and $EnvFile) { throw "-EnvFile and -NoEnv cannot be used together." }
+. "$PSScriptRoot\dotenv.ps1"
+
+$configEnvironmentPreexisting = $null -ne (Get-Item -LiteralPath Env:SECURITYEDGE_CONFIG -ErrorAction SilentlyContinue)
+$loadedEnv = $null
+if (-not $NoEnv) {
+    $explicitEnv = if ($EnvFile) { $EnvFile } else { Get-NonEmptyEnvironmentValue SECURITYEDGE_ENV_FILE }
+    $loadedEnv = Import-ApplicationDotEnv -ExplicitPath $explicitEnv -Candidates @((Join-Path $PSScriptRoot "..\.env"))
+    if ($loadedEnv) { Write-Host "Loaded environment: $loadedEnv" -ForegroundColor DarkGray }
+}
+
+$configPath = Resolve-EffectiveConfigPath -ExplicitValue $Config -EnvironmentVariable SECURITYEDGE_CONFIG `
+    -EnvironmentWasPreexisting $configEnvironmentPreexisting -LoadedEnvPath $loadedEnv `
+    -Candidates @((Join-Path $PSScriptRoot "..\configs\securityedge.json"))
+if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { throw "Configuration file not found: $configPath" }
+$configObject = Get-Content (Resolve-Path -LiteralPath $configPath) -Raw | ConvertFrom-Json
+$configObject = Apply-SecurityEdgeEnvironmentOverrides -ConfigObject $configObject
+if (-not $BaseUrl) { $BaseUrl = Get-SecurityEdgePublicBaseUrlFromConfig -ConfigObject $configObject }
+if (-not $AdminUrl) {
+    $AdminUrl = Get-LocalHttpUrlFromListenAddress -ListenAddress ([string]$configObject.admin.listen_addr)
+}
+if (-not $Token) { $Token = [string]$configObject.admin.auth_token }
+
 $headers = @{ Authorization = "Bearer $Token" }
 function Section([string]$Text) { Write-Host "`n=== $Text ===" -ForegroundColor Cyan }
 

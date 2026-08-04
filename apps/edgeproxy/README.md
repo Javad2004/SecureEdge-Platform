@@ -102,7 +102,7 @@ Route names are converted to uppercase environment suffixes with non-alphanumeri
 
 Empty or missing variables do not replace JSON values. A missing auto-discovered `.env` file is therefore safe and uses the selected JSON profile unchanged. A path supplied explicitly with `-env` or `EDGEPROXY_ENV_FILE` must exist and parse successfully.
 
-Never commit the real `.env`; the root `.gitignore` excludes it while allowing `.env.example`.
+Never commit the real `.env`; the root `.gitignore` excludes it while allowing `.env.example`. EdgeProxy PowerShell verification scripts also auto-load this file, never overwrite pre-existing process variables, and allow explicit script parameters to override the effective values.
 
 ## Quick start: local standalone mode
 
@@ -313,13 +313,17 @@ Run from `apps/edgeproxy`:
 ```powershell
 .\scripts\start-origin.ps1
 .\scripts\start-proxy.ps1
+.\scripts\test-proxy.ps1
+.\scripts\test-observability.ps1
 
 # Explicit alternatives
 .\scripts\start-origin.ps1 -EnvFile ./.env
 .\scripts\start-proxy.ps1 -Config ./configs/local-dev.json -EnvFile ./.env
 .\scripts\start-proxy.ps1 -NoEnv -Config ./configs/local-dev.json
-.\scripts\test-proxy.ps1 -ProxyUrl http://127.0.0.1:8080 -Token dev-token
+.\scripts\test-proxy.ps1 -NoEnv -ProxyUrl http://127.0.0.1:8080 -Token dev-token
 ```
+
+The test scripts load `apps/edgeproxy/.env` automatically and use its Admin listener, token, and route Origin values. Process environment variables take precedence, explicit `-ProxyUrl`, `-AdminUrl`, `-OriginUrl`, and `-Token` parameters override both, and `-NoEnv` preserves an isolated JSON/default test.
 
 Without `.env` or explicit parameters, `start-origin.ps1` uses the built-in `127.0.0.1:9000` / `origin-a` defaults. For a deliberate LAN deployment, set `ORIGIN_DEMO_LISTEN_ADDR=0.0.0.0:9000` in `.env` and protect the Origin port with the host firewall.
 

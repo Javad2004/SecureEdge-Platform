@@ -1,18 +1,40 @@
 param(
-    [string]$Config = ".\configs\securityedge.json",
+    [string]$Config = "",
+    [string]$EnvFile = "",
+    [string]$EdgeProxyEnvFile = "",
+    [switch]$NoEnv,
     [string]$Domain = "",
     [string]$DnsServer = "",
     [string]$ExpectedIngressIP = "",
     [string]$OriginHost = "",
     [int]$OriginPort = 0,
     [string]$AdminUrl = "",
-    [string]$Token = $(if ($env:SECURITYEDGE_ADMIN_TOKEN) { $env:SECURITYEDGE_ADMIN_TOKEN } else { "SecurityEdgeDemo2026" })
+    [string]$Token = ""
 )
 
 $ErrorActionPreference = "Stop"
-if (-not (Test-Path $Config)) { throw "Configuration file not found: $Config" }
-$configPath = (Resolve-Path $Config).Path
+if ($NoEnv -and ($EnvFile -or $EdgeProxyEnvFile)) { throw "Environment-file parameters and -NoEnv cannot be used together." }
+. "$PSScriptRoot\dotenv.ps1"
+
+$configEnvironmentPreexisting = $null -ne (Get-Item -LiteralPath Env:SECURITYEDGE_CONFIG -ErrorAction SilentlyContinue)
+$loadedSecurityEnv = $null
+if (-not $NoEnv) {
+    $explicitSecurityEnv = if ($EnvFile) { $EnvFile } else { Get-NonEmptyEnvironmentValue SECURITYEDGE_ENV_FILE }
+    $loadedSecurityEnv = Import-ApplicationDotEnv -ExplicitPath $explicitSecurityEnv -Candidates @((Join-Path $PSScriptRoot "..\.env"))
+    if ($loadedSecurityEnv) { Write-Host "Loaded SecurityEdge environment: $loadedSecurityEnv" -ForegroundColor DarkGray }
+
+    $explicitEdgeEnv = if ($EdgeProxyEnvFile) { $EdgeProxyEnvFile } else { Get-NonEmptyEnvironmentValue EDGEPROXY_ENV_FILE }
+    $loadedEdgeEnv = Import-ApplicationDotEnv -ExplicitPath $explicitEdgeEnv -Candidates @((Join-Path $PSScriptRoot "..\..\edgeproxy\.env"))
+    if ($loadedEdgeEnv) { Write-Host "Loaded EdgeProxy environment: $loadedEdgeEnv" -ForegroundColor DarkGray }
+}
+
+$configPath = Resolve-EffectiveConfigPath -ExplicitValue $Config -EnvironmentVariable SECURITYEDGE_CONFIG `
+    -EnvironmentWasPreexisting $configEnvironmentPreexisting -LoadedEnvPath $loadedSecurityEnv `
+    -Candidates @((Join-Path $PSScriptRoot "..\configs\securityedge.json"))
+if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { throw "Configuration file not found: $configPath" }
+$configPath = (Resolve-Path -LiteralPath $configPath).Path
 $configObject = Get-Content $configPath -Raw | ConvertFrom-Json
+$configObject = Apply-SecurityEdgeEnvironmentOverrides -ConfigObject $configObject
 
 function Section([string]$Text) { Write-Host "`n=== $Text ===" -ForegroundColor Cyan }
 function Assert([bool]$Condition, [string]$Message) {
@@ -53,10 +75,18 @@ if (-not $Domain -and $dnsConfig.names.Count -gt 0) { $Domain = [string]$dnsConf
 if (-not $DnsServer -and $dnsConfig.server) { $DnsServer = Host-FromEndpoint ([string]$dnsConfig.server) }
 if (-not $ExpectedIngressIP -and $dnsConfig.expected_addresses.Count -gt 0) { $ExpectedIngressIP = [string]$dnsConfig.expected_addresses[0] }
 if (-not $AdminUrl) { $AdminUrl = Local-UrlFromListen ([string]$configObject.admin.listen_addr) }
+if (-not $Token) { $Token = [string]$configObject.admin.auth_token }
 
 $edgeConfigRelative = [string]$configObject.edgeproxy.config_path
-$edgeConfigPath = [IO.Path]::GetFullPath((Join-Path (Split-Path $configPath) $edgeConfigRelative))
+$edgeConfigPath = if ([IO.Path]::IsPathRooted($edgeConfigRelative)) {
+    [IO.Path]::GetFullPath($edgeConfigRelative)
+}
+else {
+    [IO.Path]::GetFullPath((Join-Path (Split-Path $configPath) $edgeConfigRelative))
+}
+if (-not (Test-Path -LiteralPath $edgeConfigPath -PathType Leaf)) { throw "Referenced EdgeProxy configuration not found: $edgeConfigPath" }
 $edgeConfig = Get-Content $edgeConfigPath -Raw | ConvertFrom-Json
+$edgeConfig = Apply-EdgeProxyEnvironmentOverrides -ConfigObject $edgeConfig
 if (-not $Domain) {
     $Domain = @($edgeConfig.routes[0].hosts | Where-Object { $_ -notin @("localhost", "127.0.0.1", "*") })[0]
 }
@@ -97,7 +127,7 @@ $origin = Test-NetConnection -ComputerName $OriginHost -Port $OriginPort -Warnin
 Assert $origin.TcpTestSucceeded "The gateway host can reach Origin at ${OriginHost}:$OriginPort"
 
 Section "Listener exposure"
-& "$PSScriptRoot\check-listeners.ps1" -Config $configPath
+& "$PSScriptRoot\check-listeners.ps1" -Config $configPath -NoEnv
 if ($LASTEXITCODE -ne 0) { throw "Listener exposure validation failed with exit code $LASTEXITCODE" }
 
 Section "EdgeProxy internal health"

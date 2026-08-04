@@ -123,7 +123,7 @@ Important variables:
 
 Empty or missing variables preserve the JSON values. Environment-derived values are runtime-only: dashboard policy updates continue to persist the file-backed configuration without writing secrets or machine-specific endpoint overrides into JSON.
 
-A missing auto-discovered `.env` file is not an error. An explicitly selected file must exist and be valid. Never commit the real `.env`; commit only `.env.example`.
+A missing auto-discovered `.env` file is not an error. An explicitly selected file must exist and be valid. Never commit the real `.env`; commit only `.env.example`. SecurityEdge PowerShell verification, listener, connectivity, and firewall scripts use compatible validated dotenv loading and the same precedence as the service; `test-deployment.ps1` additionally loads the EdgeProxy `.env` so route and Origin overrides are tested exactly as deployed.
 
 ## Quick start: local integrated development
 
@@ -383,26 +383,27 @@ Invoke-RestMethod "$AdminUrl/api/v1/dashboard/overview" -Headers $Headers
 
 Run from `apps/securityedge`.
 
-Validate listener exposure:
+The scripts auto-load `../.env`; existing process variables take precedence, and explicit parameters remain the highest-priority overrides. Use `-EnvFile` for an external SecurityEdge file or `-NoEnv` for an isolated JSON/default check. The complete deployment test also auto-loads `../../edgeproxy/.env`, with `-EdgeProxyEnvFile` available for an external file.
+
+Validate listener exposure against the effective ports:
 
 ```powershell
-.\scripts\check-listeners.ps1 -Config ./configs/securityedge.json
+.\scripts\check-listeners.ps1
 ```
 
-Force dependency checks:
+Force dependency checks with the effective Admin URL and token:
 
 ```powershell
 .\scripts\check-connectivity.ps1 -Force
 ```
 
-Validate the complete LAN deployment:
+Validate the complete LAN deployment, including both application environment files:
 
 ```powershell
-.\scripts\test-deployment.ps1 `
-  -Config ./configs/securityedge.json
+.\scripts\test-deployment.ps1
 ```
 
-Run protection tests:
+Run protection tests with the effective public URL and Admin credential:
 
 ```powershell
 .\scripts\test-protection.ps1
@@ -418,12 +419,9 @@ Start with validation:
 Preview or create Windows Firewall rules for the public SecurityEdge ingress:
 
 ```powershell
-.\scripts\setup-proxy-firewall.ps1 `
-  -Config ./configs/securityedge.json
+.\scripts\setup-proxy-firewall.ps1
 
-.\scripts\setup-proxy-firewall.ps1 `
-  -Config ./configs/securityedge.json `
-  -Apply
+.\scripts\setup-proxy-firewall.ps1 -Apply
 ```
 
 The firewall script intentionally does not expose EdgeProxy or Admin ports.

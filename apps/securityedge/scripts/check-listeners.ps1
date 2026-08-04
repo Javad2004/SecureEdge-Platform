@@ -1,5 +1,7 @@
 param(
-    [string]$Config = ".\configs\securityedge.json",
+    [string]$Config = "",
+    [string]$EnvFile = "",
+    [switch]$NoEnv,
     [int]$IngressPort = 0,
     [int]$EdgeProxyDataPort = 0,
     [int]$EdgeProxyAdminPort = 0,
@@ -7,28 +9,27 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($NoEnv -and $EnvFile) { throw "-EnvFile and -NoEnv cannot be used together." }
+. "$PSScriptRoot\dotenv.ps1"
 
-function Get-PortFromListenAddress([string]$Address) {
-    if ($Address -notmatch ':(\d+)$') { throw "Invalid listen address: $Address" }
-    return [int]$Matches[1]
+$configEnvironmentPreexisting = $null -ne (Get-Item -LiteralPath Env:SECURITYEDGE_CONFIG -ErrorAction SilentlyContinue)
+$loadedEnv = $null
+if (-not $NoEnv) {
+    $explicitEnv = if ($EnvFile) { $EnvFile } else { Get-NonEmptyEnvironmentValue SECURITYEDGE_ENV_FILE }
+    $loadedEnv = Import-ApplicationDotEnv -ExplicitPath $explicitEnv -Candidates @((Join-Path $PSScriptRoot "..\.env"))
+    if ($loadedEnv) { Write-Host "Loaded environment: $loadedEnv" -ForegroundColor DarkGray }
 }
+$configPath = Resolve-EffectiveConfigPath -ExplicitValue $Config -EnvironmentVariable SECURITYEDGE_CONFIG `
+    -EnvironmentWasPreexisting $configEnvironmentPreexisting -LoadedEnvPath $loadedEnv `
+    -Candidates @((Join-Path $PSScriptRoot "..\configs\securityedge.json"))
+if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { throw "Configuration file not found: $configPath" }
+$configObject = Get-Content (Resolve-Path -LiteralPath $configPath) -Raw | ConvertFrom-Json
+$configObject = Apply-SecurityEdgeEnvironmentOverrides -ConfigObject $configObject
 
-function Get-PortFromUrl([string]$Address) {
-    return ([Uri]$Address).Port
-}
-
-if (Test-Path $Config) {
-    $configObject = Get-Content (Resolve-Path $Config) -Raw | ConvertFrom-Json
-    if ($IngressPort -eq 0) { $IngressPort = Get-PortFromListenAddress $configObject.server.listen_addr }
-    if ($EdgeProxyDataPort -eq 0) { $EdgeProxyDataPort = Get-PortFromUrl $configObject.server.upstream_proxy_url }
-    if ($EdgeProxyAdminPort -eq 0) { $EdgeProxyAdminPort = Get-PortFromUrl $configObject.edgeproxy.admin_url }
-    if ($SecurityEdgeAdminPort -eq 0) { $SecurityEdgeAdminPort = Get-PortFromListenAddress $configObject.admin.listen_addr }
-}
-
-if ($IngressPort -eq 0) { $IngressPort = 80 }
-if ($EdgeProxyDataPort -eq 0) { $EdgeProxyDataPort = 8080 }
-if ($EdgeProxyAdminPort -eq 0) { $EdgeProxyAdminPort = 9090 }
-if ($SecurityEdgeAdminPort -eq 0) { $SecurityEdgeAdminPort = 9191 }
+if ($IngressPort -eq 0) { $IngressPort = Get-PortFromEndpoint -Endpoint ([string]$configObject.server.listen_addr) }
+if ($EdgeProxyDataPort -eq 0) { $EdgeProxyDataPort = ([Uri]$configObject.server.upstream_proxy_url).Port }
+if ($EdgeProxyAdminPort -eq 0) { $EdgeProxyAdminPort = ([Uri]$configObject.edgeproxy.admin_url).Port }
+if ($SecurityEdgeAdminPort -eq 0) { $SecurityEdgeAdminPort = Get-PortFromEndpoint -Endpoint ([string]$configObject.admin.listen_addr) }
 
 $expected = @(
     @{ Port = $IngressPort; AddressClass = "network"; Name = "SecurityEdge public ingress" },
@@ -85,4 +86,4 @@ if ($unsafe.Count -gt 0) {
 }
 
 if ($missing) { exit 2 }
-Write-Host "Listener exposure matches the configured security boundary." -ForegroundColor Green
+Write-Host "Listener exposure matches the effective JSON and environment configuration." -ForegroundColor Green

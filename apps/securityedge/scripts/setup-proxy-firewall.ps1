@@ -1,29 +1,40 @@
 param(
-    [string]$Config = ".\configs\securityedge.json",
+    [string]$Config = "",
+    [string]$EnvFile = "",
+    [switch]$NoEnv,
     [switch]$Apply,
     [string]$RemoteAddress = "LocalSubnet",
     [switch]$ExposeDnsResolver
 )
 
 $ErrorActionPreference = "Stop"
-if (-not (Test-Path $Config)) { throw "Configuration file not found: $Config" }
-$configObject = Get-Content (Resolve-Path $Config) -Raw | ConvertFrom-Json
+if ($NoEnv -and $EnvFile) { throw "-EnvFile and -NoEnv cannot be used together." }
+. "$PSScriptRoot\dotenv.ps1"
 
-function Get-Port([string]$Address) {
-    if ($Address -notmatch ':(\d+)$') { throw "Invalid endpoint: $Address" }
-    return [int]$Matches[1]
+$configEnvironmentPreexisting = $null -ne (Get-Item -LiteralPath Env:SECURITYEDGE_CONFIG -ErrorAction SilentlyContinue)
+$loadedEnv = $null
+if (-not $NoEnv) {
+    $explicitEnv = if ($EnvFile) { $EnvFile } else { Get-NonEmptyEnvironmentValue SECURITYEDGE_ENV_FILE }
+    $loadedEnv = Import-ApplicationDotEnv -ExplicitPath $explicitEnv -Candidates @((Join-Path $PSScriptRoot "..\.env"))
+    if ($loadedEnv) { Write-Host "Loaded environment: $loadedEnv" -ForegroundColor DarkGray }
 }
+$configPath = Resolve-EffectiveConfigPath -ExplicitValue $Config -EnvironmentVariable SECURITYEDGE_CONFIG `
+    -EnvironmentWasPreexisting $configEnvironmentPreexisting -LoadedEnvPath $loadedEnv `
+    -Candidates @((Join-Path $PSScriptRoot "..\configs\securityedge.json"))
+if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { throw "Configuration file not found: $configPath" }
+$configObject = Get-Content (Resolve-Path -LiteralPath $configPath) -Raw | ConvertFrom-Json
+$configObject = Apply-SecurityEdgeEnvironmentOverrides -ConfigObject $configObject
 
-$ingressPort = Get-Port $configObject.server.listen_addr
+$ingressPort = Get-PortFromEndpoint -Endpoint ([string]$configObject.server.listen_addr)
 $rules = @(
     @{ Name = "SecurityEdge HTTP Ingress $ingressPort"; Protocol = "TCP"; Port = $ingressPort }
 )
 
 if ($ExposeDnsResolver) {
     if (-not $configObject.admin.connectivity.dns.enabled) {
-        Write-Warning "DNS probing is disabled in the selected SecurityEdge profile. Firewall exposure is still possible, but verify that a DNS service is intentionally running on this host."
+        Write-Warning "DNS probing is disabled in the effective SecurityEdge configuration. Firewall exposure is still possible, but verify that a DNS service is intentionally running on this host."
     }
-    $dnsPort = Get-Port $configObject.admin.connectivity.dns.server
+    $dnsPort = Get-PortFromEndpoint -Endpoint ([string]$configObject.admin.connectivity.dns.server)
     $rules += @(
         @{ Name = "DNS Resolver UDP $dnsPort"; Protocol = "UDP"; Port = $dnsPort },
         @{ Name = "DNS Resolver TCP $dnsPort"; Protocol = "TCP"; Port = $dnsPort }

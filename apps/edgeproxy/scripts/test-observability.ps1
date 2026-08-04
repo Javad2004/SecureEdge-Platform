@@ -1,11 +1,40 @@
 param(
-    [string]$ProxyUrl = "http://project.test",
-    [string]$AdminUrl = "http://127.0.0.1:9090",
-    [string]$Token = "EdgeProxyDemo2026",
-    [string]$OriginUrl = "http://10.36.74.43:9000"
+    [string]$Config = "",
+    [string]$ProxyUrl = "",
+    [string]$AdminUrl = "",
+    [string]$Token = "",
+    [string]$OriginUrl = "",
+    [string]$EnvFile = "",
+    [switch]$NoEnv
 )
 
 $ErrorActionPreference = "Stop"
+if ($NoEnv -and $EnvFile) { throw "-EnvFile and -NoEnv cannot be used together." }
+. "$PSScriptRoot\dotenv.ps1"
+
+$configEnvironmentPreexisting = $null -ne (Get-Item -LiteralPath Env:EDGEPROXY_CONFIG -ErrorAction SilentlyContinue)
+$loadedEnv = $null
+if (-not $NoEnv) {
+    $explicitEnv = if ($EnvFile) { $EnvFile } else { Get-NonEmptyEnvironmentValue EDGEPROXY_ENV_FILE }
+    $loadedEnv = Import-ApplicationDotEnv -ExplicitPath $explicitEnv -Candidates @((Join-Path $PSScriptRoot "..\.env"))
+    if ($loadedEnv) { Write-Host "Loaded environment: $loadedEnv" -ForegroundColor DarkGray }
+}
+
+$configPath = Resolve-EffectiveConfigPath -ExplicitValue $Config -EnvironmentVariable EDGEPROXY_CONFIG `
+    -EnvironmentWasPreexisting $configEnvironmentPreexisting -LoadedEnvPath $loadedEnv `
+    -Candidates @((Join-Path $PSScriptRoot "..\configs\edgeproxy.json"))
+if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { throw "Configuration file not found: $configPath" }
+$configObject = Get-Content (Resolve-Path -LiteralPath $configPath) -Raw | ConvertFrom-Json
+$configObject = Apply-EdgeProxyEnvironmentOverrides -ConfigObject $configObject
+
+if (-not $ProxyUrl) { $ProxyUrl = "http://project.test" }
+if (-not $AdminUrl) {
+    $AdminUrl = Get-LocalHttpUrlFromListenAddress -ListenAddress ([string]$configObject.admin.listen_addr)
+}
+if (-not $Token) { $Token = [string]$configObject.admin.auth_token }
+if (-not $OriginUrl) {
+    $OriginUrl = [string]$configObject.routes[0].upstreams[0].url
+}
 $Headers = @("Authorization: Bearer $Token")
 
 Write-Host "1) Generate one MISS, one HIT, and two BYPASS requests"

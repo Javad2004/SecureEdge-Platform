@@ -62,6 +62,21 @@ func TestValidateRejectsUnsafeCacheLimits(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsExcessiveServerHeaderLimit(t *testing.T) {
+	cfg := Default()
+	cfg.Routes = []RouteConfig{validRouteForValidation()}
+	cfg.Server.MaxHeaderBytes = maxServerHeaderBytes
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected maximum supported server header limit to validate: %v", err)
+	}
+
+	cfg.Server.MaxHeaderBytes = maxServerHeaderBytes + 1
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "server.max_header_bytes") {
+		t.Fatalf("expected excessive server header limit to be rejected, got %v", err)
+	}
+}
+
 func TestDefaultAdminLogStoreIsSafeAndBounded(t *testing.T) {
 	cfg := Default()
 	if !cfg.Admin.LogStore.Enabled {

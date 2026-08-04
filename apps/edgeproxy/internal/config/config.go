@@ -16,7 +16,10 @@ import (
 	"time"
 )
 
-const maxAdminLogStoreCapacity = 100_000
+const (
+	maxAdminLogStoreCapacity = 100_000
+	maxServerHeaderBytes     = 16 << 20
+)
 
 type Config struct {
 	Server ServerConfig  `json:"server"`
@@ -187,8 +190,8 @@ func (c *Config) Validate() error {
 	if c.Server.ShutdownTimeout.Duration <= 0 {
 		errs = append(errs, errors.New("server.shutdown_timeout must be positive"))
 	}
-	if c.Server.MaxHeaderBytes <= 0 {
-		errs = append(errs, errors.New("server.max_header_bytes must be positive"))
+	if c.Server.MaxHeaderBytes <= 0 || c.Server.MaxHeaderBytes > maxServerHeaderBytes {
+		errs = append(errs, fmt.Errorf("server.max_header_bytes must be between 1 and %d", maxServerHeaderBytes))
 	}
 	if !validHTTPToken(c.Server.ForwardedForHeader) {
 		errs = append(errs, errors.New("server.forwarded_for_header must be a valid HTTP header field name"))

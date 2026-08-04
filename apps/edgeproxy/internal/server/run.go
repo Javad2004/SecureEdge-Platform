@@ -102,7 +102,17 @@ func shutdownServers(ctx context.Context, servers ...namedHTTPServer) error {
 		go func(item namedHTTPServer) {
 			defer wg.Done()
 			if err := item.server.Shutdown(ctx); err != nil {
-				errCh <- fmt.Errorf("%s graceful shutdown: %w", item.name, err)
+				gracefulErr := fmt.Errorf("%s graceful shutdown: %w", item.name, err)
+				// Shutdown stops accepting new connections but leaves active ones open
+				// when its deadline expires. Force-close them before runtime resources
+				// are released so requests cannot continue against a partially closed
+				// proxy after the configured shutdown budget has elapsed.
+				closeErr := item.server.Close()
+				if closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
+					errCh <- errors.Join(gracefulErr, fmt.Errorf("%s forced shutdown: %w", item.name, closeErr))
+					return
+				}
+				errCh <- gracefulErr
 			}
 		}(item)
 	}

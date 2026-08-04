@@ -148,7 +148,16 @@ func shutdownServers(ctx context.Context, servers ...namedHTTPServer) error {
 		go func(item namedHTTPServer) {
 			defer wg.Done()
 			if err := item.server.Shutdown(ctx); err != nil {
-				errCh <- fmt.Errorf("%s shutdown: %w", item.name, err)
+				gracefulErr := fmt.Errorf("%s graceful shutdown: %w", item.name, err)
+				// Shutdown leaves active connections open when its deadline expires.
+				// Force-close them before Runtime.Close releases shared components so
+				// in-flight handlers cannot continue against partially closed state.
+				closeErr := item.server.Close()
+				if closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
+					errCh <- errors.Join(gracefulErr, fmt.Errorf("%s forced shutdown: %w", item.name, closeErr))
+					return
+				}
+				errCh <- gracefulErr
 			}
 		}(item)
 	}

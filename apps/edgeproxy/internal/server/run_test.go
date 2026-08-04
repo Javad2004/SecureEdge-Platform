@@ -100,13 +100,13 @@ func TestShutdownServersClosesAllListenersBeforeWaitingForHandlers(t *testing.T)
 	}
 }
 
-func TestShutdownServersReportsDeadline(t *testing.T) {
+func TestShutdownServersForcesCloseAfterDeadline(t *testing.T) {
 	started := make(chan struct{})
-	release := make(chan struct{})
-	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	canceled := make(chan struct{})
+	server := &http.Server{Handler: http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		close(started)
-		<-release
-		w.WriteHeader(http.StatusNoContent)
+		<-r.Context().Done()
+		close(canceled)
 	})}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -131,19 +131,20 @@ func TestShutdownServersReportsDeadline(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	shutdownErr := shutdownServers(ctx, namedHTTPServer{name: "proxy", server: server})
+	shutdownErr := shutdownServers(ctx, namedHTTPServer{name: "test", server: server})
 	if !errors.Is(shutdownErr, context.DeadlineExceeded) {
 		t.Fatalf("shutdown error=%v, want context deadline exceeded", shutdownErr)
 	}
-	close(release)
 
 	select {
-	case requestErr := <-requestDone:
-		if requestErr != nil {
-			t.Fatalf("request failed after handler release: %v", requestErr)
-		}
+	case <-canceled:
 	case <-time.After(2 * time.Second):
-		t.Fatal("request did not finish")
+		t.Fatal("forced shutdown did not cancel the active request")
+	}
+	select {
+	case <-requestDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("client request remained blocked after forced shutdown")
 	}
 	select {
 	case serveErr := <-serveDone:

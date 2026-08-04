@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/accesslog"
@@ -75,14 +76,42 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout.Duration)
 	defer cancel()
-	var shutdownErrs []error
-	if adminServer != nil {
-		if err := adminServer.Shutdown(shutdownCtx); err != nil {
-			shutdownErrs = append(shutdownErrs, fmt.Errorf("admin graceful shutdown: %w", err))
+	shutdownErr := shutdownServers(shutdownCtx,
+		namedHTTPServer{name: "proxy", server: mainServer},
+		namedHTTPServer{name: "admin", server: adminServer},
+	)
+	return errors.Join(runErr, shutdownErr)
+}
+
+type namedHTTPServer struct {
+	name   string
+	server *http.Server
+}
+
+// shutdownServers stops independent listeners concurrently so one slow
+// listener cannot consume the entire shared shutdown deadline before the
+// remaining listeners receive a chance to drain.
+func shutdownServers(ctx context.Context, servers ...namedHTTPServer) error {
+	errCh := make(chan error, len(servers))
+	var wg sync.WaitGroup
+	for _, item := range servers {
+		if item.server == nil {
+			continue
 		}
+		wg.Add(1)
+		go func(item namedHTTPServer) {
+			defer wg.Done()
+			if err := item.server.Shutdown(ctx); err != nil {
+				errCh <- fmt.Errorf("%s graceful shutdown: %w", item.name, err)
+			}
+		}(item)
 	}
-	if err := mainServer.Shutdown(shutdownCtx); err != nil {
-		shutdownErrs = append(shutdownErrs, fmt.Errorf("proxy graceful shutdown: %w", err))
+	wg.Wait()
+	close(errCh)
+
+	var errs []error
+	for err := range errCh {
+		errs = append(errs, err)
 	}
-	return errors.Join(append([]error{runErr}, shutdownErrs...)...)
+	return errors.Join(errs...)
 }

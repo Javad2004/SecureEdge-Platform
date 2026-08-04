@@ -77,6 +77,22 @@ func TestValidateRejectsExcessiveServerHeaderLimit(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsExcessiveProxyResponseHeaderLimit(t *testing.T) {
+	cfg := Default()
+	route := validRouteForValidation()
+	route.Proxy.MaxResponseHeaderBytes = maxProxyResponseHeaderBytes
+	cfg.Routes = []RouteConfig{route}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected maximum supported proxy response header limit to validate: %v", err)
+	}
+
+	cfg.Routes[0].Proxy.MaxResponseHeaderBytes = maxProxyResponseHeaderBytes + 1
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "proxy.max_response_header_bytes") {
+		t.Fatalf("expected excessive proxy response header limit to be rejected, got %v", err)
+	}
+}
+
 func TestDefaultAdminLogStoreIsSafeAndBounded(t *testing.T) {
 	cfg := Default()
 	if !cfg.Admin.LogStore.Enabled {

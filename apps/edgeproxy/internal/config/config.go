@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	maxAdminLogStoreCapacity = 100_000
-	maxServerHeaderBytes     = 16 << 20
+	maxAdminLogStoreCapacity    = 100_000
+	maxServerHeaderBytes        = 16 << 20
+	maxProxyResponseHeaderBytes = 16 << 20
 )
 
 type Config struct {
@@ -332,8 +333,11 @@ func (c *Config) Validate() error {
 		if r.Proxy.RetryCount < 0 {
 			errs = append(errs, fmt.Errorf("route %q retry_count cannot be negative", r.Name))
 		}
-		if r.Proxy.MaxIdleConns <= 0 || r.Proxy.MaxIdleConnsPerHost <= 0 || r.Proxy.MaxResponseHeaderBytes <= 0 {
-			errs = append(errs, fmt.Errorf("route %q proxy connection/header limits must be positive", r.Name))
+		if r.Proxy.MaxIdleConns <= 0 || r.Proxy.MaxIdleConnsPerHost <= 0 {
+			errs = append(errs, fmt.Errorf("route %q proxy connection limits must be positive", r.Name))
+		}
+		if r.Proxy.MaxResponseHeaderBytes <= 0 || r.Proxy.MaxResponseHeaderBytes > maxProxyResponseHeaderBytes {
+			errs = append(errs, fmt.Errorf("route %q proxy.max_response_header_bytes must be between 1 and %d", r.Name, maxProxyResponseHeaderBytes))
 		}
 
 		if r.Cache.Enabled {

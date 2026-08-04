@@ -93,7 +93,7 @@ Copy-Item ./apps/securityedge/.env.example ./apps/securityedge/.env
 
 Replace the IP addresses, ports, hostnames, DNS values, and tokens for the target environment. The `EDGEPROXY_ADMIN_TOKEN` value must be identical in both files. The real `.env` files are ignored by Git; only `.env.example` belongs in the repository.
 
-Both programs automatically find their application-specific `.env` whether launched from the repository root or the application directory. They also work normally when no `.env` exists by using the selected JSON profile and built-in defaults.
+Both programs automatically find their application-specific `.env` whether launched from the repository root or the application directory. A repository-root `.env` is intentionally not auto-discovered or shared between the applications; use the two application files or select an external file explicitly. Both programs also work normally when no application `.env` exists by using the selected JSON profile and built-in defaults.
 
 Precedence is:
 

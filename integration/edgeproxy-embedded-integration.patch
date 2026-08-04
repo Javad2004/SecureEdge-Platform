@@ -1,6 +1,6 @@
 diff -ruN '--exclude=.git' a/cmd/edgeproxy/main.go b/cmd/edgeproxy/main.go
---- a/cmd/edgeproxy/main.go	2026-08-04 21:55:07.747640910 +0000
-+++ b/cmd/edgeproxy/main.go	2026-08-04 21:57:31.961160402 +0000
+--- a/cmd/edgeproxy/main.go	2026-08-04 23:35:14.444716644 +0000
++++ b/cmd/edgeproxy/main.go	2026-08-04 23:35:25.389243616 +0000
 @@ -11,6 +11,7 @@
  	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
  	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/envfile"
@@ -71,8 +71,8 @@ diff -ruN '--exclude=.git' a/cmd/edgeproxy/main.go b/cmd/edgeproxy/main.go
  		return
  	}
 diff -ruN '--exclude=.git' a/go.mod b/go.mod
---- a/go.mod	2026-08-04 21:48:18.000000000 +0000
-+++ b/go.mod	2026-08-04 21:56:30.251021278 +0000
+--- a/go.mod	2026-08-04 23:23:48.000000000 +0000
++++ b/go.mod	2026-08-04 23:35:25.389352648 +0000
 @@ -1,3 +1,7 @@
  module github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy
  
@@ -82,8 +82,8 @@ diff -ruN '--exclude=.git' a/go.mod b/go.mod
 +
 +replace github.com/Javad2004/SecureEdge-Platform/apps/securityedge => ../securityedge
 diff -ruN '--exclude=.git' a/internal/server/run.go b/internal/server/run.go
---- a/internal/server/run.go	2026-08-04 21:48:18.000000000 +0000
-+++ b/internal/server/run.go	2026-08-04 21:56:30.251830181 +0000
+--- a/internal/server/run.go	2026-08-04 23:23:48.000000000 +0000
++++ b/internal/server/run.go	2026-08-04 23:35:25.389419377 +0000
 @@ -8,6 +8,7 @@
  	"net/http"
  	"os"

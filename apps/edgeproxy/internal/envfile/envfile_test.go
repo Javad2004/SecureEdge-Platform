@@ -93,3 +93,31 @@ func TestLoadRejectsInvalidUTF8WithoutPartialApplication(t *testing.T) {
 		t.Fatal("invalid UTF-8 file was partially applied")
 	}
 }
+
+func TestApplicationCandidatesKeepDotenvApplicationScoped(t *testing.T) {
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(previous); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	dir := t.TempDir()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := ApplicationCandidates("apps/application/.env"); len(got) != 1 || got[0] != "apps/application/.env" {
+		t.Fatalf("repository root must not discover generic .env: %#v", got)
+	}
+
+	if err := os.WriteFile("go.mod", []byte("module "+applicationModulePath+"\n\ngo 1.23\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := ApplicationCandidates("apps/application/.env")
+	if len(got) != 2 || got[0] != "apps/application/.env" || got[1] != ".env" {
+		t.Fatalf("application directory must discover local .env: %#v", got)
+	}
+}

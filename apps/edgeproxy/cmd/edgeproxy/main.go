@@ -30,7 +30,7 @@ func main() {
 	var err error
 	if !*noEnv {
 		explicitEnv := firstNonEmpty(*envFlag, os.Getenv("EDGEPROXY_ENV_FILE"))
-		loadedEnv, err = envfile.Load(explicitEnv, "apps/edgeproxy/.env", ".env")
+		loadedEnv, err = envfile.Load(explicitEnv, envfile.ApplicationCandidates("apps/edgeproxy/.env")...)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)

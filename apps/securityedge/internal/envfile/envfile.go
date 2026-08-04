@@ -13,9 +13,39 @@ import (
 	"unicode/utf8"
 )
 
-const maxFileBytes int64 = 1 << 20
+const (
+	maxFileBytes          int64 = 1 << 20
+	applicationModulePath       = "github.com/Javad2004/SecureEdge-Platform/apps/securityedge"
+)
 
 var keyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// ApplicationCandidates returns the repository-relative application dotenv
+// path and adds a local .env candidate only when the current working directory
+// is the matching Go module. This keeps per-application dotenv discovery
+// working from either the repository root or the application directory without
+// treating an unrelated repository-root .env as shared configuration.
+func ApplicationCandidates(repositoryPath string) []string {
+	candidates := []string{repositoryPath}
+	if currentModulePath() == applicationModulePath {
+		candidates = append(candidates, ".env")
+	}
+	return candidates
+}
+
+func currentModulePath() string {
+	data, err := os.ReadFile("go.mod")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "module" {
+			return fields[1]
+		}
+	}
+	return ""
+}
 
 // Load loads an explicitly selected dotenv file, or the first existing file
 // from candidates. Existing process environment variables are never

@@ -52,7 +52,7 @@ func run() int {
 	var err error
 	if !*noEnv {
 		explicitEnv := firstNonEmpty(*envFlag, os.Getenv("SECURITYEDGE_ENV_FILE"))
-		loadedEnv, err = envfile.Load(explicitEnv, "apps/securityedge/.env", ".env")
+		loadedEnv, err = envfile.Load(explicitEnv, envfile.ApplicationCandidates("apps/securityedge/.env")...)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1

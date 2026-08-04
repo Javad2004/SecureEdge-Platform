@@ -120,6 +120,12 @@ type CustomRuleConfig struct {
 	Pattern     string   `json:"pattern"`
 }
 
+// MaxCustomRuleScore keeps individual custom-rule contributions within the
+// same documented range as policy anomaly thresholds. Besides preventing
+// configuration mistakes, this bounds aggregate scoring work before the WAF's
+// defensive saturation logic is needed.
+const MaxCustomRuleScore = 1000
+
 type Policy struct {
 	Enabled                    bool            `json:"enabled"`
 	Mode                       string          `json:"mode"`
@@ -521,8 +527,11 @@ func validateCustomRules(rules []CustomRuleConfig) error {
 			errs = append(errs, fmt.Errorf("waf.custom_rules[%d].id is empty or duplicated", i))
 		}
 		seen[r.ID] = true
-		if r.Name == "" || r.Category == "" || r.Description == "" || r.Score <= 0 || len(r.Targets) == 0 || r.Pattern == "" {
+		if r.Name == "" || r.Category == "" || r.Description == "" || len(r.Targets) == 0 || r.Pattern == "" {
 			errs = append(errs, fmt.Errorf("waf.custom_rules[%d] is incomplete", i))
+		}
+		if r.Score <= 0 || r.Score > MaxCustomRuleScore {
+			errs = append(errs, fmt.Errorf("waf.custom_rules[%d].score must be between 1 and %d", i, MaxCustomRuleScore))
 		}
 		for _, target := range r.Targets {
 			if !validTargets[strings.ToLower(strings.TrimSpace(target))] {

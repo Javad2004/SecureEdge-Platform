@@ -18,6 +18,40 @@ func TestRejectsInvalidCustomRule(t *testing.T) {
 		t.Fatal("expected validation error")
 	}
 }
+
+func TestCustomRuleScoreBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		score     int
+		wantError bool
+	}{
+		{name: "zero", score: 0, wantError: true},
+		{name: "maximum", score: MaxCustomRuleScore},
+		{name: "above maximum", score: MaxCustomRuleScore + 1, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Server.Mode = "embedded"
+			cfg.EdgeProxy.ConfigPath = "edge.json"
+			cfg.WAF.CustomRules = []CustomRuleConfig{{
+				ID: "SCORE-BOUND", Name: "Score bound", Category: "custom",
+				Description: "checks custom-rule score validation", Score: tc.score,
+				Targets: []string{"query"}, Pattern: `score-bound-marker`,
+			}}
+			err := cfg.Validate()
+			if tc.wantError {
+				if err == nil || !strings.Contains(err.Error(), ".score must be between") {
+					t.Fatalf("expected score validation error, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected boundary score to be accepted: %v", err)
+			}
+		})
+	}
+}
+
 func TestRejectsUntrustedProxyCIDRFormat(t *testing.T) {
 	cfg := Default()
 	cfg.Server.Mode = "embedded"

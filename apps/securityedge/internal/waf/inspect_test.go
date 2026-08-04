@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -36,6 +37,40 @@ func TestDetectSQLiAndRestoreBody(t *testing.T) {
 	n, _ := req.Body.Read(data)
 	if !strings.Contains(string(data[:n]), "username") {
 		t.Fatal("body was not restored")
+	}
+}
+
+func TestScoreAccumulationSaturatesInsteadOfOverflowing(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	i := &Inspector{
+		maxMatches: 32,
+		rules: []Rule{
+			{ID: "OVERFLOW-1", Name: "Overflow one", Category: "test", Score: maxInt, Targets: []string{"query"}, pattern: regexp.MustCompile(`overflow-marker`)},
+			{ID: "OVERFLOW-2", Name: "Overflow two", Category: "test", Score: maxInt, Targets: []string{"query"}, pattern: regexp.MustCompile(`overflow-marker`)},
+		},
+	}
+	req := httptest.NewRequest("GET", "http://project.test/?q=overflow-marker", nil)
+
+	got, err := i.Inspect(req, config.Default().DefaultPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Score != maxInt {
+		t.Fatalf("score=%d want saturated maximum %d", got.Score, maxInt)
+	}
+	if len(got.Matches) != 2 {
+		t.Fatalf("matches=%d want 2", len(got.Matches))
+	}
+}
+
+func TestNewInspectorRejectsOutOfRangeCustomScore(t *testing.T) {
+	custom := []config.CustomRuleConfig{{
+		ID: "CUSTOM-SCORE-BOUND", Name: "Score bound", Category: "custom",
+		Description: "checks direct rule compilation", Score: config.MaxCustomRuleScore + 1,
+		Targets: []string{"query"}, Pattern: `score-bound-marker`,
+	}}
+	if _, err := NewInspector(custom, 32); err == nil || !strings.Contains(err.Error(), "score must be between") {
+		t.Fatalf("expected direct compilation to reject oversized score, got %v", err)
 	}
 }
 func TestCleanRequest(t *testing.T) {

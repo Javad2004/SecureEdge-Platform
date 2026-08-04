@@ -77,6 +77,9 @@ func CompileRules(custom []config.CustomRuleConfig) ([]Rule, error) {
 		if seen[id] {
 			return nil, fmt.Errorf("duplicate WAF rule ID %q", id)
 		}
+		if c.Score <= 0 || c.Score > config.MaxCustomRuleScore {
+			return nil, fmt.Errorf("custom WAF rule %q score must be between 1 and %d", id, config.MaxCustomRuleScore)
+		}
 		compiled, err := regexp.Compile(c.Pattern)
 		if err != nil {
 			return nil, fmt.Errorf("compile custom rule %s: %w", id, err)

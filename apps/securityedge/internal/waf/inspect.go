@@ -107,7 +107,7 @@ func (i *Inspector) Inspect(req *http.Request, policy config.Policy) (Result, er
 				if item.value == "" || !rule.pattern.MatchString(item.value) {
 					continue
 				}
-				result.Score += rule.Score
+				result.Score = saturatingAddScore(result.Score, rule.Score)
 				result.Matches = append(result.Matches, Match{RuleID: rule.ID, RuleName: rule.Name, Category: rule.Category, Score: rule.Score, Target: target, Location: boundedMatchLocation(item.location), Fingerprint: fingerprint(item.value)})
 				matched = true
 				if len(result.Matches) >= maxMatches {
@@ -124,6 +124,17 @@ func (i *Inspector) Inspect(req *http.Request, policy config.Policy) (Result, er
 	}
 	sortMatches(result.Matches)
 	return result, nil
+}
+
+func saturatingAddScore(current, increment int) int {
+	if increment <= 0 {
+		return current
+	}
+	maxInt := int(^uint(0) >> 1)
+	if current > maxInt-increment {
+		return maxInt
+	}
+	return current + increment
 }
 
 func excludedPathMatches(requestPath, prefix string) bool {

@@ -238,10 +238,60 @@ func TestResolveConfigPathUsesEnvironmentFileDirectory(t *testing.T) {
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, ".env")
 	want := filepath.Join(dir, "configs", "securityedge.json")
-	if got := resolveConfigPath("", "configs/securityedge.json", envPath, "fallback.json"); got != want {
+	if got := resolveConfigPath("", "configs/securityedge.json", envPath, true, "fallback.json"); got != want {
 		t.Fatalf("resolved path=%q, want %q", got, want)
 	}
-	if got := resolveConfigPath("cli.json", "configs/securityedge.json", envPath, "fallback.json"); got != "cli.json" {
+	if got := resolveConfigPath("cli.json", "configs/securityedge.json", envPath, true, "fallback.json"); got != "cli.json" {
 		t.Fatalf("CLI path lost precedence: %q", got)
+	}
+}
+
+func TestResolveConfigPathKeepsProcessEnvironmentRelativeToWorkingDirectory(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), ".env")
+	if got := resolveConfigPath("", "configs/process.json", envPath, false, "fallback.json"); got != "configs/process.json" {
+		t.Fatalf("process environment path was rebased to dotenv directory: %q", got)
+	}
+}
+
+func TestGatewayPreserveHostBehavior(t *testing.T) {
+	tests := []struct {
+		name         string
+		preserveHost bool
+		wantClient   bool
+	}{
+		{name: "target host by default", preserveHost: false, wantClient: false},
+		{name: "incoming host when enabled", preserveHost: true, wantClient: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			seenHost := make(chan string, 1)
+			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seenHost <- r.Host
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer origin.Close()
+
+			target, err := url.Parse(origin.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := config.Default().Server
+			cfg.PreserveHost = tc.preserveHost
+			proxy := newReverseProxy(target, cfg, slog.Default())
+			req := httptest.NewRequest(http.MethodGet, "http://client.example/api", nil)
+			req.Host = "client.example"
+			response := httptest.NewRecorder()
+			proxy.ServeHTTP(response, req)
+			if response.Code != http.StatusNoContent {
+				t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+			}
+			want := target.Host
+			if tc.wantClient {
+				want = "client.example"
+			}
+			if got := <-seenHost; got != want {
+				t.Fatalf("upstream Host=%q, want %q", got, want)
+			}
+		})
 	}
 }

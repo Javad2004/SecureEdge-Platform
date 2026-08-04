@@ -74,7 +74,7 @@ EdgeProxy can run entirely from its JSON profiles, so an environment file is opt
 Copy-Item ./.env.example ./.env
 ```
 
-The process automatically loads `apps/edgeproxy/.env` when launched from the repository root and `.env` when launched from this directory. An explicit file can be selected with `-env` or `EDGEPROXY_ENV_FILE`; use `-no-env` for an isolated run that must ignore dotenv files.
+The process automatically loads `apps/edgeproxy/.env` when launched from the repository root and `.env` when launched from this directory. An explicit file can be selected with `-env` or `EDGEPROXY_ENV_FILE`; use `-no-env` for an isolated run that must ignore dotenv files. Relative `EDGEPROXY_CONFIG` values loaded from `.env` resolve from that file, while CLI and pre-existing process-environment paths remain relative to the current working directory.
 
 Configuration precedence is:
 

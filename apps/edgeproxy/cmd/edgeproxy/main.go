@@ -26,6 +26,7 @@ func main() {
 		os.Exit(1)
 	}
 	loadedEnv := ""
+	_, configEnvironmentPreexisting := os.LookupEnv("EDGEPROXY_CONFIG")
 	var err error
 	if !*noEnv {
 		explicitEnv := firstNonEmpty(*envFlag, os.Getenv("EDGEPROXY_ENV_FILE"))
@@ -35,7 +36,14 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	configPath := resolveConfigPath(*configFlag, os.Getenv("EDGEPROXY_CONFIG"), loadedEnv, "configs/edgeproxy.json", "apps/edgeproxy/configs/edgeproxy.json")
+	configPath := resolveConfigPath(
+		*configFlag,
+		os.Getenv("EDGEPROXY_CONFIG"),
+		loadedEnv,
+		!configEnvironmentPreexisting,
+		"configs/edgeproxy.json",
+		"apps/edgeproxy/configs/edgeproxy.json",
+	)
 
 	var handler slog.Handler
 	if *prettyLogs {
@@ -63,12 +71,12 @@ func main() {
 	}
 }
 
-func resolveConfigPath(cliValue, environmentValue, loadedEnv string, candidates ...string) string {
+func resolveConfigPath(cliValue, environmentValue, loadedEnv string, environmentValueFromDotenv bool, candidates ...string) string {
 	if value := strings.TrimSpace(cliValue); value != "" {
 		return value
 	}
 	if value := strings.TrimSpace(environmentValue); value != "" {
-		if loadedEnv != "" && !filepath.IsAbs(value) {
+		if environmentValueFromDotenv && loadedEnv != "" && !filepath.IsAbs(value) {
 			return filepath.Clean(filepath.Join(filepath.Dir(loadedEnv), value))
 		}
 		return value

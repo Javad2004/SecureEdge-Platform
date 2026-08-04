@@ -48,6 +48,7 @@ func run() int {
 		return 1
 	}
 	loadedEnv := ""
+	_, configEnvironmentPreexisting := os.LookupEnv("SECURITYEDGE_CONFIG")
 	var err error
 	if !*noEnv {
 		explicitEnv := firstNonEmpty(*envFlag, os.Getenv("SECURITYEDGE_ENV_FILE"))
@@ -57,7 +58,14 @@ func run() int {
 			return 1
 		}
 	}
-	configPath := resolveConfigPath(*configFlag, os.Getenv("SECURITYEDGE_CONFIG"), loadedEnv, "configs/local-dev.json", "apps/securityedge/configs/local-dev.json")
+	configPath := resolveConfigPath(
+		*configFlag,
+		os.Getenv("SECURITYEDGE_CONFIG"),
+		loadedEnv,
+		!configEnvironmentPreexisting,
+		"configs/local-dev.json",
+		"apps/securityedge/configs/local-dev.json",
+	)
 	level, err := parseLevel(*logLevel)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -270,12 +278,12 @@ func writeProxyError(w http.ResponseWriter, status int, code, id string) {
 	_, _ = fmt.Fprintf(w, `{"error":{"code":%q,"message":%q,"request_id":%q}}\n`, code, http.StatusText(status), id)
 }
 
-func resolveConfigPath(cliValue, environmentValue, loadedEnv string, candidates ...string) string {
+func resolveConfigPath(cliValue, environmentValue, loadedEnv string, environmentValueFromDotenv bool, candidates ...string) string {
 	if value := strings.TrimSpace(cliValue); value != "" {
 		return value
 	}
 	if value := strings.TrimSpace(environmentValue); value != "" {
-		if loadedEnv != "" && !filepath.IsAbs(value) {
+		if environmentValueFromDotenv && loadedEnv != "" && !filepath.IsAbs(value) {
 			return filepath.Clean(filepath.Join(filepath.Dir(loadedEnv), value))
 		}
 		return value

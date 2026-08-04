@@ -93,7 +93,7 @@ SecurityEdge can run without an environment file. For deployment-specific listen
 Copy-Item ./.env.example ./.env
 ```
 
-The process automatically loads `apps/securityedge/.env` when launched from the repository root and `.env` when launched from this directory. Select another file with `-env` or `SECURITYEDGE_ENV_FILE`; use `-no-env` for an isolated run that must ignore dotenv files.
+The process automatically loads `apps/securityedge/.env` when launched from the repository root and `.env` when launched from this directory. Select another file with `-env` or `SECURITYEDGE_ENV_FILE`; use `-no-env` for an isolated run that must ignore dotenv files. Relative `SECURITYEDGE_CONFIG` values loaded from `.env` resolve from that file, while CLI and pre-existing process-environment paths remain relative to the current working directory.
 
 Configuration precedence is:
 

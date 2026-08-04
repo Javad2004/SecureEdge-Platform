@@ -66,7 +66,9 @@ func main() {
 				ms = parsed
 			}
 		}
-		time.Sleep(time.Duration(ms) * time.Millisecond)
+		if !waitForRequest(r.Context(), time.Duration(ms)*time.Millisecond) {
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "public, max-age=10")
 		_ = json.NewEncoder(w).Encode(map[string]any{"origin": *name, "slept_ms": ms})
@@ -101,18 +103,42 @@ func main() {
 
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	exitCode := 0
 	select {
 	case <-sigCtx.Done():
 		log.Printf("origin demo %q shutting down", *name)
 	case err := <-errCh:
-		log.Fatalf("origin server failed: %v", err)
+		log.Printf("origin server failed: %v", err)
+		exitCode = 1
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := shutdownServer(server, 5*time.Second); err != nil {
+		log.Printf("origin shutdown failed: %v", err)
+		exitCode = 1
+	}
+	if exitCode != 0 {
+		os.Exit(exitCode)
+	}
+}
+
+func waitForRequest(ctx context.Context, duration time.Duration) bool {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func shutdownServer(server *http.Server, timeout time.Duration) error {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("origin graceful shutdown failed: %v", err)
+		return errors.Join(err, server.Close())
 	}
+	return nil
 }
 
 func safeLogPath(r *http.Request) string {

@@ -68,7 +68,7 @@ func TestValidateDoesNotCreatePersistentLogFiles(t *testing.T) {
 	}
 }
 
-func TestPolicyWriteDoesNotPersistEnvironmentSecretsOrAbsoluteRoutePath(t *testing.T) {
+func TestPolicyWriteDoesNotPersistEnvironmentOverridesOrAbsoluteRoutePath(t *testing.T) {
 	dir := t.TempDir()
 	edgePath := filepath.Join(dir, "edge.json")
 	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
@@ -88,6 +88,8 @@ func TestPolicyWriteDoesNotPersistEnvironmentSecretsOrAbsoluteRoutePath(t *testi
 
 	t.Setenv("SECURITYEDGE_ADMIN_TOKEN", "environment-security-secret")
 	t.Setenv("EDGEPROXY_ADMIN_TOKEN", "environment-edge-secret")
+	t.Setenv("SECURITYEDGE_ADMIN_LISTEN_ADDR", "127.0.0.1:19191")
+	t.Setenv("SECURITYEDGE_EDGEPROXY_ADMIN_URL", "http://127.0.0.1:19091")
 	runtime, err := New(cfgPath, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -109,6 +111,9 @@ func TestPolicyWriteDoesNotPersistEnvironmentSecretsOrAbsoluteRoutePath(t *testi
 	}
 	if raw.Admin.AuthToken != "file-security-token" || raw.EdgeProxy.AdminToken != "file-edge-token" {
 		t.Fatalf("environment secret was persisted: admin=%q edge=%q", raw.Admin.AuthToken, raw.EdgeProxy.AdminToken)
+	}
+	if raw.Admin.ListenAddr != cfg.Admin.ListenAddr || raw.EdgeProxy.AdminURL != cfg.EdgeProxy.AdminURL {
+		t.Fatalf("environment endpoint was persisted: admin=%q edge=%q", raw.Admin.ListenAddr, raw.EdgeProxy.AdminURL)
 	}
 	if raw.EdgeProxy.ConfigPath != "edge.json" {
 		t.Fatalf("relative edgeproxy path changed: %q", raw.EdgeProxy.ConfigPath)

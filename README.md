@@ -75,14 +75,45 @@ github.com/Javad2004/SecureEdge-Platform/apps/securityedge
 
 The root `go.work` file connects both modules for local development and repository-wide builds.
 
+## Environment files
+
+Each application has its own committed template:
+
+```text
+apps/edgeproxy/.env.example
+apps/securityedge/.env.example
+```
+
+Create local files before a LAN deployment:
+
+```powershell
+Copy-Item ./apps/edgeproxy/.env.example ./apps/edgeproxy/.env
+Copy-Item ./apps/securityedge/.env.example ./apps/securityedge/.env
+```
+
+Replace the IP addresses, ports, hostnames, DNS values, and tokens for the target environment. The `EDGEPROXY_ADMIN_TOKEN` value must be identical in both files. The real `.env` files are ignored by Git; only `.env.example` belongs in the repository.
+
+Both programs automatically find their application-specific `.env` whether launched from the repository root or the application directory. They also work normally when no `.env` exists by using the selected JSON profile and built-in defaults.
+
+Precedence is:
+
+```text
+CLI flags > process environment > application .env > JSON profile > built-in defaults
+```
+
+Use `-env <path>` for an explicit file, or `-no-env` to disable dotenv loading for an isolated test. `EDGEPROXY_ENV_FILE` and `SECURITYEDGE_ENV_FILE` provide the equivalent service-manager setting. Relative `EDGEPROXY_CONFIG` and `SECURITYEDGE_CONFIG` paths stored in `.env` are resolved from that `.env` file, preventing current-directory-dependent behavior.
+
+See the component READMEs for the complete variable reference.
+
 ## Quick start: local development
 
-Run these commands from the **repository root** in separate terminals.
+Run these commands from the **repository root** in separate terminals. `-no-env` makes this local test independent of any LAN `.env` files.
 
 ### 1. Start the demo Origin
 
 ```powershell
 go run ./apps/edgeproxy/cmd/origin-demo `
+  -no-env `
   -listen 127.0.0.1:9000 `
   -name origin-local
 ```
@@ -91,6 +122,7 @@ go run ./apps/edgeproxy/cmd/origin-demo `
 
 ```powershell
 go run ./apps/edgeproxy/cmd/edgeproxy `
+  -no-env `
   -config ./integration/edgeproxy-local-behind-waf.json `
   -pretty-logs
 ```
@@ -99,6 +131,7 @@ go run ./apps/edgeproxy/cmd/edgeproxy `
 
 ```powershell
 go run ./apps/securityedge/cmd/securityedge `
+  -no-env `
   -config ./apps/securityedge/configs/local-dev.json `
   -pretty-logs
 ```
@@ -141,33 +174,29 @@ SecurityEdge Admin token      SecurityEdgeDemo2026
 EdgeProxy Admin token         EdgeProxyDemo2026
 ```
 
-These are demonstration settings, not hard-coded product requirements. Update the JSON profiles before using another network.
+These are demonstration fallbacks, not hard-coded product requirements. For another network, copy and edit the two application `.env.example` files rather than committing machine-specific changes to JSON.
 
-Run from the repository root.
+After copying and editing both `.env.example` files, run from the repository root.
 
 ### Origin host
 
 ```powershell
-go run ./apps/edgeproxy/cmd/origin-demo `
-  -listen 0.0.0.0:9000 `
-  -name origin-a
+go run ./apps/edgeproxy/cmd/origin-demo
 ```
 
 ### Gateway host: EdgeProxy
 
 ```powershell
-go run ./apps/edgeproxy/cmd/edgeproxy `
-  -config ./integration/edgeproxy-behind-waf.json `
-  -pretty-logs
+go run ./apps/edgeproxy/cmd/edgeproxy -pretty-logs
 ```
 
 ### Gateway host: SecurityEdge
 
 ```powershell
-go run ./apps/securityedge/cmd/securityedge `
-  -config ./apps/securityedge/configs/securityedge.json `
-  -pretty-logs
+go run ./apps/securityedge/cmd/securityedge -pretty-logs
 ```
+
+Use `-env <path>` when the real environment file is stored outside the application directory. Explicit `-listen`, `-config`, or other CLI values still override `.env` for one-off tests.
 
 Open the public hostname from any permitted HTTP client. Requests that reach SecurityEdge appear automatically in the **Recent Client Traffic** panel; no external reporting script is required.
 
@@ -304,7 +333,7 @@ Delete the stack and its named volumes when a clean configuration reset is requi
 docker compose -f ./deployments/docker/compose.yml down -v
 ```
 
-SecurityEdge stores its mutable policy configuration and rotated NDJSON logs in named Docker volumes. Environment-provided tokens override the values in the persisted JSON and are never written back by policy updates.
+SecurityEdge stores its mutable policy configuration and rotated NDJSON logs in named Docker volumes. Environment-provided tokens and endpoint overrides take precedence at runtime and are never written back by policy updates.
 
 ### Build the SecurityEdge image directly
 
@@ -330,14 +359,14 @@ SecurityEdge Admin UI/API token  authenticates dashboard and SecurityEdge API us
 EdgeProxy Admin API token        authenticates SecurityEdge-to-EdgeProxy control-plane calls
 ```
 
-For non-demonstration environments, do not rely on committed example values:
+For non-demonstration environments, copy the two application templates, generate strong values, and keep the shared EdgeProxy token synchronized:
 
 ```powershell
-$env:SECURITYEDGE_ADMIN_TOKEN = "<strong-random-token>"
-$env:EDGEPROXY_ADMIN_TOKEN = "<matching-edgeproxy-token>"
+Copy-Item ./apps/edgeproxy/.env.example ./apps/edgeproxy/.env
+Copy-Item ./apps/securityedge/.env.example ./apps/securityedge/.env
 ```
 
-Environment variables override the JSON values.
+Process-level environment variables remain supported and take precedence over `.env`, which allows production service managers or secret stores to inject the same values without local files.
 
 ## Security boundaries
 

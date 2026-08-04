@@ -267,7 +267,9 @@ func TestApplyEnvironmentOverridesDoesNotRequireFileMutation(t *testing.T) {
 	cfg.EdgeProxy.AdminToken = "file-edge"
 	t.Setenv("SECURITYEDGE_ADMIN_TOKEN", "runtime-admin")
 	t.Setenv("EDGEPROXY_ADMIN_TOKEN", "runtime-edge")
-	ApplyEnvironmentOverrides(&cfg)
+	if err := ApplyEnvironmentOverrides(&cfg); err != nil {
+		t.Fatal(err)
+	}
 	if cfg.Admin.AuthToken != "runtime-admin" || cfg.EdgeProxy.AdminToken != "runtime-edge" {
 		t.Fatalf("environment overrides were not applied: admin=%q edge=%q", cfg.Admin.AuthToken, cfg.EdgeProxy.AdminToken)
 	}
@@ -483,5 +485,51 @@ func TestValidateUpstreamResponseHeaderLimit(t *testing.T) {
 	cfg.Server.UpstreamTransport.MaxResponseHeaderBytes++
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "server.upstream_transport.max_response_header_bytes") {
 		t.Fatalf("expected excessive response-header limit to be rejected, got %v", err)
+	}
+}
+
+func TestApplyEnvironmentOverridesCoversRuntimeEndpoints(t *testing.T) {
+	cfg := Default()
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+
+	t.Setenv("SECURITYEDGE_SERVER_LISTEN_ADDR", "0.0.0.0:8181")
+	t.Setenv("SECURITYEDGE_UPSTREAM_PROXY_URL", "http://127.0.0.1:8180")
+	t.Setenv("SECURITYEDGE_ADMIN_LISTEN_ADDR", "127.0.0.1:9291")
+	t.Setenv("SECURITYEDGE_ADMIN_TOKEN", "security-runtime-token")
+	t.Setenv("SECURITYEDGE_TRUSTED_PROXY_CIDRS", "127.0.0.1/32,10.0.0.0/8")
+	t.Setenv("SECURITYEDGE_EDGEPROXY_CONFIG_PATH", "../../integration/edge.json")
+	t.Setenv("SECURITYEDGE_EDGEPROXY_ADMIN_URL", "http://127.0.0.1:9190")
+	t.Setenv("EDGEPROXY_ADMIN_TOKEN", "edge-runtime-token")
+	t.Setenv("SECURITYEDGE_DNS_ENABLED", "true")
+	t.Setenv("SECURITYEDGE_DNS_CRITICAL", "true")
+	t.Setenv("SECURITYEDGE_DNS_SERVER", "10.0.0.2:53")
+	t.Setenv("SECURITYEDGE_DNS_NAMES", "project.test,www.project.test")
+	t.Setenv("SECURITYEDGE_DNS_EXPECTED_ADDRESSES", "10.0.0.2")
+
+	if err := ApplyEnvironmentOverrides(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.ListenAddr != "0.0.0.0:8181" || cfg.Server.UpstreamProxyURL != "http://127.0.0.1:8180" {
+		t.Fatalf("gateway endpoint overrides were not applied: %#v", cfg.Server)
+	}
+	if cfg.Admin.ListenAddr != "127.0.0.1:9291" || cfg.Admin.AuthToken != "security-runtime-token" {
+		t.Fatalf("admin overrides were not applied: %#v", cfg.Admin)
+	}
+	if cfg.EdgeProxy.AdminURL != "http://127.0.0.1:9190" || cfg.EdgeProxy.AdminToken != "edge-runtime-token" {
+		t.Fatalf("edgeproxy overrides were not applied: %#v", cfg.EdgeProxy)
+	}
+	if len(cfg.Server.TrustedProxyCIDRs) != 2 || len(cfg.Admin.Connectivity.DNS.Names) != 2 || len(cfg.Admin.Connectivity.DNS.ExpectedAddresses) != 1 {
+		t.Fatalf("list overrides were not applied: %#v", cfg)
+	}
+}
+
+func TestApplyEnvironmentOverridesRejectsInvalidDNSBoolean(t *testing.T) {
+	cfg := Default()
+	t.Setenv("SECURITYEDGE_DNS_ENABLED", "maybe")
+	if err := ApplyEnvironmentOverrides(&cfg); err == nil || !strings.Contains(err.Error(), "SECURITYEDGE_DNS_ENABLED") {
+		t.Fatalf("expected invalid DNS boolean error, got %v", err)
 	}
 }

@@ -85,6 +85,46 @@ SecurityEdge provides application-layer HTTP protection. SYN floods, UDP floods,
 
 The JSON value stored in `edgeproxy.config_path` is resolved relative to the SecurityEdge configuration file, not relative to the shell's current directory. The checked-in values therefore use `../../../integration/...` internally and correctly resolve to the repository-level `integration` directory.
 
+## Environment configuration
+
+SecurityEdge can run without an environment file. For deployment-specific listeners, dependency addresses, DNS checks, and credentials, copy the committed template:
+
+```powershell
+Copy-Item ./.env.example ./.env
+```
+
+The process automatically loads `apps/securityedge/.env` when launched from the repository root and `.env` when launched from this directory. Select another file with `-env` or `SECURITYEDGE_ENV_FILE`; use `-no-env` for an isolated run that must ignore dotenv files.
+
+Configuration precedence is:
+
+```text
+CLI flags > existing process environment > .env > JSON profile > built-in defaults
+```
+
+Important variables:
+
+| Variable | Purpose |
+|---|---|
+| `SECURITYEDGE_CONFIG` | SecurityEdge JSON profile; relative paths are resolved from the loaded `.env` file |
+| `SECURITYEDGE_SERVER_LISTEN_ADDR` | Public gateway IP and port |
+| `SECURITYEDGE_ADMIN_LISTEN_ADDR` | Dashboard and Admin API IP and port |
+| `SECURITYEDGE_ADMIN_TOKEN` | Dashboard and SecurityEdge Admin API credential |
+| `SECURITYEDGE_UPSTREAM_PROXY_URL` | Internal EdgeProxy data-plane URL |
+| `SECURITYEDGE_EDGEPROXY_ADMIN_URL` | EdgeProxy Admin API URL |
+| `SECURITYEDGE_EDGEPROXY_CONFIG_PATH` | EdgeProxy route-table JSON path, resolved relative to the SecurityEdge JSON file |
+| `EDGEPROXY_ADMIN_TOKEN` | Shared backend credential; must match EdgeProxy |
+| `SECURITYEDGE_TRUSTED_PROXY_CIDRS` | Comma-separated proxies trusted in front of SecurityEdge |
+| `SECURITYEDGE_FORWARDED_FOR_HEADER` | Header accepted only from configured trusted proxies |
+| `SECURITYEDGE_DNS_ENABLED` / `SECURITYEDGE_DNS_CRITICAL` | Enable and classify the DNS acceptance probe |
+| `SECURITYEDGE_DNS_SERVER` | Technitium or other DNS server IP and port |
+| `SECURITYEDGE_DNS_NAMES` | Comma-separated names checked by the DNS probe |
+| `SECURITYEDGE_DNS_EXPECTED_ADDRESSES` | Comma-separated expected resolved IP addresses |
+| `SECURITYEDGE_LOG_FILE_PATH` | Persistent NDJSON security-log path |
+
+Empty or missing variables preserve the JSON values. Environment-derived values are runtime-only: dashboard policy updates continue to persist the file-backed configuration without writing secrets or machine-specific endpoint overrides into JSON.
+
+A missing auto-discovered `.env` file is not an error. An explicitly selected file must exist and be valid. Never commit the real `.env`; commit only `.env.example`.
+
 ## Quick start: local integrated development
 
 Run all commands below from `apps/securityedge` in separate terminals.
@@ -93,6 +133,7 @@ Run all commands below from `apps/securityedge` in separate terminals.
 
 ```powershell
 go run ../edgeproxy/cmd/origin-demo `
+  -no-env `
   -listen 127.0.0.1:9000 `
   -name origin-local
 ```
@@ -101,6 +142,7 @@ go run ../edgeproxy/cmd/origin-demo `
 
 ```powershell
 go run ../edgeproxy/cmd/edgeproxy `
+  -no-env `
   -config ../../integration/edgeproxy-local-behind-waf.json `
   -pretty-logs
 ```
@@ -109,6 +151,7 @@ go run ../edgeproxy/cmd/edgeproxy `
 
 ```powershell
 go run ./cmd/securityedge `
+  -no-env `
   -config ./configs/local-dev.json `
   -pretty-logs
 ```
@@ -160,39 +203,39 @@ Origin                     10.36.74.43:9000
 Public hostnames           project.test, www.project.test
 ```
 
-Update the configuration when the gateway address, Origin address, hostnames, or DNS service changes.
+Update the two application `.env` files when the gateway address, Origin address, hostnames, or DNS service changes.
 
 Run from `apps/securityedge`.
+
+Copy and edit both application `.env.example` files first.
 
 ### Origin host
 
 ```powershell
-go run ../edgeproxy/cmd/origin-demo `
-  -listen 0.0.0.0:9000 `
-  -name origin-a
+go run ../edgeproxy/cmd/origin-demo
 ```
 
 ### Gateway host: EdgeProxy
 
+From `apps/edgeproxy`:
+
 ```powershell
-go run ../edgeproxy/cmd/edgeproxy `
-  -config ../../integration/edgeproxy-behind-waf.json `
-  -pretty-logs
+go run ./cmd/edgeproxy -pretty-logs
 ```
 
 ### Gateway host: SecurityEdge
 
+From `apps/securityedge`:
+
 ```powershell
-go run ./cmd/securityedge `
-  -config ./configs/securityedge.json `
-  -pretty-logs
+go run ./cmd/securityedge -pretty-logs
 ```
 
 ### Dashboard credentials
 
 ```text
-SecurityEdge dashboard token   SecurityEdgeDemo2026
-EdgeProxy Admin API token      EdgeProxyDemo2026
+SecurityEdge dashboard token   value of SECURITYEDGE_ADMIN_TOKEN
+EdgeProxy Admin API token      shared EDGEPROXY_ADMIN_TOKEN value
 ```
 
 The dashboard token is entered by the operator. The EdgeProxy token is used only by the SecurityEdge backend and is not exposed to browser JavaScript.
@@ -242,20 +285,20 @@ No external acceptance-test reporter is required. No recent traffic is informati
 
 ## Authentication and secrets
 
-For non-demonstration environments, override both example credentials:
+Use separate strong tokens for the two trust boundaries:
 
-```powershell
-$env:SECURITYEDGE_ADMIN_TOKEN = "<strong-random-token>"
-$env:EDGEPROXY_ADMIN_TOKEN = "<matching-edgeproxy-token>"
+```text
+SECURITYEDGE_ADMIN_TOKEN   operator access to the dashboard and SecurityEdge API
+EDGEPROXY_ADMIN_TOKEN      SecurityEdge backend access to the EdgeProxy Admin API
 ```
 
-Generate a SecurityEdge token:
+Generate values with:
 
 ```powershell
 .\scripts\generate-admin-token.ps1
 ```
 
-Environment variables take precedence over JSON values.
+Put the SecurityEdge token only in `apps/securityedge/.env`. Put the exact same EdgeProxy token in both application `.env` files. Existing process variables override dotenv values, which makes the same binaries compatible with service managers and secret stores.
 
 Repeated invalid Admin authentication attempts are rate-limited and can trigger a temporary in-memory lockout according to the selected profile.
 
@@ -498,6 +541,8 @@ Generated files under `logs/` are runtime artifacts and must not be committed. K
 ## Embedded mode
 
 `configs/embedded.json` and [`../../integration/edgeproxy-embedded-integration.patch`](../../integration/edgeproxy-embedded-integration.patch) document an optional future mode in which SecurityEdge wraps the EdgeProxy handler in-process.
+
+When that patch is applied, the EdgeProxy command independently discovers both application `.env` files. Set `SECURITYEDGE_CONFIG=configs/embedded.json` in `apps/securityedge/.env`; use `SECURITYEDGE_ENV_FILE` for an external file. EdgeProxy's `-no-env` flag disables both dotenv loaders, and `-validate` validates both configurations in the patched build.
 
 This mode is not required by the current deployment and the patch is not applied to the active EdgeProxy source tree. The supported demonstration path remains standalone non-embedded gateway mode.
 

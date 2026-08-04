@@ -332,7 +332,9 @@ func (r *Runtime) update(mutator func(*config.Config)) error {
 	}
 
 	runtimeCfg := cloneConfig(candidate)
-	config.ApplyEnvironmentOverrides(&runtimeCfg)
+	if err := config.ApplyEnvironmentOverrides(&runtimeCfg); err != nil {
+		return err
+	}
 	if err := runtimeCfg.Validate(); err != nil {
 		return err
 	}

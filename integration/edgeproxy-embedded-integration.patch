@@ -1,6 +1,71 @@
-diff -ruN '--exclude=edgeproxy' '--exclude=origin-demo' '--exclude=.git' a/go.mod b/go.mod
---- a/go.mod	2026-08-04 00:30:18.000000000 +0000
-+++ b/go.mod	2026-08-04 00:36:27.695657720 +0000
+diff -ruN '--exclude=.git' a/cmd/edgeproxy/main.go b/cmd/edgeproxy/main.go
+--- a/cmd/edgeproxy/main.go	2026-08-04 06:41:08.570959872 +0000
++++ b/cmd/edgeproxy/main.go	2026-08-04 06:50:00.378944791 +0000
+@@ -11,6 +11,7 @@
+ 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
+ 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/envfile"
+ 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/server"
++	securityedge "github.com/Javad2004/SecureEdge-Platform/apps/securityedge"
+ )
+ 
+ func main() {
+@@ -26,6 +27,7 @@
+ 		os.Exit(1)
+ 	}
+ 	loadedEnv := ""
++	loadedSecurityEnv := ""
+ 	var err error
+ 	if !*noEnv {
+ 		explicitEnv := firstNonEmpty(*envFlag, os.Getenv("EDGEPROXY_ENV_FILE"))
+@@ -34,7 +36,22 @@
+ 			fmt.Fprintln(os.Stderr, err)
+ 			os.Exit(1)
+ 		}
++
++		explicitSecurityEnv := strings.TrimSpace(os.Getenv("SECURITYEDGE_ENV_FILE"))
++		loadedSecurityEnv, err = envfile.Load(explicitSecurityEnv, "apps/securityedge/.env", "../securityedge/.env")
++		if err != nil {
++			fmt.Fprintln(os.Stderr, err)
++			os.Exit(1)
++		}
++		securityConfig := resolveConfigPath("", os.Getenv("SECURITYEDGE_CONFIG"), loadedSecurityEnv)
++		if securityConfig != "" {
++			if err := os.Setenv("SECURITYEDGE_CONFIG", securityConfig); err != nil {
++				fmt.Fprintln(os.Stderr, "set SECURITYEDGE_CONFIG:", err)
++				os.Exit(1)
++			}
++		}
+ 	}
++	securityConfigPath := strings.TrimSpace(os.Getenv("SECURITYEDGE_CONFIG"))
+ 	configPath := resolveConfigPath(*configFlag, os.Getenv("EDGEPROXY_CONFIG"), loadedEnv, "configs/edgeproxy.json", "apps/edgeproxy/configs/edgeproxy.json")
+ 
+ 	var handler slog.Handler
+@@ -47,6 +64,9 @@
+ 	if loadedEnv != "" {
+ 		logger.Info("environment file loaded", "path", loadedEnv)
+ 	}
++	if loadedSecurityEnv != "" {
++		logger.Info("security environment file loaded", "path", loadedSecurityEnv)
++	}
+ 
+ 	cfg, err := config.Load(configPath)
+ 	if err != nil {
+@@ -54,6 +74,12 @@
+ 		os.Exit(1)
+ 	}
+ 	if *validateOnly {
++		if securityConfigPath != "" {
++			if err := securityedge.Validate(securityConfigPath); err != nil {
++				logger.Error("security configuration error", "error", err)
++				os.Exit(1)
++			}
++		}
+ 		fmt.Println("configuration is valid")
+ 		return
+ 	}
+diff -ruN '--exclude=.git' a/go.mod b/go.mod
+--- a/go.mod	2026-08-04 03:34:45.000000000 +0000
++++ b/go.mod	2026-08-04 06:48:34.650947222 +0000
 @@ -1,3 +1,7 @@
  module github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy
  
@@ -9,9 +74,9 @@ diff -ruN '--exclude=edgeproxy' '--exclude=origin-demo' '--exclude=.git' a/go.mo
 +require github.com/Javad2004/SecureEdge-Platform/apps/securityedge v0.0.0
 +
 +replace github.com/Javad2004/SecureEdge-Platform/apps/securityedge => ../securityedge
-diff -ruN '--exclude=edgeproxy' '--exclude=origin-demo' '--exclude=.git' a/internal/server/run.go b/internal/server/run.go
---- a/internal/server/run.go	2026-08-04 00:35:56.283658715 +0000
-+++ b/internal/server/run.go	2026-08-04 00:36:27.695657720 +0000
+diff -ruN '--exclude=.git' a/internal/server/run.go b/internal/server/run.go
+--- a/internal/server/run.go	2026-08-04 03:34:45.000000000 +0000
++++ b/internal/server/run.go	2026-08-04 06:48:34.650947222 +0000
 @@ -8,6 +8,7 @@
  	"net/http"
  	"os"

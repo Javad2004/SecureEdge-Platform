@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -19,6 +20,7 @@ import (
 
 	securityedge "github.com/Javad2004/SecureEdge-Platform/apps/securityedge"
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/envfile"
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/gateway"
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/version"
 )
@@ -28,7 +30,9 @@ func main() {
 }
 
 func run() int {
-	configPath := flag.String("config", "configs/local-dev.json", "path to security configuration")
+	configFlag := flag.String("config", "", "path to security configuration (overrides SECURITYEDGE_CONFIG)")
+	envFlag := flag.String("env", "", "path to optional .env file (overrides SECURITYEDGE_ENV_FILE)")
+	noEnv := flag.Bool("no-env", false, "disable automatic and explicit dotenv loading")
 	validate := flag.Bool("validate", false, "validate configuration and exit")
 	pretty := flag.Bool("pretty-logs", false, "use human-readable logs")
 	logLevel := flag.String("log-level", "info", "debug, info, warn, or error")
@@ -38,6 +42,22 @@ func run() int {
 		fmt.Println(version.String())
 		return 0
 	}
+
+	if *noEnv && strings.TrimSpace(*envFlag) != "" {
+		fmt.Fprintln(os.Stderr, "-env and -no-env cannot be used together")
+		return 1
+	}
+	loadedEnv := ""
+	var err error
+	if !*noEnv {
+		explicitEnv := firstNonEmpty(*envFlag, os.Getenv("SECURITYEDGE_ENV_FILE"))
+		loadedEnv, err = envfile.Load(explicitEnv, "apps/securityedge/.env", ".env")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
+	configPath := resolveConfigPath(*configFlag, os.Getenv("SECURITYEDGE_CONFIG"), loadedEnv, "configs/local-dev.json", "apps/securityedge/configs/local-dev.json")
 	level, err := parseLevel(*logLevel)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -48,15 +68,18 @@ func run() int {
 		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
 	}
 	logger := slog.New(handler)
+	if loadedEnv != "" {
+		logger.Info("environment file loaded", "path", loadedEnv)
+	}
 	if *validate {
-		if err := securityedge.Validate(*configPath); err != nil {
+		if err := securityedge.Validate(configPath); err != nil {
 			logger.Error("configuration failed", "error", err)
 			return 1
 		}
 		fmt.Println("configuration is valid")
 		return 0
 	}
-	runtime, err := securityedge.New(*configPath, logger)
+	runtime, err := securityedge.New(configPath, logger)
 	if err != nil {
 		logger.Error("configuration failed", "error", err)
 		return 1
@@ -246,6 +269,37 @@ func writeProxyError(w http.ResponseWriter, status int, code, id string) {
 	w.WriteHeader(status)
 	_, _ = fmt.Fprintf(w, `{"error":{"code":%q,"message":%q,"request_id":%q}}\n`, code, http.StatusText(status), id)
 }
+
+func resolveConfigPath(cliValue, environmentValue, loadedEnv string, candidates ...string) string {
+	if value := strings.TrimSpace(cliValue); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(environmentValue); value != "" {
+		if loadedEnv != "" && !filepath.IsAbs(value) {
+			return filepath.Clean(filepath.Join(filepath.Dir(loadedEnv), value))
+		}
+		return value
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	if len(candidates) > 0 {
+		return candidates[0]
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func parseLevel(v string) (slog.Level, error) {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "debug":

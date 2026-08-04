@@ -130,15 +130,125 @@ func Load(path string) (Config, error) {
 		}
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
-	// An environment variable can override the file value so deployments do not
-	// need to bake the admin credential into a committed JSON file.
-	if token := strings.TrimSpace(os.Getenv("EDGEPROXY_ADMIN_TOKEN")); token != "" {
-		cfg.Admin.AuthToken = token
+	if err := ApplyEnvironmentOverrides(&cfg); err != nil {
+		return Config{}, err
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// ApplyEnvironmentOverrides applies deployment-specific endpoints and secrets
+// after the JSON profile has been decoded. Empty environment values are ignored,
+// preserving the checked-in profile and built-in defaults when no .env file is
+// present. Process environment variables take precedence over dotenv values
+// because the dotenv loader never overwrites an existing variable.
+func ApplyEnvironmentOverrides(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	applyStringEnv("EDGEPROXY_SERVER_LISTEN_ADDR", &cfg.Server.ListenAddr)
+	applyStringEnv("EDGEPROXY_ADMIN_LISTEN_ADDR", &cfg.Admin.ListenAddr)
+	applyStringEnv("EDGEPROXY_ADMIN_TOKEN", &cfg.Admin.AuthToken)
+	applyStringEnv("EDGEPROXY_FORWARDED_FOR_HEADER", &cfg.Server.ForwardedForHeader)
+	applyStringEnv("EDGEPROXY_TLS_CERT_FILE", &cfg.Server.TLS.CertFile)
+	applyStringEnv("EDGEPROXY_TLS_KEY_FILE", &cfg.Server.TLS.KeyFile)
+
+	if value, ok := nonEmptyEnvironment("EDGEPROXY_TRUSTED_PROXY_CIDRS"); ok {
+		cfg.Server.TrustedProxyCIDRs = splitEnvironmentList(value)
+	}
+	if value, ok := nonEmptyEnvironment("EDGEPROXY_TLS_ENABLED"); ok {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("EDGEPROXY_TLS_ENABLED must be a boolean: %w", err)
+		}
+		cfg.Server.TLS.Enabled = enabled
+	}
+
+	seenSuffixes := make(map[string]string, len(cfg.Routes))
+	for i := range cfg.Routes {
+		route := &cfg.Routes[i]
+		suffix := environmentRouteSuffix(route.Name)
+		if suffix == "" {
+			continue
+		}
+		hostsKey := "EDGEPROXY_ROUTE_" + suffix + "_HOSTS"
+		upstreamsKey := "EDGEPROXY_ROUTE_" + suffix + "_UPSTREAM_URLS"
+		if previous, exists := seenSuffixes[suffix]; exists && previous != route.Name {
+			_, hostsSet := nonEmptyEnvironment(hostsKey)
+			_, upstreamsSet := nonEmptyEnvironment(upstreamsKey)
+			if hostsSet || upstreamsSet {
+				return fmt.Errorf("route names %q and %q map to the same environment suffix %q", previous, route.Name, suffix)
+			}
+			continue
+		}
+		seenSuffixes[suffix] = route.Name
+
+		if value, ok := nonEmptyEnvironment(hostsKey); ok {
+			route.Hosts = splitEnvironmentList(value)
+		}
+		if value, ok := nonEmptyEnvironment(upstreamsKey); ok {
+			urls := splitEnvironmentList(value)
+			if len(urls) == 0 {
+				return fmt.Errorf("%s must contain at least one URL", upstreamsKey)
+			}
+			upstreams := make([]UpstreamConfig, len(urls))
+			for j, rawURL := range urls {
+				upstreams[j].URL = rawURL
+				if j < len(route.Upstreams) {
+					upstreams[j].InsecureSkipVerify = route.Upstreams[j].InsecureSkipVerify
+				}
+			}
+			route.Upstreams = upstreams
+		}
+	}
+	return nil
+}
+
+func applyStringEnv(key string, target *string) {
+	if value, ok := nonEmptyEnvironment(key); ok {
+		*target = value
+	}
+}
+
+func nonEmptyEnvironment(key string) (string, bool) {
+	value, exists := os.LookupEnv(key)
+	value = strings.TrimSpace(value)
+	return value, exists && value != ""
+}
+
+func splitEnvironmentList(value string) []string {
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if item := strings.TrimSpace(part); item != "" {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func environmentRouteSuffix(name string) string {
+	name = strings.TrimSpace(name)
+	var b strings.Builder
+	underscore := false
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r - ('a' - 'A'))
+			underscore = false
+		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			underscore = false
+		default:
+			if b.Len() > 0 && !underscore {
+				b.WriteByte('_')
+				underscore = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "_")
 }
 
 func Default() Config {

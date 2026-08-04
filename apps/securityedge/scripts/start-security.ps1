@@ -1,29 +1,23 @@
 param(
-    [string]$Config = ".\configs\securityedge.json",
+    [string]$Config = "",
+    [string]$EnvFile = "",
+    [switch]$NoEnv,
     [ValidateSet("debug", "info", "warn", "error")]
     [string]$LogLevel = "info"
 )
 
 $ErrorActionPreference = "Stop"
 
-if (-not (Test-Path $Config)) {
-    throw "Configuration file not found: $Config"
-}
+$commonArgs = @("run", "./cmd/securityedge")
+if ($Config -ne "") { $commonArgs += @("-config", $Config) }
+if ($EnvFile -ne "") { $commonArgs += @("-env", $EnvFile) }
+if ($NoEnv) { $commonArgs += "-no-env" }
 
-Write-Host "Validating SecurityEdge configuration: $Config" -ForegroundColor Cyan
-go run ./cmd/securityedge -config $Config -validate
+Write-Host "Validating SecurityEdge configuration" -ForegroundColor Cyan
+go @commonArgs -validate
 if ($LASTEXITCODE -ne 0) { throw "Configuration validation failed." }
 
-$resolvedConfig = (Resolve-Path $Config).Path
-$configObject = Get-Content $resolvedConfig -Raw | ConvertFrom-Json
-
 Write-Host "Starting SecurityEdge" -ForegroundColor Green
-Write-Host "Mode:          $($configObject.server.mode)" -ForegroundColor DarkGray
-Write-Host "Ingress:       $($configObject.server.listen_addr)" -ForegroundColor DarkGray
-Write-Host "EdgeProxy:     $($configObject.server.upstream_proxy_url)" -ForegroundColor DarkGray
-if ($configObject.admin.enabled) {
-    Write-Host "Operations UI: $($configObject.admin.listen_addr)" -ForegroundColor DarkGray
-}
-Write-Host "Environment variables SECURITYEDGE_ADMIN_TOKEN and EDGEPROXY_ADMIN_TOKEN override file tokens." -ForegroundColor DarkGray
-
-go run ./cmd/securityedge -config $Config -pretty-logs -log-level $LogLevel
+Write-Host "CLI values override process variables; process variables override .env; .env overrides JSON." -ForegroundColor DarkGray
+go @commonArgs -pretty-logs -log-level $LogLevel
+if ($LASTEXITCODE -ne 0) { throw "SecurityEdge exited with code $LASTEXITCODE." }

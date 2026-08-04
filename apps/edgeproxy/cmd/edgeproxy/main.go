@@ -5,16 +5,37 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/envfile"
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/server"
 )
 
 func main() {
-	configPath := flag.String("config", "configs/edgeproxy.json", "path to JSON configuration")
+	configFlag := flag.String("config", "", "path to JSON configuration (overrides EDGEPROXY_CONFIG)")
+	envFlag := flag.String("env", "", "path to optional .env file (overrides EDGEPROXY_ENV_FILE)")
+	noEnv := flag.Bool("no-env", false, "disable automatic and explicit dotenv loading")
 	prettyLogs := flag.Bool("pretty-logs", false, "use human-readable text logs instead of JSON")
 	validateOnly := flag.Bool("validate", false, "validate configuration and exit")
 	flag.Parse()
+
+	if *noEnv && strings.TrimSpace(*envFlag) != "" {
+		fmt.Fprintln(os.Stderr, "-env and -no-env cannot be used together")
+		os.Exit(1)
+	}
+	loadedEnv := ""
+	var err error
+	if !*noEnv {
+		explicitEnv := firstNonEmpty(*envFlag, os.Getenv("EDGEPROXY_ENV_FILE"))
+		loadedEnv, err = envfile.Load(explicitEnv, "apps/edgeproxy/.env", ".env")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
+	configPath := resolveConfigPath(*configFlag, os.Getenv("EDGEPROXY_CONFIG"), loadedEnv, "configs/edgeproxy.json", "apps/edgeproxy/configs/edgeproxy.json")
 
 	var handler slog.Handler
 	if *prettyLogs {
@@ -23,8 +44,11 @@ func main() {
 		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
 	}
 	logger := slog.New(handler)
+	if loadedEnv != "" {
+		logger.Info("environment file loaded", "path", loadedEnv)
+	}
 
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.Load(configPath)
 	if err != nil {
 		logger.Error("configuration error", "error", err)
 		os.Exit(1)
@@ -37,4 +61,34 @@ func main() {
 		logger.Error("server stopped with error", "error", err)
 		os.Exit(1)
 	}
+}
+
+func resolveConfigPath(cliValue, environmentValue, loadedEnv string, candidates ...string) string {
+	if value := strings.TrimSpace(cliValue); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(environmentValue); value != "" {
+		if loadedEnv != "" && !filepath.IsAbs(value) {
+			return filepath.Clean(filepath.Join(filepath.Dir(loadedEnv), value))
+		}
+		return value
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	if len(candidates) > 0 {
+		return candidates[0]
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }

@@ -68,6 +68,8 @@ Binding to `0.0.0.0` is required inside the container, but the platform Compose 
 
 Optional experimental patch for a possible future in-process integration in which EdgeProxy imports the SecurityEdge package and wraps its HTTP handler. It is not applied to the active source tree and is not required for the supported gateway or Compose deployments.
 
+After the patch is applied, the EdgeProxy command loads `apps/edgeproxy/.env` and `apps/securityedge/.env` independently. Set `SECURITYEDGE_CONFIG=configs/embedded.json` in the SecurityEdge file for this mode. `SECURITYEDGE_ENV_FILE` can select an external SecurityEdge environment file, and EdgeProxy's `-no-env` flag disables both dotenv loaders. Validation through the patched EdgeProxy command checks both the EdgeProxy and embedded SecurityEdge configurations.
+
 ## Configuration mapping
 
 | SecurityEdge profile | EdgeProxy profile | Runtime |
@@ -115,14 +117,16 @@ Paired EdgeProxy tokens must match:
 | Reference LAN | `EdgeProxyDemo2026` | `EdgeProxyDemo2026` |
 | Compose | `dev-token` | `dev-token` |
 
-For non-demonstration environments, inject both values:
+For non-demonstration environments, copy the application templates:
 
 ```powershell
-$env:SECURITYEDGE_ADMIN_TOKEN = "<strong-random-dashboard-token>"
-$env:EDGEPROXY_ADMIN_TOKEN = "<strong-random-shared-token>"
+Copy-Item ../apps/edgeproxy/.env.example ../apps/edgeproxy/.env
+Copy-Item ../apps/securityedge/.env.example ../apps/securityedge/.env
 ```
 
-SecurityEdge deliberately loads environment-provided secrets after reading the file and does not persist them during policy updates.
+Set a unique `SECURITYEDGE_ADMIN_TOKEN`, and set the same strong `EDGEPROXY_ADMIN_TOKEN` in both files. The templates also centralize the paired listener URLs, Origin URL, trusted-proxy CIDRs, and DNS acceptance values.
+
+Both programs load environment values after JSON. SecurityEdge deliberately keeps every environment-derived secret and endpoint runtime-only, so dashboard policy updates never persist them into the JSON profile.
 
 ## Validate profiles
 
@@ -160,7 +164,7 @@ When changing a paired deployment profile:
 
 1. keep SecurityEdge `server.upstream_proxy_url` aligned with the EdgeProxy data listener;
 2. keep SecurityEdge `edgeproxy.admin_url` aligned with the EdgeProxy Admin listener;
-3. keep `EDGEPROXY_ADMIN_TOKEN` synchronized for both processes;
+3. keep `EDGEPROXY_ADMIN_TOKEN` synchronized in both application `.env` files;
 4. keep SecurityEdge route-policy names aligned with EdgeProxy route names;
 5. keep EdgeProxy trusted-proxy CIDRs aligned with the SecurityEdge transport address;
 6. verify that EdgeProxy can reach every configured Origin;

@@ -1,15 +1,20 @@
 param(
-    [string]$Config = "configs/edgeproxy.json",
-    [string]$AdminToken = ""
+    [string]$Config = "",
+    [string]$EnvFile = "",
+    [switch]$NoEnv
 )
 
 $ErrorActionPreference = "Stop"
-if ($AdminToken -ne "") {
-    $env:EDGEPROXY_ADMIN_TOKEN = $AdminToken
-}
 
-go run ./cmd/edgeproxy -config $Config -validate
+$commonArgs = @("run", "./cmd/edgeproxy")
+if ($Config -ne "") { $commonArgs += @("-config", $Config) }
+if ($EnvFile -ne "") { $commonArgs += @("-env", $EnvFile) }
+if ($NoEnv) { $commonArgs += "-no-env" }
+
+Write-Host "Validating EdgeProxy configuration" -ForegroundColor Cyan
+go @commonArgs -validate
 if ($LASTEXITCODE -ne 0) { throw "Configuration validation failed." }
 
-go run ./cmd/edgeproxy -config $Config -pretty-logs
+Write-Host "Starting EdgeProxy" -ForegroundColor Green
+go @commonArgs -pretty-logs
 if ($LASTEXITCODE -ne 0) { throw "EdgeProxy exited with code $LASTEXITCODE." }

@@ -34,7 +34,7 @@ The Compose file contains demonstration credential defaults, so this command wor
 docker compose -f ./deployments/docker/compose.yml up --build
 ```
 
-For explicit overrides, copy the template and replace the values:
+For explicit credentials, published ports, or build metadata, copy the deployment template and replace the values:
 
 ```powershell
 Copy-Item ./deployments/docker/.env.example ./deployments/docker/.env
@@ -77,7 +77,7 @@ securityedge-config   mutable SecurityEdge policy configuration
 securityedge-logs     rotated SecurityEdge NDJSON event logs
 ```
 
-The image initializes `securityedge-config` with the container profile on first creation. Dashboard policy changes are atomically written to this volume. Rebuilding the image does not overwrite an existing configuration volume.
+The image initializes `securityedge-config` with the container profile on first creation. Dashboard policy changes are atomically written to this volume. Rebuilding the image does not overwrite an existing configuration volume. Values injected from the Compose `.env` remain runtime-only and are not written into the persisted JSON.
 
 To stop services while retaining state:
 

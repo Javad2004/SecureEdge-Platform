@@ -66,12 +66,51 @@ Standalone mode is useful for isolated development and for demonstrating the rev
 
 The shared profiles are stored in the root-level [`integration`](../../integration/README.md) directory because they define the contract between both applications.
 
+## Environment configuration
+
+EdgeProxy can run entirely from its JSON profiles, so an environment file is optional. For deployment-specific addresses and credentials, copy the committed template:
+
+```powershell
+Copy-Item ./.env.example ./.env
+```
+
+The process automatically loads `apps/edgeproxy/.env` when launched from the repository root and `.env` when launched from this directory. An explicit file can be selected with `-env` or `EDGEPROXY_ENV_FILE`; use `-no-env` for an isolated run that must ignore dotenv files.
+
+Configuration precedence is:
+
+```text
+CLI flags > existing process environment > .env > JSON profile > built-in defaults
+```
+
+Important variables:
+
+| Variable | Purpose |
+|---|---|
+| `EDGEPROXY_CONFIG` | JSON profile; relative paths are resolved from the loaded `.env` file |
+| `EDGEPROXY_SERVER_LISTEN_ADDR` | EdgeProxy data-plane IP and port |
+| `EDGEPROXY_ADMIN_LISTEN_ADDR` | Admin API IP and port |
+| `EDGEPROXY_ADMIN_TOKEN` | Admin API credential shared with SecurityEdge |
+| `EDGEPROXY_TRUSTED_PROXY_CIDRS` | Comma-separated trusted SecurityEdge peers |
+| `EDGEPROXY_FORWARDED_FOR_HEADER` | Verified client-address header name |
+| `EDGEPROXY_ROUTE_<ROUTE>_HOSTS` | Comma-separated host list for one route |
+| `EDGEPROXY_ROUTE_<ROUTE>_UPSTREAM_URLS` | Comma-separated Origin URLs for one route |
+| `EDGEPROXY_TLS_ENABLED` | Enables the EdgeProxy TLS listener |
+| `EDGEPROXY_TLS_CERT_FILE` / `EDGEPROXY_TLS_KEY_FILE` | TLS certificate and key paths |
+| `ORIGIN_DEMO_LISTEN_ADDR` / `ORIGIN_DEMO_NAME` | Demo Origin listener and name |
+
+Route names are converted to uppercase environment suffixes with non-alphanumeric characters replaced by underscores. For example, `demo-app` uses `EDGEPROXY_ROUTE_DEMO_APP_UPSTREAM_URLS`.
+
+Empty or missing variables do not replace JSON values. A missing auto-discovered `.env` file is therefore safe and uses the selected JSON profile unchanged. A path supplied explicitly with `-env` or `EDGEPROXY_ENV_FILE` must exist and parse successfully.
+
+Never commit the real `.env`; the root `.gitignore` excludes it while allowing `.env.example`.
+
 ## Quick start: local standalone mode
 
 ### 1. Start the demo Origin
 
 ```powershell
 go run ./cmd/origin-demo `
+  -no-env `
   -listen 127.0.0.1:9000 `
   -name origin-local
 ```
@@ -82,6 +121,7 @@ In another terminal, still from `apps/edgeproxy`:
 
 ```powershell
 go run ./cmd/edgeproxy `
+  -no-env `
   -config ./configs/local-dev.json `
   -pretty-logs
 ```
@@ -108,19 +148,17 @@ curl.exe -i http://127.0.0.1:8080/api/time
 
 ## Run behind SecurityEdge
 
-Start the demo Origin as above, then run EdgeProxy with the shared local integration profile:
+After copying `.env.example` to `.env`, the LAN integration profile and endpoints are selected automatically:
+
+```powershell
+go run ./cmd/edgeproxy -pretty-logs
+```
+
+For an explicit local integration test that ignores `EDGEPROXY_CONFIG` but still permits the other environment overrides:
 
 ```powershell
 go run ./cmd/edgeproxy `
   -config ../../integration/edgeproxy-local-behind-waf.json `
-  -pretty-logs
-```
-
-For the LAN profile:
-
-```powershell
-go run ./cmd/edgeproxy `
-  -config ../../integration/edgeproxy-behind-waf.json `
   -pretty-logs
 ```
 
@@ -264,19 +302,9 @@ curl.exe -X POST -H $Auth `
 
 The in-memory Admin log ring accepts a configured capacity from `1` through `100000` entries. Request-method metrics preserve the standard HTTP methods and aggregate nonstandard or extension methods under `OTHER` to keep metric label cardinality bounded.
 
-## Admin-token override
+## Admin credential
 
-The environment variable takes precedence over the JSON value:
-
-```powershell
-$env:EDGEPROXY_ADMIN_TOKEN = "<strong-random-token>"
-
-go run ./cmd/edgeproxy `
-  -config ./configs/local-dev.json `
-  -pretty-logs
-```
-
-Use environment-based secret injection outside demonstration environments.
+`EDGEPROXY_ADMIN_TOKEN` always takes precedence over the JSON credential. Use the same strong value in `apps/edgeproxy/.env` and `apps/securityedge/.env`; SecurityEdge uses it only for authenticated backend calls to the EdgeProxy Admin API.
 
 ## Scripts
 
@@ -284,11 +312,16 @@ Run from `apps/edgeproxy`:
 
 ```powershell
 .\scripts\start-origin.ps1
-.\scripts\start-proxy.ps1 -Config ./configs/local-dev.json
+.\scripts\start-proxy.ps1
+
+# Explicit alternatives
+.\scripts\start-origin.ps1 -EnvFile ./.env
+.\scripts\start-proxy.ps1 -Config ./configs/local-dev.json -EnvFile ./.env
+.\scripts\start-proxy.ps1 -NoEnv -Config ./configs/local-dev.json
 .\scripts\test-proxy.ps1 -ProxyUrl http://127.0.0.1:8080 -Token dev-token
 ```
 
-`start-origin.ps1` binds to `127.0.0.1:9000` by default. For a deliberate LAN deployment, pass `-Listen 0.0.0.0:9000` and protect the Origin port with the host firewall.
+Without `.env` or explicit parameters, `start-origin.ps1` uses the built-in `127.0.0.1:9000` / `origin-a` defaults. For a deliberate LAN deployment, set `ORIGIN_DEMO_LISTEN_ADDR=0.0.0.0:9000` in `.env` and protect the Origin port with the host firewall.
 
 For the integrated LAN profile, supply the public SecurityEdge URL to traffic-generation scripts rather than connecting clients directly to EdgeProxy.
 

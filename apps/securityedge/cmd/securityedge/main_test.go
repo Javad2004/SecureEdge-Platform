@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -230,5 +231,17 @@ func TestGatewayRebuildsForwardingIdentityHeaders(t *testing.T) {
 	}
 	if got := headers.Get("X-Forwarded-Proto"); got != "http" {
 		t.Fatalf("X-Forwarded-Proto=%q", got)
+	}
+}
+
+func TestResolveConfigPathUsesEnvironmentFileDirectory(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	want := filepath.Join(dir, "configs", "securityedge.json")
+	if got := resolveConfigPath("", "configs/securityedge.json", envPath, "fallback.json"); got != want {
+		t.Fatalf("resolved path=%q, want %q", got, want)
+	}
+	if got := resolveConfigPath("cli.json", "configs/securityedge.json", envPath, "fallback.json"); got != "cli.json" {
+		t.Fatalf("CLI path lost precedence: %q", got)
 	}
 }

@@ -218,29 +218,86 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	ApplyEnvironmentOverrides(&cfg)
+	if err := ApplyEnvironmentOverrides(&cfg); err != nil {
+		return Config{}, err
+	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
 }
 
-// ApplyEnvironmentOverrides injects runtime-only credentials without changing
-// the file-backed configuration that is persisted by policy updates.
-func ApplyEnvironmentOverrides(cfg *Config) {
+// ApplyEnvironmentOverrides injects runtime-only endpoints and credentials
+// without changing the file-backed configuration persisted by dashboard policy
+// updates. Empty values are ignored, so checked-in profiles and built-in
+// defaults remain effective when no .env file is present.
+func ApplyEnvironmentOverrides(cfg *Config) error {
 	if cfg == nil {
-		return
+		return nil
 	}
-	if v := strings.TrimSpace(os.Getenv("SECURITYEDGE_ADMIN_TOKEN")); v != "" {
-		cfg.Admin.AuthToken = v
+	applyStringEnv("SECURITYEDGE_SERVER_LISTEN_ADDR", &cfg.Server.ListenAddr)
+	applyStringEnv("SECURITYEDGE_UPSTREAM_PROXY_URL", &cfg.Server.UpstreamProxyURL)
+	applyStringEnv("SECURITYEDGE_FORWARDED_FOR_HEADER", &cfg.Server.ForwardedForHeader)
+	applyStringEnv("SECURITYEDGE_ADMIN_LISTEN_ADDR", &cfg.Admin.ListenAddr)
+	applyStringEnv("SECURITYEDGE_ADMIN_TOKEN", &cfg.Admin.AuthToken)
+	applyStringEnv("SECURITYEDGE_LOG_FILE_PATH", &cfg.Admin.LogStore.FilePath)
+	applyStringEnv("SECURITYEDGE_DNS_SERVER", &cfg.Admin.Connectivity.DNS.Server)
+	applyStringEnv("SECURITYEDGE_EDGEPROXY_CONFIG_PATH", &cfg.EdgeProxy.ConfigPath)
+	applyStringEnv("SECURITYEDGE_EDGEPROXY_ADMIN_URL", &cfg.EdgeProxy.AdminURL)
+	applyStringEnv("EDGEPROXY_ADMIN_TOKEN", &cfg.EdgeProxy.AdminToken)
+
+	if value, ok := nonEmptyEnvironment("SECURITYEDGE_TRUSTED_PROXY_CIDRS"); ok {
+		cfg.Server.TrustedProxyCIDRs = splitEnvironmentList(value)
 	}
-	if v := strings.TrimSpace(os.Getenv("EDGEPROXY_ADMIN_TOKEN")); v != "" {
-		cfg.EdgeProxy.AdminToken = v
+	if value, ok := nonEmptyEnvironment("SECURITYEDGE_DNS_NAMES"); ok {
+		cfg.Admin.Connectivity.DNS.Names = splitEnvironmentList(value)
+	}
+	if value, ok := nonEmptyEnvironment("SECURITYEDGE_DNS_EXPECTED_ADDRESSES"); ok {
+		cfg.Admin.Connectivity.DNS.ExpectedAddresses = splitEnvironmentList(value)
+	}
+	if value, ok := nonEmptyEnvironment("SECURITYEDGE_DNS_ENABLED"); ok {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("SECURITYEDGE_DNS_ENABLED must be a boolean: %w", err)
+		}
+		cfg.Admin.Connectivity.DNS.Enabled = enabled
+	}
+	if value, ok := nonEmptyEnvironment("SECURITYEDGE_DNS_CRITICAL"); ok {
+		critical, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("SECURITYEDGE_DNS_CRITICAL must be a boolean: %w", err)
+		}
+		cfg.Admin.Connectivity.DNS.Critical = critical
+	}
+	return nil
+}
+
+func applyStringEnv(key string, target *string) {
+	if value, ok := nonEmptyEnvironment(key); ok {
+		*target = value
 	}
 }
 
-// LoadFile reads JSON without applying secret environment overrides. This keeps
-// environment-provided secrets out of atomically persisted policy updates.
+func nonEmptyEnvironment(key string) (string, bool) {
+	value, exists := os.LookupEnv(key)
+	value = strings.TrimSpace(value)
+	return value, exists && value != ""
+}
+
+func splitEnvironmentList(value string) []string {
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if item := strings.TrimSpace(part); item != "" {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+// LoadFile reads JSON without applying runtime environment overrides. This keeps
+// environment-provided secrets and machine-specific endpoints out of atomically
+// persisted policy updates.
 func LoadFile(path string) (Config, error) {
 	data, recoveryPath, err := readConfigForLoad(path)
 	if err != nil {

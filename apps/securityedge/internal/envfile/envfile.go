@@ -2,13 +2,18 @@ package envfile
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
+
+const maxFileBytes int64 = 1 << 20
 
 var keyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
@@ -54,9 +59,31 @@ func loadFile(path string) error {
 	}
 	defer file.Close()
 
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("environment path is not a regular file")
+	}
+	if info.Size() > maxFileBytes {
+		return fmt.Errorf("environment file exceeds the %d-byte safety limit", maxFileBytes)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(file, maxFileBytes+1))
+	if err != nil {
+		return fmt.Errorf("read file: %w", err)
+	}
+	if int64(len(data)) > maxFileBytes {
+		return fmt.Errorf("environment file exceeds the %d-byte safety limit", maxFileBytes)
+	}
+	if !utf8.Valid(data) {
+		return errors.New("environment file must be valid UTF-8")
+	}
+
 	values := make(map[string]string)
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 4096), 1<<20)
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 4096), int(maxFileBytes))
 	lineNumber := 0
 	for scanner.Scan() {
 		lineNumber++

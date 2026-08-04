@@ -59,3 +59,37 @@ func TestLoadRejectsMalformedFileWithoutPartialApplication(t *testing.T) {
 		t.Fatal("malformed file was partially applied")
 	}
 }
+
+func TestLoadRejectsNonRegularExplicitPath(t *testing.T) {
+	if _, err := Load(t.TempDir()); err == nil {
+		t.Fatal("expected an explicit directory to be rejected")
+	}
+}
+
+func TestLoadRejectsOversizedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	data := make([]byte, int(maxFileBytes)+1)
+	for i := range data {
+		data[i] = '#'
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected oversized environment file to fail")
+	}
+}
+
+func TestLoadRejectsInvalidUTF8WithoutPartialApplication(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	data := append([]byte("VALID_BEFORE_UTF8_ERROR=value\nINVALID_UTF8="), 0xff, '\n')
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected invalid UTF-8 environment file to fail")
+	}
+	if _, exists := os.LookupEnv("VALID_BEFORE_UTF8_ERROR"); exists {
+		t.Fatal("invalid UTF-8 file was partially applied")
+	}
+}

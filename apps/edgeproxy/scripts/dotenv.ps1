@@ -218,15 +218,16 @@ function Apply-EdgeProxyEnvironmentOverrides {
         if (-not $suffix) { continue }
         $hostsName = "EDGEPROXY_ROUTE_${suffix}_HOSTS"
         $urlsName = "EDGEPROXY_ROUTE_${suffix}_UPSTREAM_URLS"
+        if (Get-NonEmptyEnvironmentValue -Name $hostsName) {
+            throw "$hostsName is not supported; define route hosts in the shared JSON profile."
+        }
         if ($seenSuffixes.ContainsKey($suffix)) {
-            if ((Get-NonEmptyEnvironmentValue -Name $hostsName) -or (Get-NonEmptyEnvironmentValue -Name $urlsName)) {
+            if (Get-NonEmptyEnvironmentValue -Name $urlsName) {
                 throw "Route names '$($seenSuffixes[$suffix])' and '$($route.name)' map to the same environment suffix '$suffix'."
             }
             continue
         }
         $seenSuffixes[$suffix] = [string]$route.name
-        $hosts = Get-EnvironmentList -Name $hostsName
-        if ($null -ne $hosts) { $route.hosts = @($hosts) }
         $urls = Get-EnvironmentList -Name $urlsName
         if ($null -ne $urls) {
             $existing = @($route.upstreams)

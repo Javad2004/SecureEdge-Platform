@@ -469,7 +469,6 @@ func TestApplyEnvironmentOverridesCoversEndpointsAndRouteValues(t *testing.T) {
 	t.Setenv("EDGEPROXY_ADMIN_LISTEN_ADDR", "127.0.0.1:9190")
 	t.Setenv("EDGEPROXY_ADMIN_TOKEN", "runtime-token")
 	t.Setenv("EDGEPROXY_TRUSTED_PROXY_CIDRS", "127.0.0.1/32, 10.0.0.0/8")
-	t.Setenv("EDGEPROXY_ROUTE_DEMO_APP_HOSTS", "project.test, www.project.test")
 	t.Setenv("EDGEPROXY_ROUTE_DEMO_APP_UPSTREAM_URLS", "http://10.0.0.10:9000,http://10.0.0.11:9000")
 	t.Setenv("EDGEPROXY_TLS_ENABLED", "false")
 
@@ -482,11 +481,24 @@ func TestApplyEnvironmentOverridesCoversEndpointsAndRouteValues(t *testing.T) {
 	if cfg.Server.ListenAddr != "0.0.0.0:8180" || cfg.Admin.ListenAddr != "127.0.0.1:9190" || cfg.Admin.AuthToken != "runtime-token" {
 		t.Fatalf("listener or token overrides were not applied: %#v", cfg)
 	}
-	if len(cfg.Server.TrustedProxyCIDRs) != 2 || len(cfg.Routes[0].Hosts) != 2 || len(cfg.Routes[0].Upstreams) != 2 {
+	if len(cfg.Server.TrustedProxyCIDRs) != 2 || len(cfg.Routes[0].Upstreams) != 2 {
 		t.Fatalf("list overrides were not applied: %#v", cfg)
+	}
+	if !reflect.DeepEqual(cfg.Routes[0].Hosts, validRouteForValidation().Hosts) {
+		t.Fatalf("route selectors must remain JSON-backed: %#v", cfg.Routes[0].Hosts)
 	}
 	if cfg.Routes[0].Upstreams[1].URL != "http://10.0.0.11:9000" {
 		t.Fatalf("unexpected upstream override: %#v", cfg.Routes[0].Upstreams)
+	}
+}
+
+func TestApplyEnvironmentOverridesRejectsRouteHostOverride(t *testing.T) {
+	cfg := Default()
+	cfg.Routes = []RouteConfig{validRouteForValidation()}
+	cfg.Routes[0].Name = "demo-app"
+	t.Setenv("EDGEPROXY_ROUTE_DEMO_APP_HOSTS", "different.example.test")
+	if err := ApplyEnvironmentOverrides(&cfg); err == nil || !strings.Contains(err.Error(), "shared JSON profile") {
+		t.Fatalf("expected route-host override rejection, got %v", err)
 	}
 }
 

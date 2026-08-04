@@ -92,15 +92,14 @@ Important variables:
 | `EDGEPROXY_ADMIN_TOKEN` | Admin API credential shared with SecurityEdge |
 | `EDGEPROXY_TRUSTED_PROXY_CIDRS` | Comma-separated trusted SecurityEdge peers |
 | `EDGEPROXY_FORWARDED_FOR_HEADER` | Verified client-address header name |
-| `EDGEPROXY_ROUTE_<ROUTE>_HOSTS` | Comma-separated host list for one route |
 | `EDGEPROXY_ROUTE_<ROUTE>_UPSTREAM_URLS` | Comma-separated Origin URLs for one route |
 | `EDGEPROXY_TLS_ENABLED` | Enables the EdgeProxy TLS listener |
 | `EDGEPROXY_TLS_CERT_FILE` / `EDGEPROXY_TLS_KEY_FILE` | TLS certificate and key paths |
 | `ORIGIN_DEMO_LISTEN_ADDR` / `ORIGIN_DEMO_NAME` | Demo Origin listener and name |
 
-Route names are converted to uppercase environment suffixes with non-alphanumeric characters replaced by underscores. For example, `demo-app` uses `EDGEPROXY_ROUTE_DEMO_APP_UPSTREAM_URLS`.
+Route names are converted to uppercase environment suffixes with non-alphanumeric characters replaced by underscores. For example, `demo-app` uses `EDGEPROXY_ROUTE_DEMO_APP_UPSTREAM_URLS`. Only Origin URLs are environment-overridable. Route names, host selectors, and path prefixes remain in the shared JSON profile because SecurityEdge reads the same route contract when selecting per-route security policies. A legacy `EDGEPROXY_ROUTE_<ROUTE>_HOSTS` value is rejected instead of being silently ignored.
 
-Empty or missing variables do not replace JSON values. A missing auto-discovered `.env` file is therefore safe and uses the selected JSON profile unchanged. A path supplied explicitly with `-env` or `EDGEPROXY_ENV_FILE` must exist and parse successfully.
+Empty or missing variables do not replace JSON values. A missing auto-discovered `.env` file is therefore safe and uses the selected JSON profile unchanged. A path supplied explicitly with `-env` or `EDGEPROXY_ENV_FILE` must identify a regular UTF-8 file no larger than 1 MiB and parse successfully. Invalid files are rejected before any values are applied.
 
 Never commit the real `.env`; the root `.gitignore` excludes it while allowing `.env.example`. EdgeProxy PowerShell verification scripts also auto-load this file, never overwrite pre-existing process variables, and allow explicit script parameters to override the effective values.
 

@@ -175,19 +175,18 @@ func ApplyEnvironmentOverrides(cfg *Config) error {
 		}
 		hostsKey := "EDGEPROXY_ROUTE_" + suffix + "_HOSTS"
 		upstreamsKey := "EDGEPROXY_ROUTE_" + suffix + "_UPSTREAM_URLS"
+		if _, hostsSet := nonEmptyEnvironment(hostsKey); hostsSet {
+			return fmt.Errorf("%s is not supported; define route hosts in the shared JSON profile", hostsKey)
+		}
 		if previous, exists := seenSuffixes[suffix]; exists && previous != route.Name {
-			_, hostsSet := nonEmptyEnvironment(hostsKey)
 			_, upstreamsSet := nonEmptyEnvironment(upstreamsKey)
-			if hostsSet || upstreamsSet {
+			if upstreamsSet {
 				return fmt.Errorf("route names %q and %q map to the same environment suffix %q", previous, route.Name, suffix)
 			}
 			continue
 		}
 		seenSuffixes[suffix] = route.Name
 
-		if value, ok := nonEmptyEnvironment(hostsKey); ok {
-			route.Hosts = splitEnvironmentList(value)
-		}
 		if value, ok := nonEmptyEnvironment(upstreamsKey); ok {
 			urls := splitEnvironmentList(value)
 			if len(urls) == 0 {

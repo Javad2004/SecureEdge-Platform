@@ -101,9 +101,11 @@ Precedence is:
 CLI flags > process environment > application .env > JSON profile > built-in defaults
 ```
 
-Use `-env <path>` for an explicit file, or `-no-env` to disable dotenv loading for an isolated test. `EDGEPROXY_ENV_FILE` and `SECURITYEDGE_ENV_FILE` provide the equivalent service-manager setting. Relative `EDGEPROXY_CONFIG` and `SECURITYEDGE_CONFIG` paths loaded from `.env` are resolved from that file. Relative paths supplied through CLI flags or pre-existing process environment variables retain normal current-working-directory semantics.
+Use `-env <path>` for an explicit file, or `-no-env` to disable dotenv loading for an isolated test. `EDGEPROXY_ENV_FILE` and `SECURITYEDGE_ENV_FILE` provide the equivalent service-manager setting. Relative `EDGEPROXY_CONFIG` and `SECURITYEDGE_CONFIG` paths loaded from `.env` are resolved from that file. Relative paths supplied through CLI flags or pre-existing process environment variables retain normal current-working-directory semantics. Dotenv inputs must be regular UTF-8 files no larger than 1 MiB; invalid files are rejected before any values are applied.
 
 The component PowerShell verification, listener, connectivity, and firewall scripts follow the same process-environment-over-dotenv precedence. Their explicit parameters remain the highest-priority one-off overrides, so the commands stay aligned with the effective runtime ports, URLs, Origin address, DNS values, and credentials.
+
+Route names, host selectors, and path prefixes remain in the shared EdgeProxy JSON profile rather than `.env`. This keeps EdgeProxy routing and SecurityEdge per-route policy selection on one authoritative contract; environment overrides are reserved for deployment endpoints such as Origin URLs, listeners, DNS, and credentials.
 
 See the component READMEs for the complete variable and script references.
 

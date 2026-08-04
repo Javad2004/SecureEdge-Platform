@@ -142,10 +142,13 @@ func excludedPathMatches(requestPath, prefix string) bool {
 	if prefix == "" {
 		return false
 	}
-	// Canonicalize the decoded request path before applying an exclusion. This
-	// prevents dot-segments such as /healthz/../admin from inheriting a trusted
-	// health-path exemption while still reaching a different upstream resource.
-	requestPath = canonicalRequestPath(requestPath)
+	// Canonicalize after bounded repeated path decoding before applying an
+	// exclusion. net/http has already decoded the request path once, but a
+	// double-encoded dot segment such as %252e%252e remains as %2e%2e in URL.Path.
+	// If the application or another intermediary decodes it again, the request can
+	// escape the excluded prefix. Fail closed by using the same bounded decoding
+	// depth as WAF path inspection before resolving dot segments.
+	requestPath = canonicalRequestPath(multiPathDecode(requestPath))
 	if prefix == "/" || requestPath == prefix {
 		return true
 	}
@@ -428,6 +431,18 @@ func readAndRestore(req *http.Request, max int64) ([]byte, bool, error) {
 		req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(buf)), nil }
 	}
 	return inspect, truncated, nil
+}
+
+func multiPathDecode(value string) string {
+	out := value
+	for n := 0; n < 3; n++ {
+		decoded, err := url.PathUnescape(out)
+		if err != nil || decoded == out {
+			break
+		}
+		out = decoded
+	}
+	return out
 }
 
 func multiDecode(value string) string {

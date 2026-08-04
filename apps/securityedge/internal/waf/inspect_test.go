@@ -238,6 +238,28 @@ func TestExcludedPathCanonicalizationPreventsDotSegmentBypass(t *testing.T) {
 	}
 }
 
+func TestExcludedPathCanonicalizationPreventsDoubleEncodedDotSegmentBypass(t *testing.T) {
+	custom := []config.CustomRuleConfig{{
+		ID: "CUSTOM-EXCLUSION-003", Name: "Double-encoded exclusion traversal", Category: "custom",
+		Description: "detects the regression marker", Score: 7, Targets: []string{"path"}, Pattern: `blocked-marker`,
+	}}
+	i, err := NewInspector(custom, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := config.Default().DefaultPolicy
+	policy.ExcludedPathPrefixes = []string{"/healthz"}
+
+	req := httptest.NewRequest("GET", "http://project.test/healthz/%252e%252e/admin/blocked-marker", nil)
+	got, err := i.Inspect(req, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Excluded || len(got.Matches) == 0 {
+		t.Fatalf("double-encoded dot-segment path must remain inspected: %#v", got)
+	}
+}
+
 type closeTrackingBody struct {
 	io.Reader
 	closed bool

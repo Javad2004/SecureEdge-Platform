@@ -18,7 +18,10 @@ import (
 	"time"
 )
 
-const maxAdminLogStoreCapacity = 100_000
+const (
+	maxAdminLogStoreCapacity       = 100_000
+	maxUpstreamResponseHeaderBytes = 16 << 20
+)
 
 type Config struct {
 	Server        ServerConfig      `json:"server"`
@@ -50,14 +53,15 @@ type ServerConfig struct {
 }
 
 type TransportConfig struct {
-	DialTimeout           Duration `json:"dial_timeout"`
-	TLSHandshakeTimeout   Duration `json:"tls_handshake_timeout"`
-	ResponseHeaderTimeout Duration `json:"response_header_timeout"`
-	ExpectContinueTimeout Duration `json:"expect_continue_timeout"`
-	IdleConnTimeout       Duration `json:"idle_conn_timeout"`
-	MaxIdleConns          int      `json:"max_idle_conns"`
-	MaxIdleConnsPerHost   int      `json:"max_idle_conns_per_host"`
-	MaxConnsPerHost       int      `json:"max_conns_per_host"`
+	DialTimeout            Duration `json:"dial_timeout"`
+	TLSHandshakeTimeout    Duration `json:"tls_handshake_timeout"`
+	ResponseHeaderTimeout  Duration `json:"response_header_timeout"`
+	ExpectContinueTimeout  Duration `json:"expect_continue_timeout"`
+	IdleConnTimeout        Duration `json:"idle_conn_timeout"`
+	MaxIdleConns           int      `json:"max_idle_conns"`
+	MaxIdleConnsPerHost    int      `json:"max_idle_conns_per_host"`
+	MaxConnsPerHost        int      `json:"max_conns_per_host"`
+	MaxResponseHeaderBytes int64    `json:"max_response_header_bytes"`
 }
 
 type AdminConfig struct {
@@ -181,6 +185,7 @@ func Default() Config {
 				DialTimeout: Duration{5 * time.Second}, TLSHandshakeTimeout: Duration{5 * time.Second},
 				ResponseHeaderTimeout: Duration{30 * time.Second}, ExpectContinueTimeout: Duration{1 * time.Second},
 				IdleConnTimeout: Duration{90 * time.Second}, MaxIdleConns: 256, MaxIdleConnsPerHost: 128, MaxConnsPerHost: 0,
+				MaxResponseHeaderBytes: 1 << 20,
 			},
 		},
 		Admin: AdminConfig{
@@ -510,6 +515,9 @@ func validateTransport(t TransportConfig) error {
 	}
 	if t.MaxIdleConns <= 0 || t.MaxIdleConnsPerHost <= 0 || t.MaxConnsPerHost < 0 {
 		errs = append(errs, errors.New("server upstream connection limits are invalid"))
+	}
+	if t.MaxResponseHeaderBytes <= 0 || t.MaxResponseHeaderBytes > maxUpstreamResponseHeaderBytes {
+		errs = append(errs, fmt.Errorf("server.upstream_transport.max_response_header_bytes must be between 1 and %d", maxUpstreamResponseHeaderBytes))
 	}
 	return errors.Join(errs...)
 }

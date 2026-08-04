@@ -180,7 +180,8 @@ func newReverseProxy(target *url.URL, cfg config.ServerConfig, logger *slog.Logg
 		ForceAttemptHTTP2: true, MaxIdleConns: t.MaxIdleConns, MaxIdleConnsPerHost: t.MaxIdleConnsPerHost,
 		MaxConnsPerHost: t.MaxConnsPerHost, IdleConnTimeout: t.IdleConnTimeout.Duration,
 		TLSHandshakeTimeout: t.TLSHandshakeTimeout.Duration, ResponseHeaderTimeout: t.ResponseHeaderTimeout.Duration,
-		ExpectContinueTimeout: t.ExpectContinueTimeout.Duration,
+		ExpectContinueTimeout:  t.ExpectContinueTimeout.Duration,
+		MaxResponseHeaderBytes: t.MaxResponseHeaderBytes,
 	}
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,

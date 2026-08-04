@@ -470,3 +470,18 @@ func TestValidateAllowsAbsoluteAndUnderscoredDNSNames(t *testing.T) {
 		t.Fatalf("DNS names=%#v want %#v", cfg.Admin.Connectivity.DNS.Names, want)
 	}
 }
+
+func TestValidateUpstreamResponseHeaderLimit(t *testing.T) {
+	cfg := Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Server.UpstreamTransport.MaxResponseHeaderBytes = maxUpstreamResponseHeaderBytes
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected maximum response-header limit to be accepted: %v", err)
+	}
+
+	cfg.Server.UpstreamTransport.MaxResponseHeaderBytes++
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "server.upstream_transport.max_response_header_bytes") {
+		t.Fatalf("expected excessive response-header limit to be rejected, got %v", err)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,6 +92,44 @@ func TestShutdownServersForcesCloseAfterDeadline(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("server did not stop accepting connections")
+	}
+}
+
+func TestGatewayTransportAppliesResponseHeaderLimit(t *testing.T) {
+	target, err := url.Parse("http://edgeproxy:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default().Server
+	cfg.UpstreamTransport.MaxResponseHeaderBytes = 4096
+	proxy := newReverseProxy(target, cfg, slog.Default())
+	transport, ok := proxy.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("unexpected transport type %T", proxy.Transport)
+	}
+	if transport.MaxResponseHeaderBytes != cfg.UpstreamTransport.MaxResponseHeaderBytes {
+		t.Fatalf("MaxResponseHeaderBytes=%d, want %d", transport.MaxResponseHeaderBytes, cfg.UpstreamTransport.MaxResponseHeaderBytes)
+	}
+}
+
+func TestGatewayRejectsOversizedUpstreamResponseHeaders(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Oversized", strings.Repeat("a", 8192))
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer origin.Close()
+
+	target, err := url.Parse(origin.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default().Server
+	cfg.UpstreamTransport.MaxResponseHeaderBytes = 4096
+	proxy := newReverseProxy(target, cfg, slog.Default())
+	response := httptest.NewRecorder()
+	proxy.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://securityedge.test/", nil))
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
 	}
 }
 

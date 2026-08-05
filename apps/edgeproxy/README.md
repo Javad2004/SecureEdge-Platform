@@ -355,9 +355,10 @@ make build
 
 ### Standalone EdgeProxy Compose stack
 
-Run from `apps/edgeproxy`:
+Run from `apps/edgeproxy`. First create the local environment file and replace `EDGEPROXY_ADMIN_TOKEN`; the Compose definition rejects a missing or empty token instead of using a public default:
 
 ```powershell
+Copy-Item ./.env.example ./.env
 docker compose up --build
 ```
 
@@ -386,10 +387,13 @@ This Compose file intentionally demonstrates EdgeProxy and the demo Origin only.
 
 ### Complete platform Compose stack
 
-To run SecurityEdge in front of EdgeProxy, still from `apps/edgeproxy`, use the repository-level deployment:
+To run SecurityEdge in front of EdgeProxy, create the deployment environment file, replace both Admin tokens, and use the repository-level deployment:
 
 ```powershell
+Copy-Item ../../deployments/docker/.env.example ../../deployments/docker/.env
+
 docker compose `
+  --env-file ../../deployments/docker/.env `
   -f ../../deployments/docker/compose.yml `
   up --build
 ```

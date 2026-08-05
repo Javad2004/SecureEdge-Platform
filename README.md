@@ -56,7 +56,7 @@ Each application has its own `go.mod`, tests, configuration files, scripts, Dock
 
 ## Requirements
 
-- Go **1.26** or later
+- Go **1.26.5** or later
 - Windows PowerShell for the supplied `.ps1` operational scripts
 - `curl` or `curl.exe` for HTTP verification
 - Docker only for the optional container workflows
@@ -278,7 +278,13 @@ The repository provides two container workflows.
 
 ### Standalone EdgeProxy demonstration
 
-This stack runs only the demo Origin and EdgeProxy. Run from the repository root:
+This stack runs only the demo Origin and EdgeProxy. Create the application environment file and replace the Admin API token before starting:
+
+```powershell
+Copy-Item ./apps/edgeproxy/.env.example ./apps/edgeproxy/.env
+```
+
+Run from the repository root:
 
 ```powershell
 docker compose `
@@ -286,6 +292,8 @@ docker compose `
   --project-directory ./apps/edgeproxy `
   up --build
 ```
+
+Compose rejects a missing or empty `EDGEPROXY_ADMIN_TOKEN`; it never falls back to a checked-in credential.
 
 The standalone proxy is exposed at `http://127.0.0.1:8080`; its Admin API is bound to `http://127.0.0.1:9090`.
 
@@ -299,13 +307,13 @@ Host client → SecurityEdge → EdgeProxy → Origin
 
 EdgeProxy and the Origin are not published to the host. SecurityEdge ingress is published on port `8081`, while the dashboard remains loopback-only on port `9191`.
 
-Optional: create a local environment file before starting the stack:
+Create the deployment environment file and replace both placeholder tokens before starting the stack:
 
 ```powershell
 Copy-Item ./deployments/docker/.env.example ./deployments/docker/.env
 ```
 
-Replace the demonstration tokens in that file for any non-lab use, then start the stack:
+The Compose definition treats both Admin credentials as required and stops with an explicit interpolation error when either value is missing or empty. Start the stack with the selected file:
 
 ```powershell
 docker compose `
@@ -314,8 +322,6 @@ docker compose `
   up --build
 ```
 
-The `--env-file` option can be omitted when the checked-in demonstration defaults are acceptable.
-
 Verify the complete request path:
 
 ```powershell
@@ -323,18 +329,24 @@ curl.exe -i http://127.0.0.1:8081/api/products
 curl.exe -i http://127.0.0.1:8081/api/products
 ```
 
-Open the dashboard at `http://127.0.0.1:9191`. The default demonstration token is `dev-security-token`.
+Open the dashboard at `http://127.0.0.1:9191` and authenticate with the `SECURITYEDGE_ADMIN_TOKEN` value from `deployments/docker/.env`.
 
 Stop the stack without deleting persisted SecurityEdge configuration or logs:
 
 ```powershell
-docker compose -f ./deployments/docker/compose.yml down
+docker compose `
+  --env-file ./deployments/docker/.env `
+  -f ./deployments/docker/compose.yml `
+  down
 ```
 
 Delete the stack and its named volumes when a clean configuration reset is required:
 
 ```powershell
-docker compose -f ./deployments/docker/compose.yml down -v
+docker compose `
+  --env-file ./deployments/docker/.env `
+  -f ./deployments/docker/compose.yml `
+  down -v
 ```
 
 SecurityEdge stores its mutable policy configuration and rotated NDJSON logs in named Docker volumes. Environment-provided tokens and endpoint overrides take precedence at runtime and are never written back by policy updates.

@@ -24,7 +24,7 @@ services:
       origin:
         condition: service_healthy
     environment:
-      EDGEPROXY_ADMIN_TOKEN: "${EDGEPROXY_ADMIN_TOKEN:-dev-token}"
+      EDGEPROXY_ADMIN_TOKEN: "${EDGEPROXY_ADMIN_TOKEN:?set EDGEPROXY_ADMIN_TOKEN in deployments/docker/.env}"
     expose:
       - "8080"
       - "9090"
@@ -53,8 +53,8 @@ services:
       edgeproxy:
         condition: service_healthy
     environment:
-      SECURITYEDGE_ADMIN_TOKEN: "${SECURITYEDGE_ADMIN_TOKEN:-dev-security-token}"
-      EDGEPROXY_ADMIN_TOKEN: "${EDGEPROXY_ADMIN_TOKEN:-dev-token}"
+      SECURITYEDGE_ADMIN_TOKEN: "${SECURITYEDGE_ADMIN_TOKEN:?set SECURITYEDGE_ADMIN_TOKEN in deployments/docker/.env}"
+      EDGEPROXY_ADMIN_TOKEN: "${EDGEPROXY_ADMIN_TOKEN:?set EDGEPROXY_ADMIN_TOKEN in deployments/docker/.env}"
     ports:
       - "${SECURITYEDGE_HTTP_PORT:-8081}:8081"
       - "127.0.0.1:${SECURITYEDGE_ADMIN_PORT:-9191}:9191"

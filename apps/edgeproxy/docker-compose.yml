@@ -22,7 +22,7 @@ services:
       origin:
         condition: service_healthy
     environment:
-      EDGEPROXY_ADMIN_TOKEN: "${EDGEPROXY_ADMIN_TOKEN:-dev-token}"
+      EDGEPROXY_ADMIN_TOKEN: "${EDGEPROXY_ADMIN_TOKEN:?set EDGEPROXY_ADMIN_TOKEN in apps/edgeproxy/.env}"
     ports:
       - "127.0.0.1:8080:8080"
       - "127.0.0.1:9090:9090"

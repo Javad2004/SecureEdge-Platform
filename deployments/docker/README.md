@@ -28,13 +28,7 @@ EdgeProxy ports `8080` and `9090`, and Origin port `9000`, are exposed only to t
 
 ## Start from the repository root
 
-The Compose file contains demonstration credential defaults, so this command works without an environment file:
-
-```powershell
-docker compose -f ./deployments/docker/compose.yml up --build
-```
-
-For explicit credentials, published ports, or build metadata, copy the deployment template and replace the values:
+Copy the deployment template and replace both placeholder Admin tokens before starting. The Compose definition treats these credentials as required and refuses to render the stack when either value is missing or empty:
 
 ```powershell
 Copy-Item ./deployments/docker/.env.example ./deployments/docker/.env
@@ -65,7 +59,7 @@ Dashboard:
 
 ```text
 URL:    http://127.0.0.1:9191
-Token:  dev-security-token, unless overridden
+Token:  the SECURITYEDGE_ADMIN_TOKEN value from deployments/docker/.env
 ```
 
 ## Persistent state
@@ -82,13 +76,19 @@ The image initializes `securityedge-config` with the container profile on first 
 To stop services while retaining state:
 
 ```powershell
-docker compose -f ./deployments/docker/compose.yml down
+docker compose `
+  --env-file ./deployments/docker/.env `
+  -f ./deployments/docker/compose.yml `
+  down
 ```
 
 To reset configuration and logs completely:
 
 ```powershell
-docker compose -f ./deployments/docker/compose.yml down -v
+docker compose `
+  --env-file ./deployments/docker/.env `
+  -f ./deployments/docker/compose.yml `
+  down -v
 ```
 
 ## Container hardening
@@ -124,7 +124,7 @@ http://origin:9000
 
 The checked-in stack is a hardened project demonstration, not a complete Internet-edge production deployment. Before external use:
 
-- replace both demonstration tokens;
+- rotate both Admin tokens through a secret manager or protected environment file;
 - place TLS termination, a trusted load balancer, or a CDN in front of SecurityEdge;
 - apply host firewall policy and Docker daemon hardening;
 - verify that `172.30.0.0/24` does not overlap an existing local or VPN network, or change the subnet and matching EdgeProxy trusted-proxy CIDR together;

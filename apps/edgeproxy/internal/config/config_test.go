@@ -510,3 +510,52 @@ func TestApplyEnvironmentOverridesRejectsInvalidTLSBoolean(t *testing.T) {
 		t.Fatalf("expected invalid TLS boolean error, got %v", err)
 	}
 }
+
+func TestValidateRejectsOverlappingServerAndAdminListeners(t *testing.T) {
+	cases := []struct {
+		name   string
+		server string
+		admin  string
+	}{
+		{name: "identical", server: "127.0.0.1:8080", admin: "127.0.0.1:8080"},
+		{name: "IPv4 wildcard", server: "0.0.0.0:8080", admin: "127.0.0.1:8080"},
+		{name: "IPv6 wildcard", server: "[::]:8080", admin: "[::1]:8080"},
+		{name: "loopback aliases", server: "localhost:8080", admin: "127.0.0.1:8080"},
+		{name: "service name", server: "127.0.0.1:http", admin: "127.0.0.1:80"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Server.ListenAddr = tc.server
+			cfg.Admin.ListenAddr = tc.admin
+			cfg.Admin.AuthToken = "test-token"
+			cfg.Routes = []RouteConfig{validRouteForValidation()}
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "overlap") {
+				t.Fatalf("expected listener overlap to be rejected, got %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateAllowsDistinctOrDynamicListeners(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		server string
+		admin  string
+	}{
+		{name: "different ports", server: "127.0.0.1:8080", admin: "127.0.0.1:9090"},
+		{name: "dynamic server", server: "127.0.0.1:0", admin: "127.0.0.1:9090"},
+		{name: "dynamic admin", server: "127.0.0.1:8080", admin: "127.0.0.1:0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Server.ListenAddr = tc.server
+			cfg.Admin.ListenAddr = tc.admin
+			cfg.Routes = []RouteConfig{validRouteForValidation()}
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("expected listeners to validate: %v", err)
+			}
+		})
+	}
+}

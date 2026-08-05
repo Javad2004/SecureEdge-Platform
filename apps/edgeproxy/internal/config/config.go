@@ -329,6 +329,9 @@ func (c *Config) Validate() error {
 	}
 
 	if c.Admin.Enabled {
+		if listenerEndpointsOverlap(c.Server.ListenAddr, c.Admin.ListenAddr) {
+			errs = append(errs, fmt.Errorf("server.listen_addr %q and admin.listen_addr %q overlap", c.Server.ListenAddr, c.Admin.ListenAddr))
+		}
 		host, _, err := net.SplitHostPort(c.Admin.ListenAddr)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("invalid admin.listen_addr: %w", err))
@@ -621,6 +624,49 @@ func normalizeAbsolutePath(raw string) (string, error) {
 		cleaned += "/"
 	}
 	return cleaned, nil
+}
+
+func listenerEndpointsOverlap(first, second string) bool {
+	firstHost, firstPortRaw, firstErr := net.SplitHostPort(strings.TrimSpace(first))
+	secondHost, secondPortRaw, secondErr := net.SplitHostPort(strings.TrimSpace(second))
+	if firstErr != nil || secondErr != nil {
+		return false
+	}
+	firstPort, firstErr := normalizedListenerPort(firstPortRaw)
+	secondPort, secondErr := normalizedListenerPort(secondPortRaw)
+	if firstErr != nil || secondErr != nil || firstPort == 0 || secondPort == 0 || firstPort != secondPort {
+		return false
+	}
+	return listenerHostsOverlap(firstHost, secondHost)
+}
+
+func normalizedListenerPort(raw string) (int, error) {
+	if port, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil {
+		return port, nil
+	}
+	return net.LookupPort("tcp", strings.TrimSpace(raw))
+}
+
+func listenerHostsOverlap(first, second string) bool {
+	first = strings.Trim(strings.TrimSpace(first), "[]")
+	second = strings.Trim(strings.TrimSpace(second), "[]")
+	if strings.EqualFold(first, second) || anyListenerHost(first) || anyListenerHost(second) {
+		return true
+	}
+	if isLoopbackHost(first) && isLoopbackHost(second) {
+		return true
+	}
+	firstIP, secondIP := net.ParseIP(first), net.ParseIP(second)
+	return firstIP != nil && secondIP != nil && firstIP.Equal(secondIP)
+}
+
+func anyListenerHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if host == "" || host == "*" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsUnspecified()
 }
 
 func validateHostPort(name, addr string, allowZero bool) error {

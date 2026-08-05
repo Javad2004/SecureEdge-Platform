@@ -533,3 +533,56 @@ func TestApplyEnvironmentOverridesRejectsInvalidDNSBoolean(t *testing.T) {
 		t.Fatalf("expected invalid DNS boolean error, got %v", err)
 	}
 }
+
+func TestRejectsOverlappingGatewayAndAdminListeners(t *testing.T) {
+	cases := []struct {
+		name   string
+		server string
+		admin  string
+	}{
+		{name: "identical", server: "127.0.0.1:8081", admin: "127.0.0.1:8081"},
+		{name: "IPv4 wildcard", server: "0.0.0.0:8081", admin: "127.0.0.1:8081"},
+		{name: "IPv6 wildcard", server: "[::]:8081", admin: "[::1]:8081"},
+		{name: "loopback aliases", server: "localhost:8081", admin: "127.0.0.1:8081"},
+		{name: "service name", server: "127.0.0.1:http", admin: "127.0.0.1:80"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Server.Mode = "gateway"
+			cfg.Server.ListenAddr = tc.server
+			cfg.Admin.ListenAddr = tc.admin
+			cfg.Admin.AuthToken = "test-token"
+			cfg.EdgeProxy.ConfigPath = "edge.json"
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "overlap") {
+				t.Fatalf("expected listener overlap to be rejected, got %v", err)
+			}
+		})
+	}
+}
+
+func TestAllowsDistinctDynamicAndEmbeddedListeners(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mode   string
+		server string
+		admin  string
+	}{
+		{name: "different ports", mode: "gateway", server: "127.0.0.1:8081", admin: "127.0.0.1:9191"},
+		{name: "dynamic gateway", mode: "gateway", server: "127.0.0.1:0", admin: "127.0.0.1:9191"},
+		{name: "dynamic admin", mode: "gateway", server: "127.0.0.1:8081", admin: "127.0.0.1:0"},
+		{name: "embedded has no gateway listener", mode: "embedded", server: "127.0.0.1:9191", admin: "127.0.0.1:9191"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Server.Mode = tc.mode
+			cfg.Server.ListenAddr = tc.server
+			cfg.Admin.ListenAddr = tc.admin
+			cfg.EdgeProxy.ConfigPath = "edge.json"
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("expected listeners to validate: %v", err)
+			}
+		})
+	}
+}

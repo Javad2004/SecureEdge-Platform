@@ -3,12 +3,12 @@ package envfile
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -196,8 +196,8 @@ func parseValue(raw string) (string, error) {
 		if err := validateTrailing(raw[end+1:]); err != nil {
 			return "", err
 		}
-		value, err := strconv.Unquote(raw[:end+1])
-		if err != nil {
+		var value string
+		if err := json.Unmarshal([]byte(raw[:end+1]), &value); err != nil {
 			return "", fmt.Errorf("invalid double-quoted value: %w", err)
 		}
 		return value, nil

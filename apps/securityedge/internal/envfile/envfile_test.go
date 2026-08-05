@@ -6,6 +6,32 @@ import (
 	"testing"
 )
 
+func TestParseDoubleQuotedValuesUsesJSONCompatibleEscapes(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "escaped slash", raw: `"https:\/\/example.test\/api"`, want: "https://example.test/api"},
+		{name: "unicode escape", raw: `"token-\u0031"`, want: "token-1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseValue(tt.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+
+	if _, err := parseValue(`"\x41"`); err == nil {
+		t.Fatal("expected a Go-only hexadecimal escape to be rejected")
+	}
+}
+
 func TestLoadUsesFirstExistingCandidateWithoutOverwritingProcessEnvironment(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")

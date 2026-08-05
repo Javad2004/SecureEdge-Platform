@@ -123,7 +123,7 @@ Important variables:
 
 Empty or missing variables preserve the JSON values. Environment-derived values are runtime-only: dashboard policy updates continue to persist the file-backed configuration without writing secrets or machine-specific endpoint overrides into JSON.
 
-A missing auto-discovered `.env` file is not an error. An explicitly selected file must identify a regular UTF-8 file no larger than 1 MiB. Invalid files are rejected before any values are applied. Never commit the real `.env`; commit only `.env.example`. SecurityEdge PowerShell verification, listener, connectivity, and firewall scripts use compatible validated dotenv loading and the same precedence as the service; `test-deployment.ps1` additionally loads the EdgeProxy `.env` so route and Origin overrides are tested exactly as deployed.
+A missing auto-discovered `.env` file is not an error. An explicitly selected file must identify a regular UTF-8 file no larger than 1 MiB. Invalid files are rejected before any values are applied. Double-quoted dotenv values use JSON-compatible escapes in both the Go executable and PowerShell scripts; Go-only escapes such as `\xNN` are rejected. Never commit the real `.env`; commit only `.env.example`. SecurityEdge PowerShell verification, listener, connectivity, and firewall scripts use compatible validated dotenv loading and the same precedence as the service; `test-deployment.ps1` additionally loads the EdgeProxy `.env` so route and Origin overrides are tested exactly as deployed.
 
 ## Quick start: local integrated development
 

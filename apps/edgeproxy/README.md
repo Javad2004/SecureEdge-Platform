@@ -74,7 +74,7 @@ EdgeProxy can run entirely from its JSON profiles, so an environment file is opt
 Copy-Item ./.env.example ./.env
 ```
 
-The process automatically loads `apps/edgeproxy/.env` when launched from the repository root and `.env` when launched from this directory. It does not fall back to a repository-root `.env`, so settings for another tool or application cannot become EdgeProxy configuration accidentally. An explicit file can be selected with `-env` or `EDGEPROXY_ENV_FILE`; use `-no-env` for an isolated run that must ignore dotenv files. Relative `EDGEPROXY_CONFIG` values loaded from `.env` resolve from that file, while CLI and pre-existing process-environment paths remain relative to the current working directory.
+The process automatically loads `apps/edgeproxy/.env` when launched from the repository root and `.env` when launched from this directory. It does not fall back to a repository-root `.env`, so settings for another tool or application cannot become EdgeProxy configuration accidentally. An explicit file can be selected with `-env` or `EDGEPROXY_ENV_FILE`; use `-no-env` for an isolated run that must ignore dotenv files. Relative `EDGEPROXY_CONFIG` values loaded from `.env` resolve from that file, while CLI and pre-existing process-environment paths remain relative to the current working directory. Double-quoted dotenv values use JSON-compatible escapes in both the Go executable and PowerShell scripts; Go-only escapes such as `\xNN` are rejected.
 
 Configuration precedence is:
 

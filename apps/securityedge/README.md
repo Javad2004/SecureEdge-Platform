@@ -313,6 +313,8 @@ GET /healthz
 GET /readyz
 ```
 
+These endpoints intentionally return only generic liveness/readiness state. Dependency URLs, transport errors, route names, and full EdgeProxy readiness payloads are available only through authenticated status and connectivity endpoints.
+
 Authenticated SecurityEdge endpoints:
 
 ```text
@@ -425,6 +427,17 @@ Preview or create Windows Firewall rules for the public SecurityEdge ingress:
 ```
 
 The firewall script intentionally does not expose EdgeProxy or Admin ports.
+
+On POSIX systems, `scripts/test-security.sh` and `scripts/test-protection.sh` are explicit-environment smoke tests. They deliberately do not source `.env` as shell code. Export the active Admin credential and override the public and Admin URLs when needed:
+
+```sh
+SECURITYEDGE_ADMIN_TOKEN='replace-with-the-active-token' \
+BASE_URL='http://project.test:8081' \
+ADMIN_URL='http://127.0.0.1:9191' \
+./scripts/test-security.sh
+```
+
+Both scripts fail before sending requests when no Admin token is supplied and bypass ambient HTTP proxy settings for local verification. `test-protection.sh` expects a profile whose rate limiter and automatic-ban behavior are enabled.
 
 ## Build and verification
 

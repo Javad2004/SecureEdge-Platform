@@ -240,17 +240,29 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{"status": "ok", "generated_at": now()})
 }
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	raw, status, err := s.runtime.EdgeJSON(ctx, http.MethodGet, "/readyz", nil, nil)
+	_, status, err := s.runtime.EdgeJSON(r.Context(), http.MethodGet, "/readyz", nil, nil)
 	if err != nil {
-		writeJSON(w, 503, map[string]any{"status": "not_ready", "generated_at": now(), "dependency": "edgeproxy", "error": err.Error()})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"status":       "not_ready",
+			"generated_at": now(),
+			"dependency":   "edgeproxy",
+		})
 		return
 	}
-	if status != 200 {
-		writeRaw(w, 503, raw)
+	if status != http.StatusOK {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"status":                 "not_ready",
+			"generated_at":           now(),
+			"dependency":             "edgeproxy",
+			"dependency_http_status": status,
+		})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"status": "ready", "generated_at": now(), "edgeproxy": json.RawMessage(raw)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":       "ready",
+		"generated_at": now(),
+		"dependency":   "edgeproxy",
+	})
 }
 func (s *Server) session(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{"authenticated": true, "generated_at": now()})

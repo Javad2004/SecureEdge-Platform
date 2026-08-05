@@ -58,7 +58,7 @@ Container-network profile paired with `apps/securityedge/configs/compose.json`.
 ```text
 Data plane    0.0.0.0:8080 inside the container network
 Admin API     0.0.0.0:9090 inside the container network
-Admin token   dev-token, normally overridden by environment
+Admin token   required `EDGEPROXY_ADMIN_TOKEN` from `deployments/docker/.env`
 Origin        http://origin:9000
 ```
 
@@ -115,7 +115,7 @@ Paired EdgeProxy tokens must match:
 |---|---|---|
 | Local | `dev-token` | `dev-token` |
 | Reference LAN | `EdgeProxyDemo2026` | `EdgeProxyDemo2026` |
-| Compose | `dev-token` | `dev-token` |
+| Compose | required `EDGEPROXY_ADMIN_TOKEN` environment value | the same required environment value |
 
 For non-demonstration environments, copy the application templates:
 
@@ -124,7 +124,7 @@ Copy-Item ../apps/edgeproxy/.env.example ../apps/edgeproxy/.env
 Copy-Item ../apps/securityedge/.env.example ../apps/securityedge/.env
 ```
 
-Set a unique `SECURITYEDGE_ADMIN_TOKEN`, and set the same strong `EDGEPROXY_ADMIN_TOKEN` in both files. The templates also centralize the paired listener URLs, Origin URL, trusted-proxy CIDRs, and DNS acceptance values.
+Set a unique `SECURITYEDGE_ADMIN_TOKEN`, and set the same strong `EDGEPROXY_ADMIN_TOKEN` in both files. For the full Compose deployment, copy `deployments/docker/.env.example` to `deployments/docker/.env` and replace both placeholders; Compose refuses to render when either Admin token is missing or empty. The application templates also centralize the paired listener URLs, Origin URL, trusted-proxy CIDRs, and DNS acceptance values.
 
 Both programs load environment values after JSON. SecurityEdge deliberately keeps every environment-derived secret and endpoint runtime-only, so dashboard policy updates never persist them into the JSON profile.
 

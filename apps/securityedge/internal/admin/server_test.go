@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -23,8 +24,11 @@ import (
 )
 
 type fakeRuntime struct {
-	cfg       config.Config
-	reloadErr error
+	cfg        config.Config
+	reloadErr  error
+	edgeRaw    json.RawMessage
+	edgeStatus int
+	edgeErr    error
 }
 
 func (f *fakeRuntime) Config() config.Config { return f.cfg }
@@ -44,7 +48,10 @@ func (f *fakeRuntime) ClearBans() int                                { return 0 
 func (f *fakeRuntime) AdmissionSnapshot() admission.Snapshot         { return admission.Snapshot{} }
 func (f *fakeRuntime) Audit(string, string, map[string]string)       {}
 func (f *fakeRuntime) EdgeJSON(context.Context, string, string, url.Values, any) (json.RawMessage, int, error) {
-	return json.RawMessage(`{"status":"ready"}`), http.StatusOK, nil
+	if f.edgeRaw == nil && f.edgeStatus == 0 && f.edgeErr == nil {
+		return json.RawMessage(`{"status":"ready"}`), http.StatusOK, nil
+	}
+	return f.edgeRaw, f.edgeStatus, f.edgeErr
 }
 
 func newAdminTestServer(t *testing.T, failures int) *httptest.Server {
@@ -70,6 +77,82 @@ func newAdminTestServerWithTraffic(t *testing.T, failures int) (*httptest.Server
 		t.Fatal(err)
 	}
 	return httptest.NewServer(s.HTTPServer().Handler), tracker
+}
+
+func TestReadyEndpointDoesNotExposeEdgeProxyDetails(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Admin.AuthToken = "secret-token"
+	inspector, err := waf.NewInspector(nil, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name       string
+		runtime    *fakeRuntime
+		wantStatus int
+		forbidden  []string
+	}{
+		{
+			name: "transport error",
+			runtime: &fakeRuntime{
+				cfg:     cfg,
+				edgeErr: errors.New(`Get "http://127.0.0.1:9090/private": connection refused`),
+			},
+			wantStatus: http.StatusServiceUnavailable,
+			forbidden:  []string{"127.0.0.1:9090", "connection refused", `"error"`},
+		},
+		{
+			name: "dependency not ready",
+			runtime: &fakeRuntime{
+				cfg:        cfg,
+				edgeRaw:    json.RawMessage(`{"status":"not_ready","unhealthy_routes":["private-route"]}`),
+				edgeStatus: http.StatusServiceUnavailable,
+			},
+			wantStatus: http.StatusServiceUnavailable,
+			forbidden:  []string{"private-route", "unhealthy_routes"},
+		},
+		{
+			name: "dependency ready",
+			runtime: &fakeRuntime{
+				cfg:        cfg,
+				edgeRaw:    json.RawMessage(`{"status":"ready","routes":["private-route"]}`),
+				edgeStatus: http.StatusOK,
+			},
+			wantStatus: http.StatusOK,
+			forbidden:  []string{"private-route", `"routes"`},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, err := New(cfg.Admin, tt.runtime, metrics.New(), securitylog.New(100), traffic.New(100, time.Minute), inspector)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+			rr := httptest.NewRecorder()
+			s.HTTPServer().Handler.ServeHTTP(rr, req)
+			if rr.Code != tt.wantStatus {
+				t.Fatalf("status=%d body=%q, want %d", rr.Code, rr.Body.String(), tt.wantStatus)
+			}
+			body := rr.Body.String()
+			for _, value := range tt.forbidden {
+				if strings.Contains(body, value) {
+					t.Fatalf("readiness response exposed %q: %s", value, body)
+				}
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload["dependency"] != "edgeproxy" || payload["generated_at"] == "" {
+				t.Fatalf("body=%#v", payload)
+			}
+		})
+	}
 }
 
 func TestAdminRequiresBearerTokenAndServesBuildInfo(t *testing.T) {

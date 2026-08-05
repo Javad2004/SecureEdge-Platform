@@ -324,6 +324,17 @@ Run from `apps/edgeproxy`:
 
 The test scripts load `apps/edgeproxy/.env` automatically and derive the data-plane target from the effective first route, listener port, and TLS setting. They preserve the configured route host while using curl `--connect-to` to reach the actual local listener, so component verification does not depend on public or Technitium DNS. Process environment variables take precedence; explicit `-ProxyUrl`, `-AdminUrl`, `-OriginUrl`, and `-Token` parameters override the derived values, and `-NoEnv` preserves an isolated JSON/default test. Use `-Insecure` only for an intentional development TLS certificate that is not trusted by the local machine. Wildcard listeners are contacted through the corresponding loopback family, explicitly bound hostnames/LAN IPs/IPv6 addresses are retained, and a listener configured with port `0` requires an explicit URL because its runtime port cannot be predicted. If the first route contains only wildcard host patterns, supply `-ProxyUrl` explicitly.
 
+On POSIX systems, `scripts/demo.sh` is a small explicit-environment smoke test. It deliberately does not source `.env` as shell code. Export `EDGEPROXY_ADMIN_TOKEN` and override `PROXY_URL` or `ADMIN_URL` when the active deployment differs from the local defaults:
+
+```sh
+EDGEPROXY_ADMIN_TOKEN='replace-with-the-active-token' \
+PROXY_URL='http://project.local:8080' \
+ADMIN_URL='http://127.0.0.1:9090' \
+./scripts/demo.sh
+```
+
+The script fails before sending requests when no Admin token is supplied and bypasses ambient HTTP proxy settings for local verification.
+
 Without `.env` or explicit parameters, `start-origin.ps1` uses the built-in `127.0.0.1:9000` / `origin-a` defaults. For a deliberate LAN deployment, set `ORIGIN_DEMO_LISTEN_ADDR=0.0.0.0:9000` in `.env` and protect the Origin port with the host firewall.
 
 For the integrated LAN profile, supply the public SecurityEdge URL to traffic-generation scripts rather than connecting clients directly to EdgeProxy.

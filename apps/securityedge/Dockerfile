@@ -1,4 +1,4 @@
-FROM golang:1.23-alpine AS build
+FROM golang:1.26.5-alpine AS build
 
 ARG VERSION=development
 ARG COMMIT=container
@@ -17,7 +17,7 @@ RUN CGO_ENABLED=0 go test ./... \
     -X github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/version.BuildTime=${BUILD_TIME}" \
     -o /out/securityedge ./cmd/securityedge
 
-FROM alpine:3.21
+FROM alpine:3.24
 
 ARG VERSION=development
 

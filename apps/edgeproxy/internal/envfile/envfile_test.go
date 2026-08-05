@@ -157,7 +157,7 @@ func TestApplicationCandidatesKeepDotenvApplicationScoped(t *testing.T) {
 		t.Fatalf("repository root must not discover generic .env: %#v", got)
 	}
 
-	if err := os.WriteFile("go.mod", []byte("module "+applicationModulePath+"\n\ngo 1.23\n"), 0o600); err != nil {
+	if err := os.WriteFile("go.mod", []byte("module "+applicationModulePath+"\n\ngo 1.26\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	got := ApplicationCandidates("apps/application/.env")

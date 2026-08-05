@@ -56,7 +56,7 @@ Each application has its own `go.mod`, tests, configuration files, scripts, Dock
 
 ## Requirements
 
-- Go **1.23** or later
+- Go **1.26** or later
 - Windows PowerShell for the supplied `.ps1` operational scripts
 - `curl` or `curl.exe` for HTTP verification
 - Docker only for the optional container workflows

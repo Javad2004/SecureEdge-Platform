@@ -1,4 +1,4 @@
-FROM golang:1.23-alpine AS build
+FROM golang:1.26.5-alpine AS build
 
 WORKDIR /src
 
@@ -9,7 +9,7 @@ RUN CGO_ENABLED=0 go test ./... \
  && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/edgeproxy ./cmd/edgeproxy \
  && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/origin-demo ./cmd/origin-demo
 
-FROM alpine:3.21 AS origin-demo
+FROM alpine:3.24 AS origin-demo
 
 RUN apk add --no-cache ca-certificates \
  && addgroup -S origin \
@@ -26,7 +26,7 @@ HEALTHCHECK --interval=5s --timeout=2s --start-period=3s --retries=10 \
 ENTRYPOINT ["/usr/local/bin/origin-demo"]
 CMD ["-listen", "0.0.0.0:9000", "-name", "origin-compose"]
 
-FROM alpine:3.21 AS edgeproxy
+FROM alpine:3.24 AS edgeproxy
 
 RUN apk add --no-cache ca-certificates \
  && addgroup -S edgeproxy \

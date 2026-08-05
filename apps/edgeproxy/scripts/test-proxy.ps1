@@ -4,7 +4,8 @@ param(
     [string]$AdminUrl = "",
     [string]$Token = "",
     [string]$EnvFile = "",
-    [switch]$NoEnv
+    [switch]$NoEnv,
+    [switch]$Insecure
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,39 +27,47 @@ if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { throw "Configura
 $configObject = Get-Content (Resolve-Path -LiteralPath $configPath) -Raw | ConvertFrom-Json
 $configObject = Apply-EdgeProxyEnvironmentOverrides -ConfigObject $configObject
 
-if (-not $ProxyUrl) { $ProxyUrl = "http://project.test" }
+$routeCurlArguments = @()
+if (-not $ProxyUrl) {
+    $target = Get-EdgeProxyTestTargetFromConfig -ConfigObject $configObject
+    $ProxyUrl = $target.BaseUrl
+    $routeCurlArguments = @($target.CurlArguments)
+}
 if (-not $AdminUrl) {
     $AdminUrl = Get-LocalHttpUrlFromListenAddress -ListenAddress ([string]$configObject.admin.listen_addr)
 }
 if (-not $Token) { $Token = [string]$configObject.admin.auth_token }
 $Auth = "Authorization: Bearer $Token"
+$commonCurlArguments = @('--noproxy', '*')
+if ($Insecure) { $commonCurlArguments += '--insecure' }
 
+Write-Host "Data-plane target: $ProxyUrl" -ForegroundColor DarkGray
 Write-Host "1) Admin liveness"
-curl.exe -i "$AdminUrl/healthz"
+Invoke-CurlChecked -Arguments ($commonCurlArguments + @('-i', "$AdminUrl/healthz"))
 
 Write-Host "`n2) Route readiness"
-curl.exe -i "$AdminUrl/readyz"
+Invoke-CurlChecked -Arguments ($commonCurlArguments + @('-i', "$AdminUrl/readyz"))
 
 Write-Host "`n3) First products request: expected MISS"
-curl.exe -i "$ProxyUrl/api/products"
+Invoke-CurlChecked -Arguments ($commonCurlArguments + $routeCurlArguments + @('-i', "$ProxyUrl/api/products"))
 
 Write-Host "`n4) Second products request: expected HIT"
-curl.exe -i "$ProxyUrl/api/products"
+Invoke-CurlChecked -Arguments ($commonCurlArguments + $routeCurlArguments + @('-i', "$ProxyUrl/api/products"))
 
 Write-Host "`n5) Dynamic endpoint: expected BYPASS"
-curl.exe -i "$ProxyUrl/api/time"
+Invoke-CurlChecked -Arguments ($commonCurlArguments + $routeCurlArguments + @('-i', "$ProxyUrl/api/time"))
 
 Write-Host "`n6) Metrics"
-curl.exe -s -H $Auth "$AdminUrl/api/v1/metrics" |
+Invoke-CurlChecked -Arguments ($commonCurlArguments + @('-sS', '-H', $Auth, "$AdminUrl/api/v1/metrics")) |
     ConvertFrom-Json |
     ConvertTo-Json -Depth 30
 
 Write-Host "`n7) Status"
-curl.exe -s -H $Auth "$AdminUrl/api/v1/status" |
+Invoke-CurlChecked -Arguments ($commonCurlArguments + @('-sS', '-H', $Auth, "$AdminUrl/api/v1/status")) |
     ConvertFrom-Json |
     ConvertTo-Json -Depth 20
 
 Write-Host "`n8) Latest structured logs"
-curl.exe -s -H $Auth "$AdminUrl/api/v1/logs?limit=20" |
+Invoke-CurlChecked -Arguments ($commonCurlArguments + @('-sS', '-H', $Auth, "$AdminUrl/api/v1/logs?limit=20")) |
     ConvertFrom-Json |
     ConvertTo-Json -Depth 20

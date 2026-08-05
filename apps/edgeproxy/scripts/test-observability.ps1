@@ -5,7 +5,8 @@ param(
     [string]$Token = "",
     [string]$OriginUrl = "",
     [string]$EnvFile = "",
-    [switch]$NoEnv
+    [switch]$NoEnv,
+    [switch]$Insecure
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,39 +28,49 @@ if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { throw "Configura
 $configObject = Get-Content (Resolve-Path -LiteralPath $configPath) -Raw | ConvertFrom-Json
 $configObject = Apply-EdgeProxyEnvironmentOverrides -ConfigObject $configObject
 
-if (-not $ProxyUrl) { $ProxyUrl = "http://project.test" }
+$routeCurlArguments = @()
+$selectedRoute = $configObject.routes[0]
+if (-not $ProxyUrl) {
+    $target = Get-EdgeProxyTestTargetFromConfig -ConfigObject $configObject
+    $ProxyUrl = $target.BaseUrl
+    $routeCurlArguments = @($target.CurlArguments)
+    $selectedRoute = $target.Route
+}
 if (-not $AdminUrl) {
     $AdminUrl = Get-LocalHttpUrlFromListenAddress -ListenAddress ([string]$configObject.admin.listen_addr)
 }
 if (-not $Token) { $Token = [string]$configObject.admin.auth_token }
 if (-not $OriginUrl) {
-    $OriginUrl = [string]$configObject.routes[0].upstreams[0].url
+    $OriginUrl = [string]$selectedRoute.upstreams[0].url
 }
 $Headers = @("Authorization: Bearer $Token")
+$commonCurlArguments = @('--noproxy', '*')
+if ($Insecure) { $commonCurlArguments += '--insecure' }
 
+Write-Host "Data-plane target: $ProxyUrl" -ForegroundColor DarkGray
 Write-Host "1) Generate one MISS, one HIT, and two BYPASS requests"
-curl.exe -s -o NUL "$ProxyUrl/api/products"
-curl.exe -s -o NUL "$ProxyUrl/api/products"
-curl.exe -s -o NUL "$ProxyUrl/api/time"
-curl.exe -s -o NUL "$ProxyUrl/api/time"
+Invoke-CurlChecked -Arguments ($commonCurlArguments + $routeCurlArguments + @('-sS', '-o', 'NUL', "$ProxyUrl/api/products"))
+Invoke-CurlChecked -Arguments ($commonCurlArguments + $routeCurlArguments + @('-sS', '-o', 'NUL', "$ProxyUrl/api/products"))
+Invoke-CurlChecked -Arguments ($commonCurlArguments + $routeCurlArguments + @('-sS', '-o', 'NUL', "$ProxyUrl/api/time"))
+Invoke-CurlChecked -Arguments ($commonCurlArguments + $routeCurlArguments + @('-sS', '-o', 'NUL', "$ProxyUrl/api/time"))
 
 Write-Host "`n2) Professional metrics"
-curl.exe -s -H $Headers[0] "$AdminUrl/api/v1/metrics" |
+Invoke-CurlChecked -Arguments ($commonCurlArguments + @('-sS', '-H', $Headers[0], "$AdminUrl/api/v1/metrics")) |
     ConvertFrom-Json |
     ConvertTo-Json -Depth 30
 
 Write-Host "`n3) Latest request-completion logs"
-curl.exe -s -H $Headers[0] "$AdminUrl/api/v1/logs?event=request_completed&limit=20" |
+Invoke-CurlChecked -Arguments ($commonCurlArguments + @('-sS', '-H', $Headers[0], "$AdminUrl/api/v1/logs?event=request_completed&limit=20")) |
     ConvertFrom-Json |
     ConvertTo-Json -Depth 20
 
 Write-Host "`n4) Logs for one origin"
 $EncodedOrigin = [uri]::EscapeDataString($OriginUrl)
-curl.exe -s -H $Headers[0] "$AdminUrl/api/v1/logs?event=upstream_attempt&upstream=$EncodedOrigin&limit=20" |
+Invoke-CurlChecked -Arguments ($commonCurlArguments + @('-sS', '-H', $Headers[0], "$AdminUrl/api/v1/logs?event=upstream_attempt&upstream=$EncodedOrigin&limit=20")) |
     ConvertFrom-Json |
     ConvertTo-Json -Depth 20
 
 Write-Host "`n5) Health and log-store status"
-curl.exe -s -H $Headers[0] "$AdminUrl/api/v1/status" |
+Invoke-CurlChecked -Arguments ($commonCurlArguments + @('-sS', '-H', $Headers[0], "$AdminUrl/api/v1/status")) |
     ConvertFrom-Json |
     ConvertTo-Json -Depth 20

@@ -181,6 +181,73 @@ function Get-LocalHttpUrlFromListenAddress {
     return "http://${formattedHost}:$($endpoint.Port)"
 }
 
+function Invoke-CurlChecked {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    $output = & curl.exe @Arguments
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw "curl.exe failed with exit code $exitCode."
+    }
+    return ($output -join [Environment]::NewLine)
+}
+
+function Get-EdgeProxyTestTargetFromConfig {
+    param([Parameter(Mandatory = $true)]$ConfigObject)
+
+    $routes = @($ConfigObject.routes)
+    if ($routes.Count -eq 0) {
+        throw "EdgeProxy has no configured routes; provide -ProxyUrl explicitly."
+    }
+    $route = $routes[0]
+    $routeHost = @($route.hosts | ForEach-Object { ([string]$_).Trim() } |
+        Where-Object { $_ -and $_ -ne '*' -and -not $_.StartsWith('*.') })[0]
+    if (-not $routeHost) {
+        throw "The first EdgeProxy route has no concrete host; provide -ProxyUrl explicitly."
+    }
+
+    $endpoint = Split-NetworkEndpoint -Endpoint ([string]$ConfigObject.server.listen_addr)
+    if ($endpoint.Port -eq 0) {
+        throw "An EdgeProxy listener using port 0 has no predictable test URL; provide -ProxyUrl explicitly."
+    }
+
+    $connectHost = $endpoint.Host.Trim()
+    if ($connectHost -eq '::') {
+        $connectHost = '::1'
+    }
+    elseif (-not $connectHost -or $connectHost -eq '*' -or $connectHost -eq '0.0.0.0') {
+        $connectHost = '127.0.0.1'
+    }
+
+    $scheme = if ([bool]$ConfigObject.server.tls.enabled) { 'https' } else { 'http' }
+    $urlHost = if ($routeHost.Contains(':') -and -not $routeHost.StartsWith('[')) { "[$routeHost]" } else { $routeHost }
+    $connectTargetHost = if ($connectHost.Contains(':') -and -not $connectHost.StartsWith('[')) { "[$connectHost]" } else { $connectHost }
+
+    $pathPrefix = ([string]$route.path_prefix).Trim()
+    if (-not $pathPrefix -or $pathPrefix -eq '/') {
+        $pathPrefix = ''
+    }
+    else {
+        $pathPrefix = '/' + $pathPrefix.Trim('/')
+    }
+
+    $routeHostNormalized = $routeHost.Trim([char[]]'[]')
+    $connectHostNormalized = $connectHost.Trim([char[]]'[]')
+    $curlArguments = @()
+    if (-not [string]::Equals($routeHostNormalized, $connectHostNormalized, [System.StringComparison]::OrdinalIgnoreCase)) {
+        # --connect-to preserves the route Host header and TLS SNI while sending
+        # the request directly to the effective listener, so local verification
+        # does not depend on public or Technitium DNS configuration.
+        $curlArguments = @('--connect-to', "${urlHost}:$($endpoint.Port):${connectTargetHost}:$($endpoint.Port)")
+    }
+
+    return [pscustomobject]@{
+        BaseUrl = "${scheme}://${urlHost}:$($endpoint.Port)${pathPrefix}"
+        CurlArguments = @($curlArguments)
+        Route = $route
+    }
+}
+
 function Resolve-EffectiveConfigPath {
     param(
         [string]$ExplicitValue = "",

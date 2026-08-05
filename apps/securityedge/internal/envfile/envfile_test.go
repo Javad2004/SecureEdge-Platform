@@ -66,6 +66,24 @@ func TestLoadRejectsNonRegularExplicitPath(t *testing.T) {
 	}
 }
 
+func TestLoadAcceptsFileAtExactSizeLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	data := make([]byte, int(maxFileBytes))
+	for i := range data {
+		data[i] = '#'
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("expected an environment file at the documented size limit to load: %v", err)
+	}
+	if loaded != path {
+		t.Fatalf("expected %q, got %q", path, loaded)
+	}
+}
+
 func TestLoadRejectsOversizedFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".env")
 	data := make([]byte, int(maxFileBytes)+1)

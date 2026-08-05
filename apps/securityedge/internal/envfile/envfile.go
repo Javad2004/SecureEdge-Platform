@@ -113,7 +113,10 @@ func loadFile(path string) error {
 
 	values := make(map[string]string)
 	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 4096), int(maxFileBytes))
+	// Scanner requires room beyond the token itself for boundary detection.
+	// The file-size check already caps total input, so one extra byte lets a
+	// valid file whose final line reaches the exact 1 MiB limit be accepted.
+	scanner.Buffer(make([]byte, 4096), int(maxFileBytes)+1)
 	lineNumber := 0
 	for scanner.Scan() {
 		lineNumber++

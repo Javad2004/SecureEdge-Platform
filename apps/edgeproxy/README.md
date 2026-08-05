@@ -297,7 +297,7 @@ curl.exe -X POST -H $Auth `
 
 `path_prefix` matches the exact path segment and its descendants. For example, `/api` matches `/api` and `/api/products`, but not `/apix`. It must be an absolute canonical path without query text, fragments, percent-encoded path bytes, dot-segments, or repeated slashes.
 
-`/healthz` reports process liveness. `/readyz` reports `503 Service Unavailable` when any configured route has no healthy Origin.
+`/healthz` reports process liveness. `/readyz` returns a generic `ready` or `not_ready` payload and reports `503 Service Unavailable` when any configured route has no healthy Origin. The unauthenticated readiness response deliberately omits route and Origin details; use the authenticated `/api/v1/status` endpoint for diagnostics.
 
 The in-memory Admin log ring accepts a configured capacity from `1` through `100000` entries. Request-method metrics preserve the standard HTTP methods and aggregate nonstandard or extension methods under `OTHER` to keep metric label cardinality bounded.
 

@@ -97,16 +97,14 @@ func (s *Server) ready(w http.ResponseWriter, _ *http.Request) {
 	readiness := s.proxy.Readiness()
 	if !readiness.Ready {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"status":           "not_ready",
-			"generated_at":     generatedAt,
-			"unhealthy_routes": readiness.UnhealthyRoutes,
+			"status":       "not_ready",
+			"generated_at": generatedAt,
 		})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":           "ready",
-		"generated_at":     generatedAt,
-		"unhealthy_routes": []string{},
+		"status":       "ready",
+		"generated_at": generatedAt,
 	})
 }
 

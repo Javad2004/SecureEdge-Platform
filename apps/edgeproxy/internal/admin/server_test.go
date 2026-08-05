@@ -5,11 +5,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/accesslog"
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/metrics"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/proxy"
 )
 
 func testAdminServer(store *accesslog.Store) *Server {
@@ -131,5 +134,76 @@ func TestSecureTokenEqualHandlesDifferentLengths(t *testing.T) {
 	}
 	if secureTokenEqual("short", "a-much-longer-token") {
 		t.Fatal("different tokens matched")
+	}
+}
+
+func TestReadinessEndpointDoesNotExposeRouteDetails(t *testing.T) {
+	const routeName = "secret-internal-route"
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer origin.Close()
+
+	handler, err := proxy.NewHandler(config.Config{
+		Server: config.ServerConfig{ForwardedForHeader: "X-Forwarded-For"},
+		Routes: []config.RouteConfig{{
+			Name:       routeName,
+			Hosts:      []string{"secret.internal"},
+			PathPrefix: "/",
+			Upstreams:  []config.UpstreamConfig{{URL: origin.URL}},
+			Proxy: config.ProxyConfig{
+				DialTimeout:            config.Duration{Duration: time.Second},
+				ResponseHeaderTimeout:  config.Duration{Duration: time.Second},
+				IdleConnTimeout:        config.Duration{Duration: time.Minute},
+				MaxResponseHeaderBytes: 1 << 20,
+			},
+			HealthCheck: config.HealthCheckConfig{
+				Enabled:         true,
+				Path:            "/",
+				Interval:        config.Duration{Duration: time.Hour},
+				Timeout:         config.Duration{Duration: time.Second},
+				HealthyStatuses: []int{http.StatusOK},
+			},
+		}},
+	}, slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handler.Close()
+
+	server := New(config.AdminConfig{
+		Enabled:    true,
+		ListenAddr: "127.0.0.1:9090",
+		AuthToken:  "test-token",
+	}, slog.Default(), metrics.New(), handler, nil)
+
+	ready := httptest.NewRecorder()
+	server.HTTPServer().Handler.ServeHTTP(ready, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if ready.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", ready.Code, ready.Body.String())
+	}
+	body := ready.Body.String()
+	for _, secret := range []string{routeName, "secret.internal", "unhealthy_routes"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("public readiness leaked %q: %s", secret, body)
+		}
+	}
+	var public map[string]any
+	if err := json.Unmarshal(ready.Body.Bytes(), &public); err != nil {
+		t.Fatal(err)
+	}
+	if public["status"] != "not_ready" {
+		t.Fatalf("unexpected readiness payload: %#v", public)
+	}
+
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
+	statusReq.Header.Set("Authorization", "Bearer test-token")
+	status := httptest.NewRecorder()
+	server.HTTPServer().Handler.ServeHTTP(status, statusReq)
+	if status.Code != http.StatusOK {
+		t.Fatalf("expected authenticated status 200, got %d: %s", status.Code, status.Body.String())
+	}
+	if !strings.Contains(status.Body.String(), routeName) {
+		t.Fatalf("authenticated status omitted route diagnostics: %s", status.Body.String())
 	}
 }

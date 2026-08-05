@@ -383,7 +383,7 @@ Invoke-RestMethod "$AdminUrl/api/v1/dashboard/overview" -Headers $Headers
 
 Run from `apps/securityedge`.
 
-The scripts auto-load `../.env`; existing process variables take precedence, and explicit parameters remain the highest-priority overrides. Use `-EnvFile` for an external SecurityEdge file or `-NoEnv` for an isolated JSON/default check. The complete deployment test also auto-loads `../../edgeproxy/.env`, with `-EdgeProxyEnvFile` available for an external file.
+The scripts auto-load `../.env`; existing process variables take precedence, and explicit parameters remain the highest-priority overrides. Use `-EnvFile` for an external SecurityEdge file or `-NoEnv` for an isolated JSON/default check. The complete deployment test also auto-loads `../../edgeproxy/.env`, with `-EdgeProxyEnvFile` available for an external file. Admin helper URLs preserve explicitly bound hostnames, LAN IPs, and IPv6 addresses; wildcard listeners are contacted through loopback. Protection smoke tests use the first configured DNS name only when DNS probing is enabled, and otherwise use the reachable local ingress listener. Port `0` requires an explicit `-AdminUrl` or `-BaseUrl` because the assigned runtime port is not known from configuration.
 
 Validate listener exposure against the effective ports:
 

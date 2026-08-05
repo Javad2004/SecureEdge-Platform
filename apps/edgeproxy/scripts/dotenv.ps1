@@ -135,15 +135,50 @@ function Get-NonEmptyEnvironmentValue {
 }
 
 
+function Split-NetworkEndpoint {
+    param([Parameter(Mandatory = $true)][string]$Endpoint)
+
+    $value = $Endpoint.Trim()
+    if ($value -match '^\[(?<host>[^\]]+)\]:(?<port>\d+)$') {
+        $hostName = $Matches.host
+        $portText = $Matches.port
+    }
+    elseif ($value -match '^(?<host>[^:]*):(?<port>\d+)$') {
+        $hostName = $Matches.host
+        $portText = $Matches.port
+    }
+    else {
+        throw "Endpoint must use host:port or [IPv6]:port with a numeric port: $Endpoint"
+    }
+
+    $port = 0
+    if (-not [int]::TryParse($portText, [ref]$port) -or $port -lt 0 -or $port -gt 65535) {
+        throw "Endpoint port must be between 0 and 65535: $Endpoint"
+    }
+    return [pscustomobject]@{ Host = [string]$hostName; Port = $port }
+}
+
 function Get-PortFromEndpoint {
     param([Parameter(Mandatory = $true)][string]$Endpoint)
-    if ($Endpoint -notmatch ':(\d+)$') { throw "Endpoint does not contain a numeric port: $Endpoint" }
-    return [int]$Matches[1]
+    return (Split-NetworkEndpoint -Endpoint $Endpoint).Port
 }
 
 function Get-LocalHttpUrlFromListenAddress {
     param([Parameter(Mandatory = $true)][string]$ListenAddress)
-    return "http://127.0.0.1:$(Get-PortFromEndpoint -Endpoint $ListenAddress)"
+
+    $endpoint = Split-NetworkEndpoint -Endpoint $ListenAddress
+    if ($endpoint.Port -eq 0) {
+        throw "A listener using port 0 has no predictable operations URL; provide the URL explicitly."
+    }
+    $hostName = $endpoint.Host.Trim()
+    if ($hostName -eq '::') {
+        $hostName = '::1'
+    }
+    elseif (-not $hostName -or $hostName -eq '*' -or $hostName -eq '0.0.0.0') {
+        $hostName = '127.0.0.1'
+    }
+    $formattedHost = if ($hostName.Contains(':')) { "[$hostName]" } else { $hostName }
+    return "http://${formattedHost}:$($endpoint.Port)"
 }
 
 function Resolve-EffectiveConfigPath {

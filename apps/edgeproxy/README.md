@@ -322,7 +322,7 @@ Run from `apps/edgeproxy`:
 .\scripts\test-proxy.ps1 -NoEnv -ProxyUrl http://127.0.0.1:8080 -Token dev-token
 ```
 
-The test scripts load `apps/edgeproxy/.env` automatically and use its Admin listener, token, and route Origin values. Process environment variables take precedence, explicit `-ProxyUrl`, `-AdminUrl`, `-OriginUrl`, and `-Token` parameters override both, and `-NoEnv` preserves an isolated JSON/default test.
+The test scripts load `apps/edgeproxy/.env` automatically and use its Admin listener, token, and route Origin values. Process environment variables take precedence, explicit `-ProxyUrl`, `-AdminUrl`, `-OriginUrl`, and `-Token` parameters override both, and `-NoEnv` preserves an isolated JSON/default test. For Admin URLs, wildcard listeners such as `0.0.0.0` are contacted through loopback, while an explicitly bound hostname, LAN IP, or IPv6 address is retained. A listener configured with port `0` requires an explicit `-AdminUrl` because its runtime port cannot be predicted.
 
 Without `.env` or explicit parameters, `start-origin.ps1` uses the built-in `127.0.0.1:9000` / `origin-a` defaults. For a deliberate LAN deployment, set `ORIGIN_DEMO_LISTEN_ADDR=0.0.0.0:9000` in `.env` and protect the Origin port with the host firewall.
 

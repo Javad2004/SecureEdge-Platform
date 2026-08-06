@@ -1226,3 +1226,64 @@ canvas {
     grid-template-columns:1fr
   }
 }
+
+/* Structured runtime configuration on the System page. */
+.system-control-intro { margin-bottom:18px }
+.system-control-intro .panel-head { align-items:flex-start }
+.system-config-grid {
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:18px;
+  margin-bottom:18px
+}
+.system-config-card { padding:0; overflow:hidden; min-width:0 }
+.system-config-card > summary {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:14px;
+  padding:18px 20px;
+  cursor:pointer;
+  list-style:none;
+  border-bottom:1px solid transparent
+}
+.system-config-card > summary::-webkit-details-marker { display:none }
+.system-config-card > summary::after {
+  content:'＋';
+  color:var(--accent2);
+  font-size:18px;
+  line-height:1
+}
+.system-config-card[open] > summary { border-bottom-color:var(--border); background:rgba(103,166,255,.04) }
+.system-config-card[open] > summary::after { content:'−' }
+.system-config-card summary strong,.system-config-card summary small { display:block }
+.system-config-card summary strong { color:var(--text); font-size:13px }
+.system-config-card summary small { margin-top:5px; color:var(--muted); line-height:1.45 }
+.structured-config-form { padding:20px; display:grid; gap:15px }
+.structured-config-form textarea {
+  width:100%;
+  border:1px solid var(--border);
+  border-radius:8px;
+  background:#0b1425;
+  color:var(--text);
+  padding:11px;
+  resize:vertical
+}
+.structured-config-form textarea:focus { outline:none; border-color:var(--accent2) }
+.structured-json-editor {
+  min-height:240px;
+  font:11px/1.55 ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace
+}
+.form-submit-row {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  padding-top:4px
+}
+.form-submit-row .result-text { margin:0; flex:1 }
+@media(max-width:1100px) { .system-config-grid { grid-template-columns:1fr } }
+@media(max-width:700px) {
+  .form-submit-row { align-items:stretch; flex-direction:column }
+  .form-submit-row button { width:100% }
+}

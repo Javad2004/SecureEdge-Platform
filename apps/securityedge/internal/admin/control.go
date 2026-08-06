@@ -93,6 +93,52 @@ func (s *Server) securityAdminUpdate(w http.ResponseWriter, r *http.Request) {
 	s.applySecurityConfig(w, runtime, candidate, "admin_update_failed")
 }
 
+func (s *Server) securityEdgeProxyGet(w http.ResponseWriter, _ *http.Request) {
+	runtime, ok := s.configurableRuntime(w)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, runtime.RedactedConfig().EdgeProxy)
+}
+
+func (s *Server) securityEdgeProxyUpdate(w http.ResponseWriter, r *http.Request) {
+	runtime, ok := s.configurableRuntime(w)
+	if !ok {
+		return
+	}
+	var section config.EdgeProxyConfig
+	if err := s.decodeJSON(r, &section); err != nil {
+		writeAdminDecodeError(w, err)
+		return
+	}
+	candidate := runtime.RedactedConfig()
+	candidate.EdgeProxy = section
+	s.applySecurityConfig(w, runtime, candidate, "edgeproxy_settings_update_failed")
+}
+
+func (s *Server) securityWAFGet(w http.ResponseWriter, _ *http.Request) {
+	runtime, ok := s.configurableRuntime(w)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, runtime.RedactedConfig().WAF)
+}
+
+func (s *Server) securityWAFUpdate(w http.ResponseWriter, r *http.Request) {
+	runtime, ok := s.configurableRuntime(w)
+	if !ok {
+		return
+	}
+	var section config.WAFConfig
+	if err := s.decodeJSON(r, &section); err != nil {
+		writeAdminDecodeError(w, err)
+		return
+	}
+	candidate := runtime.RedactedConfig()
+	candidate.WAF = section
+	s.applySecurityConfig(w, runtime, candidate, "waf_update_failed")
+}
+
 func (s *Server) applySecurityConfig(w http.ResponseWriter, runtime configRuntime, candidate config.Config, errorCode string) {
 	if err := runtime.ReplaceConfig(candidate); err != nil {
 		var restart interface{ RestartRequired() bool }

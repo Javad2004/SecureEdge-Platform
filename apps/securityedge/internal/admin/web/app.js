@@ -19,7 +19,8 @@ const state = {
   edgeWatch: null,
   securityWatch: null,
   edgeEditorDirty: false,
-  securityEditorDirty: false
+  securityEditorDirty: false,
+  systemDirty: {}
 };
 
 const $ = id => document.getElementById(id);
@@ -444,6 +445,105 @@ async function loadControlData() {
   if (securityWatch.status === 'fulfilled') state.securityWatch = securityWatch.value;
 }
 
+const systemFormDefinitions = {
+  'security-server': {api:'/api/v1/server', source:() => state.securityConfig?.server},
+  'security-admin': {api:'/api/v1/admin', source:() => state.securityConfig?.admin},
+  'security-edgeproxy': {api:'/api/v1/edgeproxy-settings', source:() => state.securityConfig?.edgeproxy},
+  'security-waf': {api:'/api/v1/waf', source:() => state.securityConfig?.waf},
+  'edge-server': {api:'/api/v1/edgeproxy/server', source:() => state.edgeConfig?.server},
+  'edge-admin': {api:'/api/v1/edgeproxy/admin', source:() => state.edgeConfig?.admin}
+};
+
+function nestedValue(object, path) {
+  return path.split('.').reduce((value, key) => value == null ? undefined : value[key], object);
+}
+
+function assignNested(object, path, value) {
+  const parts = path.split('.');
+  let target = object;
+  parts.slice(0, -1).forEach(key => {
+    if (!target[key] || typeof target[key] !== 'object' || Array.isArray(target[key])) target[key] = {};
+    target = target[key];
+  });
+  target[parts.at(-1)] = value;
+}
+
+function populateSystemForm(form, source) {
+  if (!form || !source || state.systemDirty[form.dataset.systemForm] || form.contains(document.activeElement)) return;
+  form.querySelectorAll('[name]').forEach(field => {
+    const value = nestedValue(source, field.name);
+    if (field.dataset.secret === 'true') {
+      field.value = '';
+      field.placeholder = value ? 'Leave blank to preserve the current secret' : 'Enter a secret when required';
+    } else if (field.type === 'checkbox') {
+      field.checked = Boolean(value);
+    } else if (field.dataset.kind === 'json') {
+      field.value = JSON.stringify(value ?? [], null, 2);
+    } else if (field.dataset.kind === 'csv' || field.dataset.kind === 'csv-number') {
+      field.value = Array.isArray(value) ? value.join(', ') : '';
+    } else {
+      field.value = value ?? '';
+    }
+  });
+}
+
+function systemFormPayload(form, source) {
+  const payload = {};
+  form.querySelectorAll('[name]').forEach(field => {
+    let value;
+    if (field.dataset.secret === 'true' && !field.value) {
+      value = nestedValue(source, field.name) ?? '';
+    } else if (field.type === 'checkbox') {
+      value = field.checked;
+    } else if (field.dataset.kind === 'number' || field.type === 'number') {
+      value = Number(field.value);
+      if (!Number.isFinite(value)) throw new Error(`${field.closest('label')?.firstChild?.textContent?.trim() || field.name} must be a number.`);
+    } else if (field.dataset.kind === 'csv') {
+      value = csv(field.value);
+    } else if (field.dataset.kind === 'csv-number') {
+      value = csvNumbers(field.value);
+      if (value.some(item => !Number.isFinite(item))) throw new Error(`${field.name} must contain only numbers.`);
+    } else if (field.dataset.kind === 'json') {
+      try { value = field.value.trim() ? JSON.parse(field.value) : []; }
+      catch (error) { throw new Error(`${field.name} is not valid JSON: ${error.message}`); }
+    } else {
+      value = field.value.trim();
+    }
+    assignNested(payload, field.name, value);
+  });
+  return payload;
+}
+
+function renderSystemForms() {
+  Object.entries(systemFormDefinitions).forEach(([key, definition]) => {
+    populateSystemForm(document.querySelector(`[data-system-form="${key}"]`), definition.source());
+  });
+}
+
+async function saveSystemForm(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const key = form.dataset.systemForm;
+  const definition = systemFormDefinitions[key];
+  const result = form.querySelector('[data-system-result]');
+  const button = form.querySelector('button[type="submit"]');
+  try {
+    const payload = systemFormPayload(form, definition.source() || {});
+    button.disabled = true;
+    result.textContent = 'Validating and applying…';
+    const response = await api(definition.api, {method:'PUT', body:JSON.stringify(payload)});
+    state.systemDirty[key] = false;
+    result.textContent = response.restart_required ? 'Accepted. A graceful generation restart is scheduled.' : 'Validated, persisted, and applied.';
+    toast(response.restart_required ? 'Configuration accepted; restart scheduled' : 'Configuration applied');
+    try { await loadControlData(); renderSystemForms(); } catch {}
+    if (response.restart_required) setTimeout(() => refreshAll(), 1800);
+  } catch (error) {
+    result.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function watchSummary(status) {
   if (!status) return {state:'UNAVAILABLE', detail:'Control endpoint unavailable', cls:'error'};
   if (status.last_error) return {state:'ERROR', detail:status.last_error, cls:'error'};
@@ -758,6 +858,7 @@ function renderSystem() {
     ['Metrics schema',state.overview?.edgeproxy_metrics?.schema_version||'—'],['Uptime',`${fmt(state.overview?.edgeproxy_metrics?.uptime_seconds)} s`],
     ['In flight',fmt(state.overview?.edgeproxy_metrics?.inflight)],['Ready routes',`${routes.filter(route=>route.ready).length}/${routes.length}`]
   ]);
+  renderSystemForms();
 }
 
 function renderRules() {
@@ -792,6 +893,12 @@ $('check-connectivity').onclick = async () => {
   finally { button.disabled = false; button.textContent = 'Run checks'; }
 };
 $('reload-config').onclick = async () => { await api('/api/v1/reload',{method:'POST'}); await refreshAll(); toast('Configuration reloaded'); };
+document.querySelectorAll('[data-system-form]').forEach(form => {
+  const key = form.dataset.systemForm;
+  form.addEventListener('input', () => { state.systemDirty[key] = true; });
+  form.addEventListener('change', () => { state.systemDirty[key] = true; });
+  form.addEventListener('submit', saveSystemForm);
+});
 $('refresh-control').onclick = async () => { await loadControlData(); renderRoutes(); toast('Control-plane data refreshed'); };
 $('add-route').onclick = () => openRouteDialog();
 $('cache-route-select').onchange = event => loadCacheEditor(event.currentTarget.value); $('save-cache-config').onclick = saveCacheEditor;

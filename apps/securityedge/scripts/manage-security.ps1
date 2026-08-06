@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Status','Metrics','Watch','GetConfig','SetConfig','GetServer','SetServer','GetAdmin','SetAdmin','Reload','Policies','SetDefaultPolicy','SetRoutePolicy','DeleteRoutePolicy','Bans','DeleteBan','ClearBans','Logs')]
+    [ValidateSet('Status','Metrics','Watch','GetConfig','SetConfig','GetServer','SetServer','GetAdmin','SetAdmin','GetEdgeProxySettings','SetEdgeProxySettings','GetWAF','SetWAF','Reload','Policies','SetDefaultPolicy','SetRoutePolicy','DeleteRoutePolicy','Bans','DeleteBan','ClearBans','Logs')]
     [string]$Action = 'Status',
     [string]$BaseUrl = '',
     [string]$Token = '',
@@ -84,6 +84,10 @@ try {
         'SetServer'         { $result = Invoke-ControlRequest PUT '/server' (Get-RequestBody) }
         'GetAdmin'          { $result = Invoke-ControlRequest GET '/admin' }
         'SetAdmin'          { $result = Invoke-ControlRequest PUT '/admin' (Get-RequestBody) }
+        'GetEdgeProxySettings' { $result = Invoke-ControlRequest GET '/edgeproxy-settings' }
+        'SetEdgeProxySettings' { $result = Invoke-ControlRequest PUT '/edgeproxy-settings' (Get-RequestBody) }
+        'GetWAF'            { $result = Invoke-ControlRequest GET '/waf' }
+        'SetWAF'            { $result = Invoke-ControlRequest PUT '/waf' (Get-RequestBody) }
         'Reload'            { $result = Invoke-ControlRequest POST '/reload' }
         'Policies'          { $result = Invoke-ControlRequest GET '/policies' }
         'SetDefaultPolicy'  { $result = Invoke-ControlRequest PUT '/policies/default' (Get-RequestBody) }

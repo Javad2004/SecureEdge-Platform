@@ -21,6 +21,11 @@ import (
 
 const (
 	maxAdminLogStoreCapacity       = 100_000
+	maxAdminLogFileBytes           = 1 << 30
+	maxAdminLogBackups             = 100
+	maxServerConcurrentRequests    = 1_000_000
+	maxRateLimitBuckets            = 1_000_000
+	maxAutoBanTrackedClients       = 1_000_000
 	maxUpstreamResponseHeaderBytes = 16 << 20
 )
 
@@ -429,8 +434,8 @@ func (c *Config) Validate() error {
 	if c.Server.MaxRequestBodyBytes <= 0 || c.Server.MaxRequestBodyBytes > 1<<30 {
 		errs = append(errs, errors.New("server.max_request_body_bytes must be between 1 and 1073741824"))
 	}
-	if c.Server.MaxConcurrentRequests <= 0 || c.Server.MaxConcurrentPerClient <= 0 || c.Server.MaxConcurrentPerClient > c.Server.MaxConcurrentRequests {
-		errs = append(errs, errors.New("server concurrency limits must be positive and per-client cannot exceed global"))
+	if c.Server.MaxConcurrentRequests <= 0 || c.Server.MaxConcurrentRequests > maxServerConcurrentRequests || c.Server.MaxConcurrentPerClient <= 0 || c.Server.MaxConcurrentPerClient > c.Server.MaxConcurrentRequests {
+		errs = append(errs, fmt.Errorf("server concurrency limits must be positive, max_concurrent_requests cannot exceed %d, and per-client cannot exceed global", maxServerConcurrentRequests))
 	}
 	if c.Server.ForwardedForHeader == "" {
 		c.Server.ForwardedForHeader = "X-Forwarded-For"
@@ -479,8 +484,13 @@ func (c *Config) Validate() error {
 		if c.Admin.LogStore.DefaultPageSize > c.Admin.LogStore.MaxPageSize || c.Admin.LogStore.MaxPageSize > c.Admin.LogStore.Capacity {
 			errs = append(errs, errors.New("admin.log_store requires default_page_size <= max_page_size <= capacity"))
 		}
-		if c.Admin.LogStore.FilePath != "" && (c.Admin.LogStore.MaxFileBytes <= 0 || c.Admin.LogStore.MaxBackups < 0) {
-			errs = append(errs, errors.New("file logging requires positive max_file_bytes and non-negative max_backups"))
+		if c.Admin.LogStore.FilePath != "" {
+			if c.Admin.LogStore.MaxFileBytes <= 0 || c.Admin.LogStore.MaxFileBytes > maxAdminLogFileBytes {
+				errs = append(errs, fmt.Errorf("admin.log_store.max_file_bytes must be between 1 and %d when file logging is enabled", maxAdminLogFileBytes))
+			}
+			if c.Admin.LogStore.MaxBackups < 0 || c.Admin.LogStore.MaxBackups > maxAdminLogBackups {
+				errs = append(errs, fmt.Errorf("admin.log_store.max_backups must be between 0 and %d when file logging is enabled", maxAdminLogBackups))
+			}
 		}
 		if c.Admin.TelemetryHistory.Enabled {
 			if c.Admin.TelemetryHistory.Capacity < 2 || c.Admin.TelemetryHistory.Capacity > 10000 {
@@ -755,13 +765,13 @@ func validatePolicy(name string, p *Policy) error {
 		if p.RateLimit.RequestsPerSecond <= 0 || p.RateLimit.Burst <= 0 || p.RateLimit.GlobalRequestsPerSecond <= 0 || p.RateLimit.GlobalBurst <= 0 {
 			errs = append(errs, fmt.Errorf("%s rate_limit rates and bursts must be positive", name))
 		}
-		if p.RateLimit.CleanupInterval.Duration <= 0 || p.RateLimit.IdleTTL.Duration <= 0 || p.RateLimit.MaxBuckets < 2 {
-			errs = append(errs, fmt.Errorf("%s rate_limit lifecycle settings must be positive and max_buckets must be at least 2", name))
+		if p.RateLimit.CleanupInterval.Duration <= 0 || p.RateLimit.IdleTTL.Duration <= 0 || p.RateLimit.MaxBuckets < 2 || p.RateLimit.MaxBuckets > maxRateLimitBuckets {
+			errs = append(errs, fmt.Errorf("%s rate_limit lifecycle settings must be positive and max_buckets must be between 2 and %d", name, maxRateLimitBuckets))
 		}
 	}
 	if p.AutoBan.Enabled {
-		if p.AutoBan.ViolationThreshold <= 0 || p.AutoBan.Window.Duration <= 0 || p.AutoBan.BanDuration.Duration <= 0 || p.AutoBan.MaxTrackedClients <= 0 {
-			errs = append(errs, fmt.Errorf("%s auto_ban settings must be positive", name))
+		if p.AutoBan.ViolationThreshold <= 0 || p.AutoBan.Window.Duration <= 0 || p.AutoBan.BanDuration.Duration <= 0 || p.AutoBan.MaxTrackedClients <= 0 || p.AutoBan.MaxTrackedClients > maxAutoBanTrackedClients {
+			errs = append(errs, fmt.Errorf("%s auto_ban settings must be positive and max_tracked_clients cannot exceed %d", name, maxAutoBanTrackedClients))
 		}
 	}
 	p.IPAllowlist, errs = normalizeIPList(name+".ip_allowlist", p.IPAllowlist, errs)

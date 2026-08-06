@@ -151,6 +151,12 @@ function fixturePayload(root) {
     '/api/v1/edgeproxy/config/watch':watch,
     '/api/v1/config':security,
     '/api/v1/config/watch':watch,
+    '/api/v1/server':security.server,
+    '/api/v1/admin':security.admin,
+    '/api/v1/edgeproxy-settings':security.edgeproxy,
+    '/api/v1/waf':security.waf,
+    '/api/v1/edgeproxy/server':edge.server,
+    '/api/v1/edgeproxy/admin':edge.admin,
     [`/api/v1/edgeproxy/routes/${encodeURIComponent(route.name)}/cache`]:route.cache
   };
   let html = readFileSync(htmlPath, 'utf8');
@@ -222,12 +228,19 @@ try {
     await eventually(async () => await cdp.evaluate(`document.readyState === 'complete'`), 'Fixture Dashboard document');
     const mockScript = `(() => {
       const payloads = ${JSON.stringify(fixture.responses)};
+      window.__fixtureRequests = [];
       window.fetch = async (input, init = {}) => {
         const raw = typeof input === 'string' ? input : input.url;
         const parsed = new URL(raw, 'http://fixture.local');
         const key = parsed.pathname;
+        const method = String(init.method || 'GET').toUpperCase();
         let body;
-        if (key === '/api/v1/edgeproxy/logs' || key === '/api/v1/logs') body = {entries:[],returned:0,retained:0,dropped:0,has_more:false};
+        if (method === 'PUT' || method === 'POST' || method === 'DELETE') {
+          let requestBody = null;
+          try { requestBody = init.body ? JSON.parse(init.body) : null; } catch {}
+          window.__fixtureRequests.push({method, key, body:requestBody});
+          body = {applied:true, restart_required:false, watch:{revision:2, applied_revision:2}};
+        } else if (key === '/api/v1/edgeproxy/logs' || key === '/api/v1/logs') body = {entries:[],returned:0,retained:0,dropped:0,has_more:false};
         else body = payloads[key];
         if (body === undefined) return new Response(JSON.stringify({error:{message:'fixture endpoint not found: ' + key}}), {status:404,headers:{'Content-Type':'application/json'}});
         return new Response(JSON.stringify(body), {status:200,headers:{'Content-Type':'application/json'}});
@@ -249,7 +262,8 @@ try {
     const required = [
       'route-strip-prefix','route-request-timeout','route-cache-enabled','route-health-enabled',
       'cache-config-form','cache-route-select','telemetry-dialog','route-algorithm','route-retry-count',
-      'route-cache-statuses','route-health-statuses'
+      'route-cache-statuses','route-health-statuses','system-security-server-form','system-security-admin-form',
+      'system-security-edgeproxy-form','system-waf-form','system-edge-server-form','system-edge-admin-form'
     ];
     return {missing: required.filter(id => !document.getElementById(id)), title: document.title};
   })()`);
@@ -280,13 +294,31 @@ try {
 
   await cdp.evaluate(`document.querySelector('[data-view="system"]').click()`);
   await eventually(async () => await cdp.evaluate(`document.getElementById('view-system').classList.contains('active')`), 'System view');
+  const systemForms = await cdp.evaluate(`(() => ({
+    securityListen: document.querySelector('#system-security-server-form [name="listen_addr"]').value,
+    securityAdmin: document.querySelector('#system-security-admin-form [name="listen_addr"]').value,
+    edgeAdminURL: document.querySelector('#system-security-edgeproxy-form [name="admin_url"]').value,
+    wafMaximum: document.querySelector('#system-waf-form [name="maximum_matches_per_request"]').value,
+    edgeListen: document.querySelector('#system-edge-server-form [name="listen_addr"]').value,
+    edgeAdmin: document.querySelector('#system-edge-admin-form [name="listen_addr"]').value
+  }))()`);
+  if (Object.values(systemForms).some(value => !String(value).trim())) {
+    throw new Error(`Structured System forms were not populated: ${JSON.stringify(systemForms)}`);
+  }
+  await cdp.evaluate(`(() => {
+    const field = document.querySelector('#system-waf-form [name="maximum_matches_per_request"]');
+    field.value = '48';
+    field.dispatchEvent(new Event('input', {bubbles:true}));
+    document.getElementById('system-waf-form').requestSubmit();
+  })()`);
+  await eventually(async () => await cdp.evaluate(`window.__fixtureRequests.some(request => request.method === 'PUT' && request.key === '/api/v1/waf' && request.body?.maximum_matches_per_request === 48)`), 'Structured WAF form submission');
   await sleep(500);
   if (exceptions.length) throw new Error(`Browser console/runtime errors: ${exceptions.join(' | ')}`);
 
   console.log(JSON.stringify({
     ok:true, mode, browser, url:fixtureRoot ? 'fixture://dashboard' : url,
     title:contract.title, route:routeEditor.name, algorithm:routeEditor.algorithm,
-    cache_route_options:cacheOptions
+    cache_route_options:cacheOptions, system_forms_populated:true, system_form_submission:true
   }, null, 2));
 } catch (error) {
   console.error(error.stack || error.message);

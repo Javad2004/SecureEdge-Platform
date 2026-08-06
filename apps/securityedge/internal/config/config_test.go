@@ -608,3 +608,61 @@ func TestTelemetryHistoryValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateRejectsResourceExhaustionLimits(t *testing.T) {
+	tests := []struct {
+		name       string
+		mutate     func(*Config)
+		wantDetail string
+	}{
+		{
+			name: "global concurrency",
+			mutate: func(cfg *Config) {
+				cfg.Server.MaxConcurrentRequests = maxServerConcurrentRequests + 1
+			},
+			wantDetail: "max_concurrent_requests",
+		},
+		{
+			name: "persistent log file size",
+			mutate: func(cfg *Config) {
+				cfg.Admin.LogStore.FilePath = "security.ndjson"
+				cfg.Admin.LogStore.MaxFileBytes = maxAdminLogFileBytes + 1
+			},
+			wantDetail: "admin.log_store.max_file_bytes",
+		},
+		{
+			name: "persistent log backup count",
+			mutate: func(cfg *Config) {
+				cfg.Admin.LogStore.FilePath = "security.ndjson"
+				cfg.Admin.LogStore.MaxBackups = maxAdminLogBackups + 1
+			},
+			wantDetail: "admin.log_store.max_backups",
+		},
+		{
+			name: "rate limit buckets",
+			mutate: func(cfg *Config) {
+				cfg.DefaultPolicy.RateLimit.MaxBuckets = maxRateLimitBuckets + 1
+			},
+			wantDetail: "max_buckets",
+		},
+		{
+			name: "automatic ban clients",
+			mutate: func(cfg *Config) {
+				cfg.DefaultPolicy.AutoBan.MaxTrackedClients = maxAutoBanTrackedClients + 1
+			},
+			wantDetail: "max_tracked_clients",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Server.Mode = "embedded"
+			cfg.EdgeProxy.ConfigPath = "edge.json"
+			tc.mutate(&cfg)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.wantDetail) {
+				t.Fatalf("expected validation error containing %q, got %v", tc.wantDetail, err)
+			}
+		})
+	}
+}

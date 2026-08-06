@@ -608,7 +608,7 @@ func TestSecurityConfigSectionEndpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, path := range []string{"/api/v1/server", "/api/v1/admin"} {
+	for _, path := range []string{"/api/v1/server", "/api/v1/admin", "/api/v1/edgeproxy-settings", "/api/v1/waf"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set("Authorization", "Bearer secret-token")
 		rr := httptest.NewRecorder()
@@ -651,6 +651,43 @@ func TestSecurityConfigSectionEndpoints(t *testing.T) {
 	}
 	if runtime.cfg.Admin.PollTimeout.Duration != 7*time.Second {
 		t.Fatal("admin section was not applied")
+	}
+
+	edgeSection := cfg.EdgeProxy
+	edgeSection.Timeout = config.Duration{Duration: 9 * time.Second}
+	edgeSection.AdminToken = "[REDACTED]"
+	body, _ = json.Marshal(edgeSection)
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/edgeproxy-settings", strings.NewReader(string(body)))
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rr = httptest.NewRecorder()
+	server.HTTPServer().Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PUT edgeproxy-settings status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if runtime.cfg.EdgeProxy.Timeout.Duration != 9*time.Second {
+		t.Fatal("EdgeProxy dependency section was not applied")
+	}
+
+	wafSection := cfg.WAF
+	wafSection.MaximumMatchesPerRequest = 48
+	body, _ = json.Marshal(wafSection)
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/waf", strings.NewReader(string(body)))
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rr = httptest.NewRecorder()
+	server.HTTPServer().Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PUT waf status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if runtime.cfg.WAF.MaximumMatchesPerRequest != 48 {
+		t.Fatal("WAF section was not applied")
+	}
+
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/waf", strings.NewReader(`{"maximum_matches_per_request":48,"unknown":true}`))
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rr = httptest.NewRecorder()
+	server.HTTPServer().Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("PUT WAF with unknown field status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }
 

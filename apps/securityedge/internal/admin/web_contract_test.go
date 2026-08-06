@@ -62,7 +62,10 @@ func TestDashboardAdvancedControlPlaneContract(t *testing.T) {
 	for _, required := range []string{
 		"route-strip-prefix", "route-request-timeout", "route-cache-enabled", "route-health-enabled",
 		"cache-config-form", "cache-route-select", "telemetry-dialog", "telemetry-status-bars",
+		"system-security-server-form", "system-security-admin-form", "system-security-edgeproxy-form",
+		"system-waf-form", "system-edge-server-form", "system-edge-admin-form",
 		"/cache/purge", "load_balancing", "health_check", "/telemetry",
+		"/api/v1/edgeproxy-settings", "/api/v1/waf", "/api/v1/edgeproxy/server", "/api/v1/edgeproxy/admin",
 	} {
 		if !strings.Contains(html+javascript, required) {
 			t.Fatalf("advanced dashboard contract is missing %q", required)

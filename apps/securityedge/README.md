@@ -264,7 +264,10 @@ The authenticated dashboard is also the platform Control Center. In addition to 
 - use a focused per-route cache editor and segment-aware purge controls without editing raw JSON;
 - inspect per-route request volume, success/error counts, status distributions, cache hit ratio, min/average/max and P50/P95/P99 latency, retries, upstream calls, timeouts, and bytes;
 - inspect per-Origin health, active requests, EWMA latency, scheduler selections, response/status counts, failures, retries, timeouts, and health transitions;
-- edit and validate raw EdgeProxy and SecurityEdge JSON configurations;
+- manage SecurityEdge gateway, Admin API, EdgeProxy dependency, and WAF settings through dedicated validated System forms;
+- manage EdgeProxy data-plane and Admin listeners, TLS, trusted proxies, timeouts, authentication, and log capacity through dedicated validated System forms;
+- rotate secrets without exposing existing values to browser JavaScript; blank secret inputs preserve the current redacted value;
+- edit and validate raw EdgeProxy and SecurityEdge JSON configurations for advanced multi-section transactions;
 - inspect both file watchers, revision counters, last errors, apply modes, and pending automatic restarts.
 
 All browser mutations call the SecurityEdge backend-for-frontend. The SecurityEdge operator token is kept in `sessionStorage`; the EdgeProxy backend credential is never exposed to browser JavaScript. Editors track unsaved changes and are not overwritten by periodic dashboard refreshes.
@@ -347,6 +350,10 @@ GET     /api/v1/server
 PUT     /api/v1/server
 GET     /api/v1/admin
 PUT     /api/v1/admin
+GET     /api/v1/edgeproxy-settings
+PUT     /api/v1/edgeproxy-settings
+GET     /api/v1/waf
+PUT     /api/v1/waf
 GET     /api/v1/config/watch
 GET     /api/v1/policies
 PUT     /api/v1/policies/default
@@ -367,7 +374,7 @@ POST    /api/v1/connectivity/check
 
 When NDJSON persistence is enabled, SecurityEdge restores the newest retained events from the active file and configured rotated backups during startup. Event sequence numbers continue monotonically across restarts; malformed or crash-truncated lines are skipped and counted in the log-store `file_errors` metric instead of preventing startup.
 
-The in-memory Admin event ring accepts a configured `capacity` from `1` through `100000` entries. This bound prevents an accidental configuration value from causing an excessive startup allocation.
+The in-memory Admin event ring accepts a configured `capacity` from `1` through `100000` entries. Persistent security logs are limited to 1 GiB per file and at most 100 rotated backups. Gateway concurrency, rate-limit buckets, and automatic-ban tracking are also capped at 1,000,000 entries. These validation boundaries prevent structurally valid configuration from requesting unbounded memory, disk, or rotation work.
 
 ### Automatic reload and restart boundaries
 
@@ -380,7 +387,7 @@ SecurityEdge watches three inputs independently: its own JSON configuration, the
 
 `POST /api/v1/reload` remains available for an explicit re-read. `PUT /api/v1/config` validates and atomically persists a complete candidate. Hot changes return `200 OK`; restart-required revisions from either endpoint return `202 Accepted` and are applied automatically by the managed process. Before the active generation is drained, SecurityEdge rebuilds configuration-dependent runtime components, verifies the shared Route table, reopens the security log store, probes the telemetry-history destination, and tests every newly claimed listener. An occupied port or unavailable persistent resource is rejected without persisting the API revision or stopping the healthy generation. New gateway and Admin sockets are bound synchronously, and a partial bind failure closes every socket acquired by that candidate. If startup still loses a post-preflight race, the supervisor restores the last successfully started file-backed configuration, restarts that generation, and records the rejected candidate in watcher status.
 
-Dedicated `GET/PUT /api/v1/server` and `GET/PUT /api/v1/admin` endpoints provide section-scoped SecurityEdge configuration management without requiring a complete-document replacement. The PowerShell control client exposes the same operations as `GetServer`, `SetServer`, `GetAdmin`, and `SetAdmin`; full-document editing remains available for advanced or multi-section transactions.
+Dedicated `GET/PUT /api/v1/server`, `GET/PUT /api/v1/admin`, `GET/PUT /api/v1/edgeproxy-settings`, and `GET/PUT /api/v1/waf` endpoints provide section-scoped SecurityEdge configuration management without requiring a complete-document replacement. The PowerShell control client exposes the same operations as `GetServer`, `SetServer`, `GetAdmin`, `SetAdmin`, `GetEdgeProxySettings`, `SetEdgeProxySettings`, `GetWAF`, and `SetWAF`; full-document editing remains available for advanced or multi-section transactions.
 
 Multiple rapid restart requests are coalesced so the newest valid revision wins. The service process remains the same while listeners and long-lived resources move to the new generation.
 
@@ -459,6 +466,8 @@ The two management clients expose the complete Control Plane from PowerShell:
 .\scripts\manage-security.ps1 -Action Watch
 .\scripts\manage-security.ps1 -Action GetServer
 .\scripts\manage-security.ps1 -Action SetAdmin -BodyFile .\admin-settings.json
+.\scripts\manage-security.ps1 -Action GetEdgeProxySettings
+.\scripts\manage-security.ps1 -Action SetWAF -BodyFile .\waf-settings.json
 .\scripts\manage-security.ps1 -Action Policies
 .\scripts\manage-security.ps1 -Action SetRoutePolicy -Route demo-app -BodyFile .\policy.json
 ```

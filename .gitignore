@@ -33,3 +33,5 @@ desktop.ini
 *.zip
 *.tar
 *.tar.gz
+# Local development watcher build output
+.dev/

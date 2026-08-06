@@ -32,7 +32,10 @@ stop_pid() {
 cleanup() {
   stop_pid "$SEC_PID"
   stop_pid "$EDGE_PID"
-  rm -f "$BEFORE" "$AFTER" "$CHANGES" "$EDGE_BINARY" "$SEC_BINARY"
+  local paths=("$BEFORE" "$AFTER" "$CHANGES")
+  [[ -z "$EDGE_BINARY" ]] || paths+=("$EDGE_BINARY")
+  [[ -z "$SEC_BINARY" ]] || paths+=("$SEC_BINARY")
+  rm -f -- "${paths[@]}"
 }
 terminate() {
   trap - INT TERM
@@ -84,15 +87,35 @@ start_security() {
 }
 restart_edge() {
   local candidate old=$EDGE_BINARY
-  candidate=$(build_candidate EdgeProxy "$ROOT/apps/edgeproxy" ./cmd/edgeproxy edgeproxy) || return
+  candidate=$(build_candidate EdgeProxy "$ROOT/apps/edgeproxy" ./cmd/edgeproxy edgeproxy) || return 1
   stop_pid "$EDGE_PID"; EDGE_PID=""
-  if start_edge "$candidate"; then [[ -z "$old" || "$old" == "$candidate" ]] || rm -f "$old"; else rm -f "$candidate"; [[ -z "$old" ]] || start_edge "$old"; return 1; fi
+  if start_edge "$candidate"; then
+    [[ -z "$old" || "$old" == "$candidate" ]] || rm -f "$old"
+    return 0
+  fi
+  rm -f "$candidate"
+  if [[ -n "$old" ]] && start_edge "$old"; then
+    log 'Previous EdgeProxy generation restored; watcher remains active.'
+    return 0
+  fi
+  log 'EdgeProxy rollback failed; the watcher will retry on the next poll.' >&2
+  return 1
 }
 restart_security() {
   local candidate old=$SEC_BINARY
-  candidate=$(build_candidate SecurityEdge "$ROOT/apps/securityedge" ./cmd/securityedge securityedge) || return
+  candidate=$(build_candidate SecurityEdge "$ROOT/apps/securityedge" ./cmd/securityedge securityedge) || return 1
   stop_pid "$SEC_PID"; SEC_PID=""
-  if start_security "$candidate"; then [[ -z "$old" || "$old" == "$candidate" ]] || rm -f "$old"; else rm -f "$candidate"; [[ -z "$old" ]] || start_security "$old"; return 1; fi
+  if start_security "$candidate"; then
+    [[ -z "$old" || "$old" == "$candidate" ]] || rm -f "$old"
+    return 0
+  fi
+  rm -f "$candidate"
+  if [[ -n "$old" ]] && start_security "$old"; then
+    log 'Previous SecurityEdge generation restored; watcher remains active.'
+    return 0
+  fi
+  log 'SecurityEdge rollback failed; the watcher will retry on the next poll.' >&2
+  return 1
 }
 
 snapshot() {
@@ -128,8 +151,8 @@ while :; do
   snapshot > "$AFTER"
   diff_snapshots "$BEFORE" "$AFTER" > "$CHANGES"
   if [[ ! -s "$CHANGES" ]]; then
-    if [[ -n "$EDGE_PID" ]] && ! kill -0 "$EDGE_PID" 2>/dev/null; then log 'EdgeProxy exited unexpectedly; rebuilding.'; restart_edge; fi
-    if [[ -n "$SEC_PID" ]] && ! kill -0 "$SEC_PID" 2>/dev/null; then log 'SecurityEdge exited unexpectedly; rebuilding.'; restart_security; fi
+    if [[ -n "$EDGE_PID" ]] && ! kill -0 "$EDGE_PID" 2>/dev/null; then log 'EdgeProxy exited unexpectedly; rebuilding.'; restart_edge || log 'EdgeProxy restart failed; retrying on the next poll.' >&2; fi
+    if [[ -n "$SEC_PID" ]] && ! kill -0 "$SEC_PID" 2>/dev/null; then log 'SecurityEdge exited unexpectedly; rebuilding.'; restart_security || log 'SecurityEdge restart failed; retrying on the next poll.' >&2; fi
     continue
   fi
 
@@ -153,6 +176,6 @@ while :; do
     esac
   done < "$CHANGES"
 
-  (( edge == 0 )) || restart_edge
-  (( security == 0 )) || restart_security
+  (( edge == 0 )) || restart_edge || log 'EdgeProxy restart failed; watcher remains active and will retry.' >&2
+  (( security == 0 )) || restart_security || log 'SecurityEdge restart failed; watcher remains active and will retry.' >&2
 done

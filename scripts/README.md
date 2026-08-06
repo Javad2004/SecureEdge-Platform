@@ -13,10 +13,10 @@ Run from the repository root on Windows:
 Run on Linux:
 
 ```bash
-./scripts/dev-watch.sh
+bash ./scripts/dev-watch.sh
 ```
 
-The supervisor watches source code, embedded Dashboard HTML/CSS/JavaScript, workspace files, integration JSON, deployment assets, and platform scripts. Changes are debounced and classified so only the affected service is rebuilt. A uniquely named candidate binary is built before the healthy generation is stopped; a failed build leaves the running service untouched, and a candidate startup failure restores the preceding binary. Unexpected process exits are rebuilt and restarted automatically.
+The supervisor watches source code, embedded Dashboard HTML/CSS/JavaScript, workspace files, integration JSON, deployment assets, and platform scripts. Changes are debounced and classified so only the affected service is rebuilt. A uniquely named candidate binary is built before the healthy generation is stopped; a failed build leaves the running service untouched, and a candidate startup failure restores the preceding binary without terminating the watcher. If no healthy generation can be restored, the supervisor remains active and retries on a later poll. Unexpected process exits are rebuilt and restarted automatically.
 
 The active application JSON and `.env` files are intentionally not handled as source changes. EdgeProxy and SecurityEdge watch those files internally, validate them transactionally, hot-apply safe changes, coalesce restart-required revisions, and preserve the last healthy runtime when a revision is invalid. This avoids duplicate restarts and scheduler resets.
 

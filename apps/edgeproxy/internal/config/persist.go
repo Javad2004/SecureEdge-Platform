@@ -23,27 +23,9 @@ const (
 // process-environment overrides. Control-plane writes use this form so runtime
 // secrets and deployment overrides are never copied into the checked-in file.
 func LoadFile(path string) (Config, error) {
-	file, err := os.Open(path)
+	data, recoveryPath, err := readConfigForLoad(path)
 	if err != nil {
-		return Config{}, fmt.Errorf("read config: %w", err)
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return Config{}, fmt.Errorf("stat config: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return Config{}, errors.New("config path is not a regular file")
-	}
-	if info.Size() > maxConfigFileBytes {
-		return Config{}, fmt.Errorf("config exceeds the %d-byte safety limit", maxConfigFileBytes)
-	}
-	data, err := io.ReadAll(io.LimitReader(file, maxConfigFileBytes+1))
-	if err != nil {
-		return Config{}, fmt.Errorf("read config: %w", err)
-	}
-	if int64(len(data)) > maxConfigFileBytes {
-		return Config{}, fmt.Errorf("config exceeds the %d-byte safety limit", maxConfigFileBytes)
+		return Config{}, err
 	}
 	cfg := Default()
 	decoder := json.NewDecoder(bytes.NewReader(data))
@@ -60,7 +42,61 @@ func LoadFile(path string) (Config, error) {
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
+	if recoveryPath != "" {
+		if err := os.Rename(recoveryPath, path); err != nil {
+			return Config{}, fmt.Errorf("restore staged config: %w", err)
+		}
+	}
 	return cfg, nil
+}
+
+// readConfigForLoad recovers the staging file left by an interrupted Windows
+// replacement. Validation completes before restoration so malformed recovery
+// data never replaces the configured path.
+func readConfigForLoad(path string) ([]byte, string, error) {
+	data, err := readBoundedConfigFile(path)
+	if err == nil {
+		return data, "", nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, "", fmt.Errorf("read config: %w", err)
+	}
+
+	recoveryPath := path + ".bak"
+	data, recoveryErr := readBoundedConfigFile(recoveryPath)
+	if recoveryErr != nil {
+		if errors.Is(recoveryErr, os.ErrNotExist) {
+			return nil, "", fmt.Errorf("read config: %w", err)
+		}
+		return nil, "", fmt.Errorf("read staged config recovery %q: %w", recoveryPath, recoveryErr)
+	}
+	return data, recoveryPath, nil
+}
+
+func readBoundedConfigFile(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("config path is not a regular file")
+	}
+	if info.Size() > maxConfigFileBytes {
+		return nil, fmt.Errorf("config exceeds the %d-byte safety limit", maxConfigFileBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxConfigFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxConfigFileBytes {
+		return nil, fmt.Errorf("config exceeds the %d-byte safety limit", maxConfigFileBytes)
+	}
+	return data, nil
 }
 
 // Save validates and atomically replaces the persisted JSON document. The
@@ -82,7 +118,15 @@ func Save(path string, cfg Config) error {
 		return fmt.Errorf("create config directory: %w", err)
 	}
 	mode := os.FileMode(0o600)
+	exists := false
 	if info, err := os.Stat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return errors.New("config path is not a regular file")
+		}
+		if info.Size() > maxConfigFileBytes {
+			return fmt.Errorf("existing config exceeds the %d-byte safety limit", maxConfigFileBytes)
+		}
+		exists = true
 		mode = info.Mode().Perm()
 		backup := path + ".bak-" + time.Now().UTC().Format("20060102T150405.000000000Z")
 		if err := copyFile(path, backup, mode); err != nil {
@@ -114,15 +158,21 @@ func Save(path string, cfg Config) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temporary config: %w", err)
 	}
-	if runtime.GOOS == "windows" {
-		// Windows does not replace an existing file with Rename. The backup above
-		// makes this short remove/rename sequence recoverable.
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove previous config: %w", err)
+	staging := path + ".bak"
+	if runtime.GOOS == "windows" && exists {
+		_ = os.Remove(staging)
+		if err := os.Rename(path, staging); err != nil {
+			return fmt.Errorf("stage existing config: %w", err)
 		}
 	}
 	if err := os.Rename(tmpName, path); err != nil {
+		if runtime.GOOS == "windows" && exists {
+			_ = os.Rename(staging, path)
+		}
 		return fmt.Errorf("replace config: %w", err)
+	}
+	if runtime.GOOS == "windows" {
+		_ = os.Remove(staging)
 	}
 	if dirHandle, err := os.Open(dir); err == nil {
 		_ = dirHandle.Sync()
@@ -143,11 +193,37 @@ func trimConfigBackups(path string, keep int) {
 }
 
 func copyFile(source, destination string, mode os.FileMode) error {
-	data, err := os.ReadFile(source)
+	in, err := os.Open(source)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(destination, data, mode)
+	defer in.Close()
+	out, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	if err != nil {
+		return err
+	}
+	ok := false
+	defer func() {
+		_ = out.Close()
+		if !ok {
+			_ = os.Remove(destination)
+		}
+	}()
+	written, err := io.Copy(out, io.LimitReader(in, maxConfigFileBytes+1))
+	if err != nil {
+		return err
+	}
+	if written > maxConfigFileBytes {
+		return fmt.Errorf("source config exceeds the %d-byte safety limit", maxConfigFileBytes)
+	}
+	if err := out.Sync(); err != nil {
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	ok = true
+	return nil
 }
 
 // Redacted returns a presentation-safe copy for APIs and dashboards.

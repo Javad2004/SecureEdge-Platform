@@ -98,3 +98,28 @@ func TestLoadFileRejectsOversizedConfiguration(t *testing.T) {
 		t.Fatalf("expected size-limit error, got %v", err)
 	}
 }
+
+func TestSaveRejectsOversizedExistingConfigWithoutBackup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "securityedge.json")
+	original := make([]byte, maxConfigFileBytes+1)
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := Save(path, validPersistenceTestConfig())
+	if err == nil || !strings.Contains(err.Error(), "safety limit") {
+		t.Fatalf("expected size-limit error, got %v", err)
+	}
+	info, statErr := os.Stat(path)
+	if statErr != nil || info.Size() != int64(len(original)) {
+		t.Fatalf("oversized source was modified: info=%v err=%v", info, statErr)
+	}
+	backups, globErr := filepath.Glob(path + ".bak-*")
+	if globErr != nil {
+		t.Fatal(globErr)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("unexpected partial backups: %v", backups)
+	}
+}

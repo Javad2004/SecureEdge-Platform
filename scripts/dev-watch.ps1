@@ -107,11 +107,22 @@ function Rebuild-And-Restart([object]$Service) {
     catch {
         Write-DevLog "$($Service.Name) candidate failed to start: $($_.Exception.Message)" Red
         Remove-Item -LiteralPath $candidate -Force -ErrorAction SilentlyContinue
+        $restored = $false
         if (-not [string]::IsNullOrWhiteSpace($previousBinary) -and (Test-Path -LiteralPath $previousBinary -PathType Leaf)) {
             Write-DevLog "Restoring the previous $($Service.Name) generation." DarkYellow
-            Start-ServiceGeneration $Service $previousBinary
+            try {
+                Start-ServiceGeneration $Service $previousBinary
+                $restored = $true
+                Write-DevLog "Previous $($Service.Name) generation restored; watcher remains active." Green
+            }
+            catch {
+                Write-DevLog "$($Service.Name) rollback failed: $($_.Exception.Message)" Red
+            }
         }
-        throw
+        if (-not $restored) {
+            Write-DevLog "$($Service.Name) has no healthy generation; the watcher will retry on the next poll." Red
+        }
+        return
     }
 }
 

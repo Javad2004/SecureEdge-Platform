@@ -190,7 +190,7 @@ For a single development command that supervises both applications, run from the
 On Linux:
 
 ```bash
-./scripts/dev-watch.sh
+bash ./scripts/dev-watch.sh
 ```
 
 The watcher fingerprints the repository, debounces save bursts, builds an isolated candidate generation before stopping a healthy process, and restores the previous generation if startup fails. Go source, embedded Dashboard assets, workspace files, deployment files, and integration contracts restart only the affected applications. The active JSON and `.env` files remain owned by each application's transactional runtime watcher, so hot-applicable revisions do not cause a development-process restart. Build products are written under ignored `.dev/`.

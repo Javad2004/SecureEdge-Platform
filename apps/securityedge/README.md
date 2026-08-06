@@ -504,7 +504,7 @@ On POSIX systems, `scripts/test-security.sh` and `scripts/test-protection.sh` ar
 SECURITYEDGE_ADMIN_TOKEN='replace-with-the-active-token' \
 BASE_URL='http://project.test:8081' \
 ADMIN_URL='http://127.0.0.1:9191' \
-./scripts/test-security.sh
+bash ./scripts/test-security.sh
 ```
 
 Both scripts fail before sending requests when no Admin token is supplied and bypass ambient HTTP proxy settings for local verification. `test-protection.sh` expects a profile whose rate limiter and automatic-ban behavior are enabled.

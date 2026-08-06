@@ -352,7 +352,10 @@ func readConfigForLoad(path string) ([]byte, string, error) {
 	recoveryPath := path + ".bak"
 	data, recoveryErr := readBoundedConfigFile(recoveryPath)
 	if recoveryErr != nil {
-		return nil, "", fmt.Errorf("read security config: %w", err)
+		if errors.Is(recoveryErr, os.ErrNotExist) {
+			return nil, "", fmt.Errorf("read security config: %w", err)
+		}
+		return nil, "", fmt.Errorf("read staged security config recovery %q: %w", recoveryPath, recoveryErr)
 	}
 	return data, recoveryPath, nil
 }

@@ -44,6 +44,9 @@ func Save(path string, cfg Config) error {
 		if !info.Mode().IsRegular() {
 			return errors.New("security config path is not a regular file")
 		}
+		if info.Size() > maxConfigFileBytes {
+			return fmt.Errorf("existing security config exceeds the %d-byte safety limit", maxConfigFileBytes)
+		}
 		exists = true
 		mode = info.Mode().Perm()
 		backup := path + ".bak-" + time.Now().UTC().Format("20060102T150405.000000000Z")
@@ -128,8 +131,12 @@ func copyConfigFile(source, destination string, mode os.FileMode) error {
 			_ = os.Remove(destination)
 		}
 	}()
-	if _, err := io.Copy(out, io.LimitReader(in, maxConfigFileBytes+1)); err != nil {
+	written, err := io.Copy(out, io.LimitReader(in, maxConfigFileBytes+1))
+	if err != nil {
 		return err
+	}
+	if written > maxConfigFileBytes {
+		return fmt.Errorf("source config exceeds the %d-byte safety limit", maxConfigFileBytes)
 	}
 	if err := out.Sync(); err != nil {
 		return err

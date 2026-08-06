@@ -387,7 +387,7 @@ On POSIX systems, `scripts/demo.sh` is a small explicit-environment smoke test. 
 EDGEPROXY_ADMIN_TOKEN='replace-with-the-active-token' \
 PROXY_URL='http://project.local:8080' \
 ADMIN_URL='http://127.0.0.1:9090' \
-./scripts/demo.sh
+bash ./scripts/demo.sh
 ```
 
 The script fails before sending requests when no Admin token is supplied and bypasses ambient HTTP proxy settings for local verification.

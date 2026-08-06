@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -247,25 +248,14 @@ func (s *telemetryHistoryStore) snapshot(limit int) telemetryHistorySnapshot {
 }
 
 func (s *telemetryHistoryStore) load() error {
-	file, err := os.Open(s.cfg.FilePath)
+	data, recoveryPath, err := readTelemetryHistoryForLoad(s.cfg.FilePath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("open telemetry history: %w", err)
+		return err
 	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("stat telemetry history: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return errors.New("telemetry history path is not a regular file")
-	}
-	if info.Size() > maxTelemetryHistoryFileBytes {
-		return fmt.Errorf("telemetry history exceeds %d bytes", maxTelemetryHistoryFileBytes)
-	}
-	decoder := json.NewDecoder(io.LimitReader(file, maxTelemetryHistoryFileBytes+1))
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var document telemetryHistoryDocument
 	if err := decoder.Decode(&document); err != nil {
@@ -291,7 +281,58 @@ func (s *telemetryHistoryStore) load() error {
 	if len(s.samples) > 0 {
 		s.lastObserved, _ = time.Parse(time.RFC3339Nano, s.samples[len(s.samples)-1].GeneratedAt)
 	}
+	if recoveryPath != "" {
+		if err := os.Rename(recoveryPath, s.cfg.FilePath); err != nil {
+			return fmt.Errorf("restore staged telemetry history: %w", err)
+		}
+	}
 	return nil
+}
+
+func readTelemetryHistoryForLoad(path string) ([]byte, string, error) {
+	data, err := readBoundedTelemetryHistoryFile(path)
+	if err == nil {
+		return data, "", nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, "", fmt.Errorf("read telemetry history: %w", err)
+	}
+
+	recoveryPath := path + ".bak"
+	data, recoveryErr := readBoundedTelemetryHistoryFile(recoveryPath)
+	if recoveryErr != nil {
+		if errors.Is(recoveryErr, os.ErrNotExist) {
+			return nil, "", err
+		}
+		return nil, "", fmt.Errorf("read staged telemetry history recovery %q: %w", recoveryPath, recoveryErr)
+	}
+	return data, recoveryPath, nil
+}
+
+func readBoundedTelemetryHistoryFile(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("telemetry history path is not a regular file")
+	}
+	if info.Size() > maxTelemetryHistoryFileBytes {
+		return nil, fmt.Errorf("telemetry history exceeds %d bytes", maxTelemetryHistoryFileBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxTelemetryHistoryFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxTelemetryHistoryFileBytes {
+		return nil, fmt.Errorf("telemetry history exceeds %d bytes", maxTelemetryHistoryFileBytes)
+	}
+	return data, nil
 }
 
 func (s *telemetryHistoryStore) persistLocked() error {

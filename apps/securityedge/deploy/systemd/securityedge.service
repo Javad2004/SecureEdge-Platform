@@ -1,30 +1,33 @@
 [Unit]
-Description=SecureEdge Platform EdgeProxy
+Description=SecureEdge Platform SecurityEdge Gateway
 Documentation=https://github.com/Javad2004/SecureEdge-Platform
-After=network-online.target
+After=network-online.target edgeproxy.service
 Wants=network-online.target
+Requires=edgeproxy.service
 
 [Service]
 Type=simple
-User=edgeproxy
-Group=edgeproxy
+User=securityedge
+Group=securityedge
+SupplementaryGroups=edgeproxy
 
-# Keep deployment secrets read-only under /etc and the transactionally managed
-# JSON profile under /var/lib. Atomic replacement and timestamped backups require
-# write access to the directory containing the active configuration file.
-EnvironmentFile=/etc/edgeproxy/edgeproxy.env
-StateDirectory=edgeproxy
+# Secrets and path overrides stay read-only in /etc. The active SecurityEdge
+# configuration, telemetry history, and security logs use systemd-managed state
+# and log directories so Dashboard/API writes remain atomic under ProtectSystem.
+EnvironmentFile=/etc/securityedge/securityedge.env
+StateDirectory=securityedge
 StateDirectoryMode=0750
-WorkingDirectory=/var/lib/edgeproxy
-ExecStart=/usr/local/bin/edgeproxy -config /var/lib/edgeproxy/config.json
+LogsDirectory=securityedge
+LogsDirectoryMode=0750
+WorkingDirectory=/var/lib/securityedge
+ExecStart=/usr/local/bin/securityedge -config /var/lib/securityedge/securityedge.json
 Restart=on-failure
 RestartSec=3s
 TimeoutStopSec=30s
 KillSignal=SIGTERM
 UMask=0027
 
-# The reference LAN profile can bind port 80 while still running unprivileged.
-# Integrated deployments normally override the listener to 127.0.0.1:8080.
+# The checked-in gateway profile listens on port 80.
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
@@ -49,8 +52,8 @@ RestrictRealtime=true
 RestrictSUIDSGID=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
-ReadOnlyPaths=/etc/edgeproxy
-ReadWritePaths=/var/lib/edgeproxy
+ReadOnlyPaths=/etc/securityedge /var/lib/edgeproxy
+ReadWritePaths=/var/lib/securityedge /var/log/securityedge
 LimitNOFILE=65536
 
 [Install]

@@ -301,6 +301,28 @@ go run ./apps/securityedge/cmd/securityedge `
 
 > `go test ./...` from the repository root is not the correct command for this multi-module workspace. Use the explicit `./apps/edgeproxy/...` and `./apps/securityedge/...` patterns shown above.
 
+## Linux systemd deployment
+
+Hardened host-service units are supplied for both applications:
+
+- [`apps/edgeproxy/deploy/systemd/edgeproxy.service`](apps/edgeproxy/deploy/systemd/edgeproxy.service)
+- [`apps/securityedge/deploy/systemd/securityedge.service`](apps/securityedge/deploy/systemd/securityedge.service)
+
+The units deliberately separate immutable secrets from mutable Control Plane state:
+
+```text
+/etc/edgeproxy/edgeproxy.env                 read-only secrets and overrides
+/etc/securityedge/securityedge.env           read-only secrets and overrides
+/var/lib/edgeproxy/config.json               writable authoritative Route table
+/var/lib/securityedge/securityedge.json      writable SecurityEdge configuration
+/var/lib/securityedge/telemetry-history.json writable bounded telemetry history
+/var/log/securityedge/                       writable rotated security events
+```
+
+This layout is required because Dashboard and Admin API changes use atomic replacement and timestamped backups. Keeping an active JSON profile under a read-only `/etc` directory would make otherwise valid Route, Origin, WAF, and policy updates fail.
+
+Install EdgeProxy first, then SecurityEdge. Use the application READMEs for the complete user/group, permission, environment, validation, and `systemctl` commands.
+
 ## Docker
 
 The repository provides two container workflows.

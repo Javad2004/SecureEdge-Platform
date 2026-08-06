@@ -567,6 +567,50 @@ make validate-network
 make verify
 ```
 
+## Linux systemd deployment
+
+Install EdgeProxy first because SecurityEdge reads the authoritative Route table and calls the EdgeProxy Admin API. The supplied unit starts SecurityEdge as a separate unprivileged user, grants only low-port binding capability, and keeps writable configuration, telemetry history, and logs outside read-only `/etc`.
+
+Run these commands as `root` from `apps/securityedge`, or adapt the source paths to your release directory:
+
+```sh
+getent group edgeproxy >/dev/null || groupadd --system edgeproxy
+groupadd --system securityedge 2>/dev/null || true
+id securityedge >/dev/null 2>&1 || \
+  useradd --system --gid securityedge --groups edgeproxy \
+    --home-dir /var/lib/securityedge --shell /usr/sbin/nologin securityedge
+usermod -a -G edgeproxy securityedge
+
+install -o root -g root -m 0755 ./bin/securityedge \
+  /usr/local/bin/securityedge
+install -o root -g root -m 0644 ./deploy/systemd/securityedge.service \
+  /etc/systemd/system/securityedge.service
+install -d -o root -g securityedge -m 0750 /etc/securityedge
+install -o root -g securityedge -m 0640 \
+  ./deploy/systemd/securityedge.env.example \
+  /etc/securityedge/securityedge.env
+install -d -o securityedge -g securityedge -m 0750 /var/lib/securityedge
+install -d -o securityedge -g securityedge -m 0750 /var/log/securityedge
+install -o securityedge -g securityedge -m 0640 ./configs/local-dev.json \
+  /var/lib/securityedge/securityedge.json
+```
+
+Replace both placeholder credentials in `/etc/securityedge/securityedge.env`. `EDGEPROXY_ADMIN_TOKEN` must exactly match the value used by EdgeProxy. Confirm the shared Route table is readable but not writable by SecurityEdge, then start the services. Startup validates each effective profile after applying its systemd environment overrides:
+
+```sh
+chown edgeproxy:edgeproxy /var/lib/edgeproxy/config.json
+chmod 0750 /var/lib/edgeproxy
+chmod 0640 /var/lib/edgeproxy/config.json
+
+systemctl daemon-reload
+systemctl enable --now edgeproxy.service
+systemctl enable --now securityedge.service
+systemctl status securityedge.service
+journalctl -u securityedge.service -f
+```
+
+The default unit exposes public ingress on port `80` and keeps the Dashboard/Admin API loopback-only at `127.0.0.1:9191`. Change those values in `/etc/securityedge/securityedge.env` before startup when a different network boundary is required. Dashboard/API policy changes persist atomically to `/var/lib/securityedge/securityedge.json`; security events and bounded telemetry history survive restarts under `/var/log/securityedge` and `/var/lib/securityedge`.
+
 ## Docker
 
 ### Build the SecurityEdge image

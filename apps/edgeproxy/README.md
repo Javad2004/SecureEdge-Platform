@@ -438,6 +438,43 @@ The management client works directly against EdgeProxy and prints structured JSO
 
 The script reads `EDGEPROXY_ADMIN_TOKEN` from the process environment or `.env`, bypasses ambient system proxies for local/LAN control traffic, rejects invalid JSON before sending it, and fails on non-success HTTP responses. High-level actions cover Server/Admin sections, complete Route and Origin CRUD, cache enable/disable/TTL/purge, scheduler tuning, proxy/retry settings, health checks, and route/origin telemetry; `-BodyFile` and `-BodyJson` remain available for full structured updates.
 
+## Linux systemd deployment
+
+The supplied unit runs EdgeProxy as an unprivileged, capability-limited service while preserving writable transactional configuration. Commands below assume a release binary has already been built. Run them as `root` from `apps/edgeproxy` or adapt the source paths to your release directory.
+
+Create the service account and install the binary, unit, secret environment, and initial active profile:
+
+```sh
+getent group edgeproxy >/dev/null || groupadd --system edgeproxy
+id edgeproxy >/dev/null 2>&1 || \
+  useradd --system --gid edgeproxy --home-dir /var/lib/edgeproxy \
+    --shell /usr/sbin/nologin edgeproxy
+
+install -o root -g root -m 0755 ./bin/edgeproxy /usr/local/bin/edgeproxy
+install -o root -g root -m 0644 ./deploy/systemd/edgeproxy.service \
+  /etc/systemd/system/edgeproxy.service
+install -d -o root -g edgeproxy -m 0750 /etc/edgeproxy
+install -o root -g edgeproxy -m 0640 ./deploy/systemd/edgeproxy.env.example \
+  /etc/edgeproxy/edgeproxy.env
+install -d -o edgeproxy -g edgeproxy -m 0750 /var/lib/edgeproxy
+install -o edgeproxy -g edgeproxy -m 0640 \
+  ../../integration/edgeproxy-local-behind-waf.json \
+  /var/lib/edgeproxy/config.json
+```
+
+Replace the placeholder token in `/etc/edgeproxy/edgeproxy.env` before starting. Enable the service; startup validates the installed profile after applying the same environment overrides used at runtime:
+
+```sh
+systemctl daemon-reload
+systemctl enable --now edgeproxy.service
+systemctl status edgeproxy.service
+journalctl -u edgeproxy.service -f
+```
+
+The active profile must remain in `/var/lib/edgeproxy`, not `/etc/edgeproxy`: Route and Origin CRUD, Dashboard changes, automatic reload, atomic rename, and timestamped backups all require write access to the containing directory. Secrets remain read-only in `/etc/edgeproxy/edgeproxy.env`.
+
+For the complete platform, SecurityEdge reads `/var/lib/edgeproxy/config.json` through membership in the `edgeproxy` supplementary group; keep the directory at `0750` and the active profile at `0640`. EdgeProxy remains the only writer.
+
 ## Docker
 
 ### Standalone EdgeProxy Compose stack

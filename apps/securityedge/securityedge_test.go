@@ -476,3 +476,170 @@ func TestReloadAndCloseReleaseEdgeAdminIdleConnections(t *testing.T) {
 	closed = true
 	waitForState(t, secondStates, http.StateClosed)
 }
+
+func TestReloadEdgeRoutesHotSwapsOnlySharedRouteTable(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"first","hosts":["first.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	original := runtime.Config()
+
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"second","hosts":["second.test"],"path_prefix":"/api"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ReloadEdgeRoutes(); err != nil {
+		t.Fatal(err)
+	}
+	routes := runtime.Routes()
+	if len(routes) != 1 || routes[0].Name != "second" {
+		t.Fatalf("route table was not hot-swapped: %#v", routes)
+	}
+	current := runtime.Config()
+	if current.Server.ListenAddr != original.Server.ListenAddr || current.Admin.ListenAddr != original.Admin.ListenAddr {
+		t.Fatalf("shared route reload changed SecurityEdge process configuration: before=%#v after=%#v", original.Server, current.Server)
+	}
+}
+
+func TestReplaceConfigPersistsValidatedRestartRevision(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.Admin.AuthToken = "security-secret"
+	cfg.EdgeProxy.AdminToken = "edge-secret"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	candidate := runtime.RedactedConfig()
+	candidate.Server.ListenAddr = "127.0.0.1:18082"
+	err = runtime.ReplaceConfig(candidate)
+	var marker restartRequiredMarker
+	if !errors.As(err, &marker) || !marker.RestartRequired() {
+		t.Fatalf("expected restart-required marker, got %v", err)
+	}
+	saved, err := config.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Server.ListenAddr != "127.0.0.1:18082" {
+		t.Fatalf("restart revision was not persisted: %q", saved.Server.ListenAddr)
+	}
+	if saved.Admin.AuthToken != "security-secret" || saved.EdgeProxy.AdminToken != "edge-secret" {
+		t.Fatalf("redacted markers replaced persisted secrets: admin=%q edge=%q", saved.Admin.AuthToken, saved.EdgeProxy.AdminToken)
+	}
+	if runtime.Config().Server.ListenAddr == saved.Server.ListenAddr {
+		t.Fatal("live listener configuration changed before the generation restart")
+	}
+	watch := runtime.WatchStatus()
+	if !watch.RestartScheduled || watch.LastChangedFile != cfgPath {
+		t.Fatalf("accepted restart was not exposed immediately: %#v", watch)
+	}
+}
+
+func TestWatcherStatusSurvivesManagedGenerationRestart(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	first, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.ConfigureWatcher("")
+	first.RecordWatchChange(cfgPath, false, true, nil)
+	before := first.WatchStatus()
+	first.Close()
+
+	second, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	second.ConfigureWatcher("", before)
+	after := second.WatchStatus()
+	if after.Revision != before.Revision || after.AppliedRevision != before.Revision {
+		t.Fatalf("revision history was not preserved: before=%#v after=%#v", before, after)
+	}
+	if after.RestartScheduled {
+		t.Fatalf("completed generation still reports restart scheduled: %#v", after)
+	}
+}
+
+func TestRoutePolicyOperationsAreCaseInsensitive(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"Demo-App","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	policy := cfg.DefaultPolicy
+	policy.AnomalyThreshold = 77
+	cfg.RoutePolicies = map[string]config.Policy{"demo-app": policy}
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if got := runtime.EffectivePolicy("DEMO-APP").AnomalyThreshold; got != 77 {
+		t.Fatalf("case-insensitive effective policy threshold=%d, want 77", got)
+	}
+	updated := policy
+	updated.AnomalyThreshold = 88
+	if err := runtime.UpdateRoutePolicy("DEMO-app", updated); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := config.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := saved.RoutePolicies["Demo-App"]; !exists {
+		t.Fatalf("policy was not canonicalized to the EdgeProxy route name: %#v", saved.RoutePolicies)
+	}
+	if _, exists := saved.RoutePolicies["demo-app"]; exists {
+		t.Fatalf("legacy case-variant policy key was retained: %#v", saved.RoutePolicies)
+	}
+	if err := runtime.DeleteRoutePolicy("demo-APP"); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(runtime.Config().RoutePolicies); got != 0 {
+		t.Fatalf("case-insensitive delete left %d policy entries", got)
+	}
+}

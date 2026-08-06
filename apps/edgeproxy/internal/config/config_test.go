@@ -559,3 +559,15 @@ func TestValidateAllowsDistinctOrDynamicListeners(t *testing.T) {
 		})
 	}
 }
+
+func TestConfigRejectsCaseInsensitiveDuplicateRouteNames(t *testing.T) {
+	cfg := Default()
+	cfg.Routes = []RouteConfig{validRouteForValidation()}
+	duplicate := cfg.Routes[0]
+	duplicate.Name = strings.ToUpper(cfg.Routes[0].Name)
+	duplicate.Hosts = []string{"other.example.test"}
+	cfg.Routes = append(cfg.Routes, duplicate)
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "case-insensitive") {
+		t.Fatalf("expected case-insensitive duplicate route error, got %v", err)
+	}
+}

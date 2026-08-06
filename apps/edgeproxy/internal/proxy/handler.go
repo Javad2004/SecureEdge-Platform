@@ -26,80 +26,127 @@ type cacheFillLocker interface {
 }
 
 type routeRuntime struct {
-	cfg   *config.RouteConfig
-	pool  *upstreamPool
-	cache *cache.Cache
-	fills cacheFillLocker
+	cfg                *config.RouteConfig
+	pool               *upstreamPool
+	cache              *cache.Cache
+	fills              cacheFillLocker
+	forwardedForHeader string
+}
+
+type handlerLifecycle struct {
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 type Handler struct {
+	mu      sync.RWMutex
 	logger  *slog.Logger
 	router  *router.Router
 	metrics *metrics.Registry
 	logs    *accesslog.Store
 	routes  map[string]*routeRuntime
 	clients *clientResolver
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
+	life    *handlerLifecycle
 }
 
 func NewHandler(cfg config.Config, logger *slog.Logger, registry *metrics.Registry, logStore *accesslog.Store) (*Handler, error) {
+	h := &Handler{logger: logger, metrics: registry, logs: logStore}
+	state, err := h.buildState(cfg)
+	if err != nil {
+		return nil, err
+	}
+	h.router, h.routes, h.clients, h.life = state.router, state.routes, state.clients, state.life
+	return h, nil
+}
+
+type handlerState struct {
+	router  *router.Router
+	routes  map[string]*routeRuntime
+	clients *clientResolver
+	life    *handlerLifecycle
+}
+
+func (h *Handler) buildState(cfg config.Config) (handlerState, error) {
 	clients, err := newClientResolver(cfg.Server.TrustedProxyCIDRs, cfg.Server.ForwardedForHeader)
 	if err != nil {
-		return nil, fmt.Errorf("configure trusted proxies: %w", err)
+		return handlerState{}, fmt.Errorf("configure trusted proxies: %w", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &Handler{
-		logger:  logger,
-		router:  router.New(cfg.Routes),
-		metrics: registry,
-		logs:    logStore,
-		routes:  make(map[string]*routeRuntime),
-		clients: clients,
-		cancel:  cancel,
-	}
+	life := &handlerLifecycle{cancel: cancel}
+	state := handlerState{router: router.New(cfg.Routes), routes: make(map[string]*routeRuntime), clients: clients, life: life}
 	for i := range cfg.Routes {
 		route := &cfg.Routes[i]
 		pool, err := newUpstreamPool(*route)
 		if err != nil {
 			cancel()
-			return nil, err
+			life.wg.Wait()
+			return handlerState{}, err
 		}
-		runtime := &routeRuntime{cfg: route, pool: pool, fills: cache.NewKeyLocker()}
+		runtime := &routeRuntime{cfg: route, pool: pool, fills: cache.NewKeyLocker(), forwardedForHeader: clients.header}
 		if route.Cache.Enabled {
 			runtime.cache = cache.New(route.Cache.MaxEntries, route.Cache.MaxBytes)
 		}
-		h.routes[route.Name] = runtime
+		state.routes[route.Name] = runtime
 		if route.HealthCheck.Enabled {
-			h.wg.Add(1)
+			life.wg.Add(1)
 			go func(rt *routeRuntime) {
-				defer h.wg.Done()
+				defer life.wg.Done()
 				rt.pool.runHealthChecks(ctx, rt.cfg.HealthCheck, func(change healthChange) {
 					h.recordHealthChange(rt.cfg.Name, change)
 				})
 			}(runtime)
 		}
 	}
-	return h, nil
+	return state, nil
+}
+
+// Reload validates and prepares a complete data-plane generation before
+// atomically publishing it. Existing requests continue on the previous
+// generation while new requests immediately use the new route table.
+func (h *Handler) Reload(cfg config.Config) error {
+	state, err := h.buildState(cfg)
+	if err != nil {
+		return err
+	}
+	h.mu.Lock()
+	oldRoutes, oldLife := h.routes, h.life
+	h.router, h.routes, h.clients, h.life = state.router, state.routes, state.clients, state.life
+	h.mu.Unlock()
+	closeHandlerState(oldRoutes, oldLife)
+	return nil
 }
 
 func (h *Handler) Close() {
-	h.cancel()
-	h.wg.Wait()
-	for _, route := range h.routes {
+	h.mu.Lock()
+	routes, life := h.routes, h.life
+	h.routes = map[string]*routeRuntime{}
+	h.life = nil
+	h.mu.Unlock()
+	closeHandlerState(routes, life)
+}
+
+func closeHandlerState(routes map[string]*routeRuntime, life *handlerLifecycle) {
+	if life != nil && life.cancel != nil {
+		life.cancel()
+		life.wg.Wait()
+	}
+	for _, route := range routes {
 		route.pool.closeIdleConnections()
 	}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	started := time.Now()
-	req = withResolvedClientIP(req, h.clients.Resolve(req))
-	match, ok := h.router.Match(req)
+	h.mu.RLock()
+	clients, routeTable, routeMap := h.clients, h.router, h.routes
+	h.mu.RUnlock()
+	req = withResolvedClientIP(req, clients.Resolve(req))
+	match, ok := routeTable.Match(req)
 	if !ok {
 		http.Error(w, "no route configured for this host and path", http.StatusNotFound)
 		return
 	}
-	rt := h.routes[match.Route.Name]
+	rt := routeMap[match.Route.Name]
 	id := requestID(req)
 	w.Header().Set("X-Request-ID", id)
 
@@ -271,8 +318,9 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 			}
 			break
 		}
-		outReq, err := cloneRequest(ctx, req, node, rt.cfg, id, h.clients.header)
+		outReq, err := cloneRequest(ctx, req, node, rt.cfg, id, rt.forwardedForHeader)
 		if err != nil {
+			rt.pool.release(node, 0)
 			lastErr = err
 			break
 		}
@@ -280,6 +328,7 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		started := time.Now()
 		resp, err = node.transport.RoundTrip(outReq)
 		elapsed := time.Since(started)
+		rt.pool.release(node, elapsed)
 		result.upstreamDuration += elapsed
 		result.upstreamCalls++
 		// Count only retry requests that actually reached RoundTrip. A route
@@ -313,9 +362,9 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		if !failed {
 			lastErr = nil
 			result.errorMessage = ""
-			if !node.healthy.Swap(true) {
-				h.recordHealthChange(rt.cfg.Name, healthChange{Upstream: node.url.String(), Healthy: true, Status: status, Duration: elapsed})
-			}
+			setNodeHealth(node, true, healthChange{Upstream: node.url.String(), Healthy: true, Status: status, Duration: elapsed}, func(change healthChange) {
+				h.recordHealthChange(rt.cfg.Name, change)
+			})
 			break
 		}
 
@@ -336,9 +385,9 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		lastErr = attemptErr
 		result.errorMessage = errorText(lastErr)
 		excluded[node] = true
-		if node.healthy.Swap(false) {
-			h.recordHealthChange(rt.cfg.Name, healthChange{Upstream: node.url.String(), Healthy: false, Status: status, Duration: elapsed, Error: errorText(lastErr)})
-		}
+		setNodeHealth(node, false, healthChange{Upstream: node.url.String(), Healthy: false, Status: status, Duration: elapsed, Error: errorText(lastErr)}, func(change healthChange) {
+			h.recordHealthChange(rt.cfg.Name, change)
+		})
 
 		canRetry := attempt+1 < attempts
 		if retryableResponse && !canRetry {

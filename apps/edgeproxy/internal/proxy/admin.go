@@ -13,6 +13,7 @@ import (
 type RouteStatus struct {
 	Name      string           `json:"name"`
 	Ready     bool             `json:"ready"`
+	Scheduler map[string]any   `json:"scheduler"`
 	Upstreams []map[string]any `json:"upstreams"`
 	Cache     *cache.Stats     `json:"cache,omitempty"`
 }
@@ -23,18 +24,25 @@ type ReadinessStatus struct {
 }
 
 func (h *Handler) RouteStatuses() []RouteStatus {
-	names := make([]string, 0, len(h.routes))
-	for name := range h.routes {
+	h.mu.RLock()
+	routes := make(map[string]*routeRuntime, len(h.routes))
+	for name, runtime := range h.routes {
+		routes[name] = runtime
+	}
+	h.mu.RUnlock()
+	names := make([]string, 0, len(routes))
+	for name := range routes {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
 	out := make([]RouteStatus, 0, len(names))
 	for _, name := range names {
-		rt := h.routes[name]
+		rt := routes[name]
 		status := RouteStatus{
 			Name:      rt.cfg.Name,
 			Ready:     rt.pool.hasHealthy(),
+			Scheduler: rt.pool.schedulerSnapshot(),
 			Upstreams: rt.pool.healthSnapshot(),
 		}
 		if rt.cache != nil {
@@ -50,6 +58,8 @@ func (h *Handler) RouteStatuses() []RouteStatus {
 // healthy origin. Liveness is intentionally separate: the process may be alive
 // while it is temporarily unable to serve one or more routes.
 func (h *Handler) Readiness() ReadinessStatus {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
 	status := ReadinessStatus{Ready: true, UnhealthyRoutes: []string{}}
 	for name, rt := range h.routes {
 		if !rt.pool.hasHealthy() {
@@ -62,7 +72,9 @@ func (h *Handler) Readiness() ReadinessStatus {
 }
 
 func (h *Handler) PurgeCache(routeName, host, pathPrefix string) (int, bool, error) {
+	h.mu.RLock()
 	rt, ok := h.routes[routeName]
+	h.mu.RUnlock()
 	if !ok || rt.cache == nil {
 		return 0, false, nil
 	}

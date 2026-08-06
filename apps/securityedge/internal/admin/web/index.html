@@ -134,7 +134,31 @@
         <article class="panel"><div class="panel-head"><div><h2>EdgeProxy access logs</h2><p>Recent request-completed events reported by the EdgeProxy access-log API.</p></div></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Status</th><th>Cache</th><th>Route</th><th>Request</th><th>Duration</th><th>Upstream</th></tr></thead><tbody id="edge-log-table"></tbody></table></div></article>
       </section>
 
-      <section id="view-routes" class="view"><div id="route-cards" class="route-grid"></div></section>
+      <section id="view-routes" class="view">
+        <div class="control-kpis">
+          <article class="kpi"><span>EdgeProxy config</span><strong id="edge-watch-state">—</strong><small id="edge-watch-detail">Watcher unavailable</small></article>
+          <article class="kpi"><span>SecurityEdge config</span><strong id="security-watch-state">—</strong><small id="security-watch-detail">Watcher unavailable</small></article>
+          <article class="kpi"><span>Managed routes</span><strong id="managed-route-count">—</strong><small id="managed-origin-count">— origins</small></article>
+          <article class="kpi"><span>Active schedulers</span><strong id="scheduler-count">—</strong><small>Per-route load balancing</small></article>
+        </div>
+        <article class="panel control-toolbar">
+          <div><p class="eyebrow">Unified control plane</p><h2>Route and origin management</h2><p>Validated changes are persisted atomically, hot-applied when possible, and automatically restarted only when required.</p></div>
+          <div class="top-actions"><button id="refresh-control" class="ghost">Refresh control data</button><button id="add-route">Add route</button></div>
+        </article>
+        <div id="route-cards" class="route-grid"></div>
+        <article class="panel telemetry-panel">
+          <div class="panel-head"><div><h2>Route telemetry</h2><p>Request volume, cache efficiency, response latency, retries, errors, and traffic for each route.</p></div></div>
+          <div class="table-wrap"><table><thead><tr><th>Route</th><th>Algorithm</th><th>Requests</th><th>Success</th><th>Cache hit</th><th>Avg / P95</th><th>Upstream calls</th><th>Retries</th><th>Errors</th><th>Traffic</th></tr></thead><tbody id="route-telemetry-table"></tbody></table></div>
+        </article>
+        <article class="panel telemetry-panel">
+          <div class="panel-head"><div><h2>Origin telemetry</h2><p>Health, weight, priority, active work, EWMA response time, calls, success rate, and latency by origin.</p></div></div>
+          <div class="table-wrap"><table><thead><tr><th>Route / origin</th><th>Endpoint</th><th>Health</th><th>Weight / priority</th><th>Calls</th><th>Success</th><th>Avg / P95</th><th>Active</th><th>EWMA</th><th></th></tr></thead><tbody id="origin-telemetry-table"></tbody></table></div>
+        </article>
+        <div class="grid two config-editor-grid">
+          <article class="panel"><div class="panel-head"><div><h2>EdgeProxy raw configuration</h2><p>Full validated JSON editor with secret redaction and automatic hot reload or restart.</p></div><div class="top-actions"><button id="reload-edge-config" class="ghost">Reload file</button><button id="save-edge-config">Validate & save</button></div></div><textarea id="edge-config-editor" class="code-editor" spellcheck="false" aria-label="EdgeProxy JSON configuration"></textarea><p id="edge-config-result" class="result-text"></p></article>
+          <article class="panel"><div class="panel-head"><div><h2>SecurityEdge raw configuration</h2><p>Security policy and runtime configuration with transactional persistence.</p></div><div class="top-actions"><button id="reload-security-config" class="ghost">Reload file</button><button id="save-security-config">Validate & save</button></div></div><textarea id="security-config-editor" class="code-editor" spellcheck="false" aria-label="SecurityEdge JSON configuration"></textarea><p id="security-config-result" class="result-text"></p></article>
+        </div>
+      </section>
 
       <section id="view-policies" class="view">
         <div class="grid policy-grid">
@@ -168,6 +192,29 @@
       </section>
     </main>
   </div>
+
+
+  <dialog id="route-dialog" class="editor-dialog">
+    <form id="route-form" method="dialog" class="editor-form">
+      <div class="dialog-head"><div><p class="eyebrow">EdgeProxy route</p><h2 id="route-dialog-title">Add route</h2></div><button type="button" class="ghost icon-button" data-close-dialog="route-dialog" aria-label="Close">×</button></div>
+      <input id="route-original-name" type="hidden">
+      <div class="form-grid"><label>Route name<input id="route-name" required maxlength="128"></label><label>Path prefix<input id="route-path" required value="/"></label></div>
+      <label>Hosts<input id="route-hosts" required placeholder="project.test, www.project.test"></label>
+      <div class="form-grid"><label>Algorithm<select id="route-algorithm"><option>round_robin</option><option>weighted_round_robin</option><option>least_connections</option><option>priority_failover</option><option>adaptive_latency</option><option>random_weighted</option></select></label><label>Latency sensitivity<input id="route-sensitivity" type="number" min="0.1" max="8" step="0.1" value="1"></label><label>EWMA alpha<input id="route-alpha" type="number" min="0.01" max="1" step="0.01" value="0.25"></label><label class="switch-row compact"><span>Preserve Host</span><input id="route-preserve-host" type="checkbox"></label></div>
+      <div id="initial-origin-fields" class="subsection"><h3>Initial origin</h3><p class="muted">A new route must include at least one origin. More origins can be added after creation.</p><div class="form-grid"><label>Origin name<input id="route-origin-name" value="origin-1"></label><label>Origin URL<input id="route-origin-url" type="url" placeholder="http://127.0.0.1:9000"></label><label>Weight<input id="route-origin-weight" type="number" min="1" max="10000" value="1"></label><label>Priority<input id="route-origin-priority" type="number" min="1" max="10000" value="1"></label></div></div>
+      <p id="route-form-error" class="error-text"></p><div class="dialog-actions"><button type="button" class="ghost" data-close-dialog="route-dialog">Cancel</button><button type="submit">Validate & apply</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="origin-dialog" class="editor-dialog">
+    <form id="origin-form" method="dialog" class="editor-form">
+      <div class="dialog-head"><div><p class="eyebrow">EdgeProxy origin</p><h2 id="origin-dialog-title">Add origin</h2></div><button type="button" class="ghost icon-button" data-close-dialog="origin-dialog" aria-label="Close">×</button></div>
+      <input id="origin-route-name" type="hidden"><input id="origin-original-name" type="hidden">
+      <div class="form-grid"><label>Origin name<input id="origin-name" required maxlength="128"></label><label>Origin URL<input id="origin-url" type="url" required></label><label>Weight<input id="origin-weight" type="number" min="1" max="10000" value="1"></label><label>Priority<input id="origin-priority" type="number" min="1" max="10000" value="1"></label></div>
+      <label class="switch-row"><span><strong>Skip TLS certificate verification</strong><small>Use only for controlled development origins.</small></span><input id="origin-insecure" type="checkbox"></label>
+      <p id="origin-form-error" class="error-text"></p><div class="dialog-actions"><button type="button" class="ghost" data-close-dialog="origin-dialog">Cancel</button><button type="submit">Validate & apply</button></div>
+    </form>
+  </dialog>
   <div id="toast" role="status" aria-live="polite"></div>
   <script src="/assets/app.js" defer></script>
 </body>

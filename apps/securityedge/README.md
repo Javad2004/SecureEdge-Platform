@@ -67,7 +67,7 @@ SecurityEdge provides application-layer HTTP protection. SYN floods, UDP floods,
 - WAF and admission-control event browsing;
 - recent privacy-safe client traffic telemetry;
 - dependency monitoring for DNS, SecurityEdge ingress, EdgeProxy data plane, EdgeProxy Admin API, route readiness, and Origin health;
-- EdgeProxy metrics, logs, and cache purge through a backend-for-frontend;
+- EdgeProxy metrics, logs, cache purge, transactional configuration, Route/Origin CRUD, and watcher status through an authenticated backend-for-frontend;
 - policy editing with validation and atomic persistence;
 - temporary-ban management;
 - CSV and NDJSON event exports;
@@ -255,6 +255,17 @@ SecurityEdge connects to the configured EdgeProxy data plane directly and does n
 
 ## Dashboard behavior
 
+The authenticated dashboard is also the platform Control Center. In addition to dependency health and security events, operators can:
+
+- create, edit, and delete EdgeProxy routes and Origins;
+- select a load-balancing algorithm per route and tune Origin weights, priorities, `latency_sensitivity`, and `ewma_alpha`;
+- inspect per-route request volume, success/error counts, cache hit ratio, latency, retries, upstream calls, and bytes;
+- inspect per-Origin health, active requests, EWMA latency, scheduler selections, response counts, and health transitions;
+- edit and validate raw EdgeProxy and SecurityEdge JSON configurations;
+- inspect both file watchers, revision counters, last errors, apply modes, and pending automatic restarts.
+
+All browser mutations call the SecurityEdge backend-for-frontend. The SecurityEdge operator token is kept in `sessionStorage`; the EdgeProxy backend credential is never exposed to browser JavaScript. Editors track unsaved changes and are not overwritten by periodic dashboard refreshes.
+
 The Overview page separates service health from traffic activity.
 
 ### Service Health & Dependencies
@@ -327,6 +338,9 @@ GET     /api/v1/logs
 DELETE  /api/v1/logs
 GET     /api/v1/logs/export
 GET     /api/v1/rules
+GET     /api/v1/config
+PUT     /api/v1/config
+GET     /api/v1/config/watch
 GET     /api/v1/policies
 PUT     /api/v1/policies/default
 PUT     /api/v1/policies/{route}
@@ -347,11 +361,18 @@ When NDJSON persistence is enabled, SecurityEdge restores the newest retained ev
 
 The in-memory Admin event ring accepts a configured `capacity` from `1` through `100000` entries. This bound prevents an accidental configuration value from causing an excessive startup allocation.
 
-### Live reload boundaries
+### Automatic reload and restart boundaries
 
-`POST /api/v1/reload` validates the complete configuration before changing the live runtime. It can apply security policies, WAF custom rules, trusted-proxy CIDR lists, route metadata, and EdgeProxy Admin connectivity without interrupting traffic.
+SecurityEdge watches three inputs independently: its own JSON configuration, the shared EdgeProxy Route table, and its application `.env`. This separation is intentional:
 
-Settings owned by already-running listeners or long-lived process resources require a SecurityEdge restart. This includes listener addresses and HTTP timeouts, the upstream data-plane URL and transport, the configured forwarded-client-IP source header, Admin listener/authentication/log-store settings, and the process-wide rate-limiter and automatic-ban store lifecycle or capacity. When one of these values changes, the reload endpoint returns `409 Conflict` with the `restart_required` error code instead of reporting a partial success.
+- a shared EdgeProxy file change reloads only SecurityEdge's Route metadata and policy lookup table;
+- a hot-applicable SecurityEdge change updates policies, WAF rules, trusted proxies, route metadata, and EdgeProxy Admin connectivity without interrupting traffic;
+- a listener, transport, Admin listener/auth/log-store, process-wide limiter/ban-store, or environment change schedules an automatic graceful generation restart;
+- invalid JSON or `.env` revisions keep the last healthy runtime and are reported through `/api/v1/config/watch`.
+
+`POST /api/v1/reload` remains available for an explicit re-read. `PUT /api/v1/config` validates and atomically persists a complete candidate. Hot changes return `200 OK`; restart-required revisions return `202 Accepted` and are applied automatically by the managed process. Multiple rapid restart requests are coalesced so the newest valid revision wins. The service process remains the same while listeners and long-lived resources move to the new generation.
+
+The restart-required comparison uses the file-backed SecurityEdge configuration independently of runtime/environment endpoint overrides. A change made to EdgeProxy routes from the Dashboard therefore cannot be misclassified as a SecurityEdge process change or cause an unnecessary listener restart.
 
 Rate-limit buckets and automatic-ban tracking are also process-wide stores. Route policies may define different request rates, bursts, violation thresholds, windows, and ban durations, but they must use the same `cleanup_interval`, `idle_ttl`, `max_buckets`, and `max_tracked_clients` capacity settings as `default_policy`. This prevents one route from applying a smaller shared-store capacity to buckets or client records created by another route.
 
@@ -367,7 +388,23 @@ GET     /api/v1/edgeproxy/metrics
 GET     /api/v1/edgeproxy/logs
 DELETE  /api/v1/edgeproxy/logs
 POST    /api/v1/edgeproxy/cache/purge
+GET     /api/v1/edgeproxy/config
+PUT     /api/v1/edgeproxy/config
+POST    /api/v1/edgeproxy/config/reload
+GET     /api/v1/edgeproxy/config/watch
+GET     /api/v1/edgeproxy/routes
+POST    /api/v1/edgeproxy/routes
+GET     /api/v1/edgeproxy/routes/{route}
+PUT     /api/v1/edgeproxy/routes/{route}
+DELETE  /api/v1/edgeproxy/routes/{route}
+GET     /api/v1/edgeproxy/routes/{route}/origins
+POST    /api/v1/edgeproxy/routes/{route}/origins
+GET     /api/v1/edgeproxy/routes/{route}/origins/{origin}
+PUT     /api/v1/edgeproxy/routes/{route}/origins/{origin}
+DELETE  /api/v1/edgeproxy/routes/{route}/origins/{origin}
 ```
+
+Successful EdgeProxy mutations immediately refresh SecurityEdge's shared Route table and are also observed by the independent file watcher. Deleting a Route removes its matching SecurityEdge policy override transactionally; the policy is restored if the downstream EdgeProxy deletion fails. Replacing the complete EdgeProxy configuration is rejected when it would orphan existing SecurityEdge route-policy overrides.
 
 The cache-purge backend forwards the EdgeProxy `route`, `host`, and `path_prefix` query parameters. A path prefix is segment-aware: `/api` purges `/api` and `/api/...`, but not `/apix`. Invalid or ambiguous path prefixes are rejected with `400 Bad Request`.
 
@@ -384,6 +421,19 @@ Invoke-RestMethod "$AdminUrl/api/v1/dashboard/overview" -Headers $Headers
 ## Operational scripts
 
 Run from `apps/securityedge`.
+
+The two management clients expose the complete Control Plane from PowerShell:
+
+```powershell
+.\scripts\manage-edgeproxy.ps1 -Action ListRoutes
+.\scripts\manage-edgeproxy.ps1 -Action UpdateRoute -Route demo-app -BodyFile .\route.json
+.\scripts\manage-edgeproxy.ps1 -Action Telemetry
+.\scripts\manage-security.ps1 -Action Watch
+.\scripts\manage-security.ps1 -Action Policies
+.\scripts\manage-security.ps1 -Action SetRoutePolicy -Route demo-app -BodyFile .\policy.json
+```
+
+They produce structured JSON, load the proper Admin token from the process environment or application `.env`, reject invalid request JSON locally, fail fast on HTTP/API errors, and disable ambient proxy use for local or LAN management traffic.
 
 The scripts auto-load `../.env`; existing process variables take precedence, and explicit parameters remain the highest-priority overrides. Use `-EnvFile` for an external SecurityEdge file or `-NoEnv` for an isolated JSON/default check. The complete deployment test also auto-loads `../../edgeproxy/.env`, with `-EdgeProxyEnvFile` available for an external file. Admin helper URLs preserve explicitly bound hostnames, LAN IPs, and IPv6 addresses; wildcard listeners are contacted through loopback. Protection smoke tests use the first configured DNS name only when DNS probing is enabled, and otherwise use the reachable local ingress listener. Port `0` requires an explicit `-AdminUrl` or `-BaseUrl` because the assigned runtime port is not known from configuration.
 

@@ -29,7 +29,7 @@ services:
       - "8080"
       - "9090"
     volumes:
-      - ../../integration/edgeproxy-compose-behind-waf.json:/app/config.json:ro
+      - edgeproxy-config:/app/config
     init: true
     read_only: true
     tmpfs:
@@ -55,12 +55,14 @@ services:
     environment:
       SECURITYEDGE_ADMIN_TOKEN: "${SECURITYEDGE_ADMIN_TOKEN:?set SECURITYEDGE_ADMIN_TOKEN in deployments/docker/.env}"
       EDGEPROXY_ADMIN_TOKEN: "${EDGEPROXY_ADMIN_TOKEN:?set EDGEPROXY_ADMIN_TOKEN in deployments/docker/.env}"
+      SECURITYEDGE_EDGEPROXY_CONFIG_PATH: "/edgeproxy-config/config.json"
     ports:
       - "${SECURITYEDGE_HTTP_PORT:-8081}:8081"
       - "127.0.0.1:${SECURITYEDGE_ADMIN_PORT:-9191}:9191"
     volumes:
       - securityedge-config:/app/config
       - securityedge-logs:/app/logs
+      - edgeproxy-config:/edgeproxy-config:ro
       - ../../integration:/integration:ro
     init: true
     read_only: true
@@ -82,5 +84,6 @@ networks:
         - subnet: 172.30.0.0/24
 
 volumes:
+  edgeproxy-config:
   securityedge-config:
   securityedge-logs:

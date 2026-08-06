@@ -3,6 +3,8 @@ package routes
 import (
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -119,5 +121,16 @@ func TestLoadRejectsDuplicateHostPathSelector(t *testing.T) {
 	}
 	if _, err := Load(configPath); err == nil {
 		t.Fatal("expected duplicate host/path selector to be rejected")
+	}
+}
+
+func TestLoadRejectsCaseInsensitiveDuplicateRouteNames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "edge.json")
+	data := `{"routes":[{"name":"Demo","hosts":["one.test"],"path_prefix":"/"},{"name":"demo","hosts":["two.test"],"path_prefix":"/"}]}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "case-insensitive") {
+		t.Fatalf("expected case-insensitive duplicate error, got %v", err)
 	}
 }

@@ -13,9 +13,9 @@ apps/edgeproxy
 EdgeProxy owns the platform's upstream delivery path:
 
 - host- and path-based route matching;
-- multiple origins per route;
-- round-robin origin selection;
-- active origin health checks;
+- multiple named origins per route with independent weight and priority;
+- per-route `round_robin`, `weighted_round_robin`, `least_connections`, `priority_failover`, `adaptive_latency`, and `random_weighted` scheduling;
+- active origin health checks, automatic failover, and recovery to higher-priority origins;
 - route-level readiness;
 - HTTP reverse proxying with trusted-proxy-aware forwarding headers;
 - retries for safe replayable requests;
@@ -24,8 +24,9 @@ EdgeProxy owns the platform's upstream delivery path:
 - cache-stampede prevention;
 - stale-if-error fallback, except when the Origin requires revalidation with `must-revalidate` or `proxy-revalidate`;
 - structured access and origin-attempt logs;
-- request, cache, origin, retry, byte, and latency metrics;
-- an authenticated Admin API.
+- request, cache, origin, retry, byte, active-request, EWMA-latency, health-transition, and scheduler metrics;
+- an authenticated, transactional configuration Control Plane;
+- automatic JSON and `.env` watching with hot reload or graceful generation restart.
 
 In the active integrated deployment, EdgeProxy does **not** expose the public listener. SecurityEdge receives public traffic first and forwards accepted requests to EdgeProxy on loopback.
 
@@ -183,7 +184,24 @@ Each route can define:
 - one or more upstream origins;
 - proxy and retry settings;
 - cache policy;
-- active health checks.
+- active health checks;
+- a per-route load-balancing algorithm and adaptive scheduler parameters;
+- per-origin names, weights, and failover priorities.
+
+### Load-balancing algorithms
+
+Each route selects one independent scheduler through `load_balancing.algorithm`:
+
+| Algorithm | Behavior |
+|---|---|
+| `round_robin` | Distributes requests evenly across healthy Origins. |
+| `weighted_round_robin` | Uses each Origin's `weight` for deterministic proportional distribution. |
+| `least_connections` | Selects the healthy Origin with the fewest active requests, using weight to break proportional ties. |
+| `priority_failover` | Sends traffic to the lowest numeric priority tier and fails over only when that tier is unavailable. Recovered higher-priority Origins automatically resume service. |
+| `adaptive_latency` | Combines weight, active work, and EWMA response latency; `latency_sensitivity` controls how strongly latency affects selection. |
+| `random_weighted` | Randomly selects a healthy Origin in proportion to its configured weight. |
+
+`ewma_alpha` controls how quickly adaptive latency reacts to recent responses. Scheduling is health-aware, retries exclude an already-attempted Origin when another healthy candidate exists, and every Origin reports active requests, EWMA latency, scheduler selections, and health failure/recovery counters.
 
 Routing precedence favors the most specific host/path match. Request paths are canonicalized before route selection, optional prefix stripping, Origin forwarding, cache-key generation, and path-filtered cache purges. This keeps dot-segment-equivalent requests aligned across the entire data path. Example profiles are available in:
 
@@ -253,7 +271,7 @@ GET /healthz
 GET /readyz
 ```
 
-Authenticated endpoints:
+Authenticated observability endpoints:
 
 ```text
 GET     /api/v1/status
@@ -262,6 +280,29 @@ GET     /api/v1/logs
 DELETE  /api/v1/logs
 POST    /api/v1/cache/purge
 ```
+
+Authenticated configuration Control Plane:
+
+```text
+GET     /api/v1/config
+PUT     /api/v1/config
+POST    /api/v1/config/reload
+GET     /api/v1/config/watch
+GET     /api/v1/routes
+POST    /api/v1/routes
+GET     /api/v1/routes/{route}
+PUT     /api/v1/routes/{route}
+DELETE  /api/v1/routes/{route}
+GET     /api/v1/routes/{route}/origins
+POST    /api/v1/routes/{route}/origins
+GET     /api/v1/routes/{route}/origins/{origin}
+PUT     /api/v1/routes/{route}/origins/{origin}
+DELETE  /api/v1/routes/{route}/origins/{origin}
+```
+
+Control Plane writes use strict JSON decoding, reject unknown fields and bodies larger than 4 MiB, validate the complete candidate, preserve a supplied `[REDACTED]` Admin token, create timestamped backups, and atomically replace the configuration file. Route and Origin lookup is case-insensitive; route names are immutable after creation so SecurityEdge policy identities cannot silently drift. A route must retain at least one Origin.
+
+Hot-applicable routing, cache, health, and scheduler changes return `200 OK` and are installed without dropping traffic. Listener, TLS, Admin listener/auth/log-store, and process-timeout changes are persisted and return `202 Accepted`; the managed process coalesces pending work and performs an automatic graceful generation restart. Invalid JSON or `.env` revisions never replace the last healthy runtime. `GET /api/v1/config/watch` reports watched files, digests, revisions, the last apply mode/error, and pending restart state.
 
 Local-development credentials:
 
@@ -362,6 +403,21 @@ make validate
 make build
 ```
 
+## Configuration automation from PowerShell
+
+The management client works directly against EdgeProxy and prints structured JSON suitable for interactive use or automation:
+
+```powershell
+.\scripts\manage-config.ps1 -Action Status
+.\scripts\manage-config.ps1 -Action Watch
+.\scripts\manage-config.ps1 -Action ListRoutes
+.\scripts\manage-config.ps1 -Action UpdateRoute -Route demo-app -BodyFile .\route.json
+.\scripts\manage-config.ps1 -Action CreateOrigin -Route demo-app -BodyJson '{"name":"origin-b","url":"http://127.0.0.1:9001","weight":2,"priority":1}'
+.\scripts\manage-config.ps1 -Action Telemetry
+```
+
+The script reads `EDGEPROXY_ADMIN_TOKEN` from the process environment or `.env`, bypasses ambient system proxies for local/LAN control traffic, rejects invalid JSON before sending it, and fails on non-success HTTP responses.
+
 ## Docker
 
 ### Standalone EdgeProxy Compose stack
@@ -373,7 +429,7 @@ Copy-Item ./.env.example ./.env
 docker compose up --build
 ```
 
-The Compose file builds two minimal non-root images from this Dockerfile:
+The Compose file builds two minimal non-root images from this Dockerfile. EdgeProxy configuration is stored in a writable named volume mounted at `/app/config`; this is required for atomic rename, backups, Dashboard/API changes, and automatic file watching while the root filesystem remains read-only:
 
 ```text
 Host client → EdgeProxy container → Origin container

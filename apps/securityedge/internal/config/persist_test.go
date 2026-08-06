@@ -66,3 +66,35 @@ func TestLoadFileDoesNotRestoreInvalidBackup(t *testing.T) {
 		t.Fatalf("invalid backup should remain available for diagnosis: %v", statErr)
 	}
 }
+
+func TestSaveRetainsBoundedTimestampedBackups(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "securityedge.json")
+	cfg := validPersistenceTestConfig()
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxConfigBackups+3; i++ {
+		cfg.DefaultPolicy.AnomalyThreshold = 5 + i
+		if err := Save(path, cfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backups, err := filepath.Glob(path + ".bak-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != maxConfigBackups {
+		t.Fatalf("backup count=%d, want %d", len(backups), maxConfigBackups)
+	}
+}
+
+func TestLoadFileRejectsOversizedConfiguration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "securityedge.json")
+	if err := os.WriteFile(path, make([]byte, maxConfigFileBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFile(path); err == nil || !strings.Contains(err.Error(), "safety limit") {
+		t.Fatalf("expected size-limit error, got %v", err)
+	}
+}

@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -330,7 +331,7 @@ func LoadFile(path string) (Config, error) {
 // Validation happens before the backup is restored, so malformed recovery data
 // never replaces the configured path.
 func readConfigForLoad(path string) ([]byte, string, error) {
-	data, err := os.ReadFile(path)
+	data, err := readBoundedConfigFile(path)
 	if err == nil {
 		return data, "", nil
 	}
@@ -339,11 +340,40 @@ func readConfigForLoad(path string) ([]byte, string, error) {
 	}
 
 	recoveryPath := path + ".bak"
-	data, recoveryErr := os.ReadFile(recoveryPath)
+	data, recoveryErr := readBoundedConfigFile(recoveryPath)
 	if recoveryErr != nil {
 		return nil, "", fmt.Errorf("read security config: %w", err)
 	}
 	return data, recoveryPath, nil
+}
+
+func readBoundedConfigFile(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("config path is not a regular file")
+	}
+	if info.Size() > maxConfigFileBytes {
+		return nil, fmt.Errorf("config exceeds the %d-byte safety limit", maxConfigFileBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxConfigFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxConfigFileBytes {
+		return nil, fmt.Errorf("config exceeds the %d-byte safety limit", maxConfigFileBytes)
+	}
+	if !utf8.Valid(data) {
+		return nil, errors.New("config must be valid UTF-8")
+	}
+	return data, nil
 }
 
 func (c *Config) Validate() error {

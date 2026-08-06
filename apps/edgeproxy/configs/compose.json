@@ -11,7 +11,10 @@
       "enabled": false,
       "cert_file": "",
       "key_file": ""
-    }
+    },
+    "trusted_proxy_cidrs": [
+      "172.30.0.10/32"
+    ]
   },
   "admin": {
     "enabled": true,
@@ -29,6 +32,8 @@
       "name": "demo-app",
       "hosts": [
         "project.local",
+        "www.project.test",
+        "project.test",
         "localhost",
         "127.0.0.1"
       ],
@@ -38,7 +43,10 @@
       "upstreams": [
         {
           "url": "http://origin:9000",
-          "insecure_skip_verify": false
+          "insecure_skip_verify": false,
+          "name": "origin-1",
+          "weight": 1,
+          "priority": 1
         }
       ],
       "proxy": {
@@ -85,6 +93,11 @@
         "healthy_statuses": [
           200
         ]
+      },
+      "load_balancing": {
+        "algorithm": "round_robin",
+        "latency_sensitivity": 1,
+        "ewma_alpha": 0.25
       }
     }
   ]

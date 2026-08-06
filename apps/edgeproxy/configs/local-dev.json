@@ -38,7 +38,10 @@
       "upstreams": [
         {
           "url": "http://127.0.0.1:9000",
-          "insecure_skip_verify": false
+          "insecure_skip_verify": false,
+          "name": "origin-1",
+          "weight": 1,
+          "priority": 1
         }
       ],
       "proxy": {
@@ -85,6 +88,11 @@
         "healthy_statuses": [
           200
         ]
+      },
+      "load_balancing": {
+        "algorithm": "round_robin",
+        "latency_sensitivity": 1,
+        "ewma_alpha": 0.25
       }
     }
   ]

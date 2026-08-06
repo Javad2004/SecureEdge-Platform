@@ -5,10 +5,14 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"math"
+	"math/bits"
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -16,15 +20,45 @@ import (
 )
 
 type upstream struct {
-	url       *url.URL
-	healthy   atomic.Bool
-	transport *http.Transport
+	name             string
+	url              *url.URL
+	weight           int
+	priority         int
+	healthy          atomic.Bool
+	active           atomic.Int64
+	selections       atomic.Uint64
+	healthFailures   atomic.Uint64
+	healthRecoveries atomic.Uint64
+	ewmaBits         atomic.Uint64
+	currentWeight    int64
+	transport        *http.Transport
+}
+
+func (u *upstream) ewmaMS() float64 { return math.Float64frombits(u.ewmaBits.Load()) }
+func (u *upstream) observeLatency(duration time.Duration, alpha float64) {
+	value := float64(duration) / float64(time.Millisecond)
+	for {
+		oldBits := u.ewmaBits.Load()
+		old := math.Float64frombits(oldBits)
+		next := value
+		if old > 0 {
+			next = alpha*value + (1-alpha)*old
+		}
+		if u.ewmaBits.CompareAndSwap(oldBits, math.Float64bits(next)) {
+			return
+		}
+	}
 }
 
 type upstreamPool struct {
-	nodes      []*upstream
-	next       atomic.Uint64
-	healthHost string
+	nodes       []*upstream
+	next        atomic.Uint64
+	randomState atomic.Uint64
+	mu          sync.Mutex
+	healthHost  string
+	algorithm   string
+	sensitivity float64
+	ewmaAlpha   float64
 }
 
 type healthChange struct {
@@ -36,14 +70,19 @@ type healthChange struct {
 }
 
 func newUpstreamPool(route config.RouteConfig) (*upstreamPool, error) {
-	pool := &upstreamPool{healthHost: healthCheckHost(route)}
+	pool := &upstreamPool{
+		healthHost:  healthCheckHost(route),
+		algorithm:   route.LoadBalancing.Algorithm,
+		sensitivity: route.LoadBalancing.LatencySensitivity,
+		ewmaAlpha:   route.LoadBalancing.EWMAAlpha,
+	}
+	pool.randomState.Store(uint64(time.Now().UnixNano()) ^ uint64(len(route.Name))*0x9e3779b97f4a7c15)
 	for _, raw := range route.Upstreams {
 		parsed, err := url.Parse(raw.URL)
 		if err != nil {
 			return nil, fmt.Errorf("parse upstream %q: %w", raw.URL, err)
 		}
 		tr := &http.Transport{
-			// Origin traffic is an internal data-plane hop; never inherit ambient proxy settings.
 			Proxy:                  nil,
 			DialContext:            (&netDialer{timeout: route.Proxy.DialTimeout.Duration}).DialContext,
 			ForceAttemptHTTP2:      true,
@@ -53,12 +92,9 @@ func newUpstreamPool(route config.RouteConfig) (*upstreamPool, error) {
 			ResponseHeaderTimeout:  route.Proxy.ResponseHeaderTimeout.Duration,
 			MaxResponseHeaderBytes: route.Proxy.MaxResponseHeaderBytes,
 			DisableCompression:     true,
-			TLSClientConfig:        &tls.Config{InsecureSkipVerify: raw.InsecureSkipVerify}, //nolint:gosec -- explicit per-upstream demo option
+			TLSClientConfig:        &tls.Config{InsecureSkipVerify: raw.InsecureSkipVerify}, //nolint:gosec -- explicit per-upstream option
 		}
-		node := &upstream{url: parsed, transport: tr}
-		// With active health checks enabled, begin in an unknown/not-ready state
-		// until the immediate first probe succeeds. Routes without health checks
-		// remain optimistic and recover through real request attempts.
+		node := &upstream{name: raw.Name, url: parsed, weight: raw.Weight, priority: raw.Priority, transport: tr}
 		node.healthy.Store(!route.HealthCheck.Enabled)
 		pool.nodes = append(pool.nodes, node)
 	}
@@ -66,38 +102,151 @@ func newUpstreamPool(route config.RouteConfig) (*upstreamPool, error) {
 }
 
 func (p *upstreamPool) pick(exclude map[*upstream]bool) *upstream {
-	n := len(p.nodes)
-	if n == 0 {
+	candidates := p.eligible(exclude, true)
+	if len(candidates) == 0 {
+		candidates = p.eligible(exclude, false)
+	}
+	if len(candidates) == 0 {
+		// Every origin may have been attempted already. Preserve configured retry
+		// semantics by allowing another cycle through currently healthy origins.
+		candidates = p.eligible(nil, true)
+		if len(candidates) == 0 {
+			candidates = append(candidates, p.nodes...)
+		}
+	}
+	if len(candidates) == 0 {
 		return nil
 	}
-	start := int(p.next.Add(1)-1) % n
-	for i := 0; i < n; i++ {
-		node := p.nodes[(start+i)%n]
-		if exclude[node] {
+
+	var selected *upstream
+	switch p.algorithm {
+	case "weighted_round_robin":
+		selected = p.pickSmoothWeighted(candidates, false)
+	case "least_connections":
+		selected = p.pickLeastConnections(candidates)
+	case "priority_failover":
+		selected = p.pickPriority(candidates)
+	case "adaptive_latency":
+		selected = p.pickAdaptive(candidates)
+	case "random_weighted":
+		selected = p.pickRandomWeighted(candidates)
+	default:
+		selected = p.pickRoundRobin(candidates)
+	}
+	if selected != nil {
+		selected.selections.Add(1)
+		selected.active.Add(1)
+	}
+	return selected
+}
+
+func (p *upstreamPool) release(node *upstream, duration time.Duration) {
+	if node == nil {
+		return
+	}
+	node.observeLatency(duration, p.ewmaAlpha)
+	node.active.Add(-1)
+}
+
+func (p *upstreamPool) eligible(exclude map[*upstream]bool, healthyOnly bool) []*upstream {
+	out := make([]*upstream, 0, len(p.nodes))
+	for _, node := range p.nodes {
+		if exclude != nil && exclude[node] {
 			continue
 		}
-		if node.healthy.Load() {
-			return node
+		if healthyOnly && !node.healthy.Load() {
+			continue
+		}
+		out = append(out, node)
+	}
+	return out
+}
+
+func (p *upstreamPool) pickRoundRobin(candidates []*upstream) *upstream {
+	return candidates[int(p.next.Add(1)-1)%len(candidates)]
+}
+
+func (p *upstreamPool) pickSmoothWeighted(candidates []*upstream, latencyAdjusted bool) *upstream {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var selected *upstream
+	var total int64
+	for _, node := range candidates {
+		weight := int64(node.weight)
+		if latencyAdjusted {
+			latency := math.Max(node.ewmaMS(), 0.25)
+			penalty := math.Pow(latency, p.sensitivity) * float64(node.active.Load()+1)
+			weight = int64(math.Max(1, float64(node.weight)*1_000_000/penalty))
+		}
+		node.currentWeight += weight
+		total += weight
+		if selected == nil || node.currentWeight > selected.currentWeight {
+			selected = node
 		}
 	}
-	// If every non-excluded origin is currently marked unhealthy, still attempt one.
-	// This allows automatic recovery even between active health-check intervals.
-	for i := 0; i < n; i++ {
-		node := p.nodes[(start+i)%n]
-		if !exclude[node] {
-			return node
+	if selected != nil {
+		selected.currentWeight -= total
+	}
+	return selected
+}
+
+func (p *upstreamPool) pickLeastConnections(candidates []*upstream) *upstream {
+	best := candidates[0]
+	for _, node := range candidates[1:] {
+		left := float64(node.active.Load()+1) / float64(node.weight)
+		right := float64(best.active.Load()+1) / float64(best.weight)
+		if left < right || (left == right && node.priority < best.priority) {
+			best = node
 		}
 	}
-	// All origins have already been attempted. When retry_count exceeds the number
-	// of origins (or only one origin exists), cycle again rather than abandoning
-	// a configured retry.
-	for i := 0; i < n; i++ {
-		node := p.nodes[(start+i)%n]
-		if node.healthy.Load() {
-			return node
+	return best
+}
+
+func (p *upstreamPool) pickPriority(candidates []*upstream) *upstream {
+	minimum := candidates[0].priority
+	for _, node := range candidates[1:] {
+		if node.priority < minimum {
+			minimum = node.priority
 		}
 	}
-	return p.nodes[start]
+	group := make([]*upstream, 0, len(candidates))
+	for _, node := range candidates {
+		if node.priority == minimum {
+			group = append(group, node)
+		}
+	}
+	if len(group) == 1 {
+		return group[0]
+	}
+	return p.pickSmoothWeighted(group, false)
+}
+
+func (p *upstreamPool) pickAdaptive(candidates []*upstream) *upstream {
+	// Smooth weighted selection keeps the configured traffic ratio while the
+	// dynamic weight penalizes slow and busy origins using EWMA latency.
+	return p.pickSmoothWeighted(candidates, true)
+}
+
+func (p *upstreamPool) pickRandomWeighted(candidates []*upstream) *upstream {
+	total := uint64(0)
+	for _, node := range candidates {
+		total += uint64(node.weight)
+	}
+	if total == 0 {
+		return candidates[0]
+	}
+	x := p.randomState.Add(0x9e3779b97f4a7c15)
+	x ^= bits.RotateLeft64(x, 17)
+	x *= 0xbf58476d1ce4e5b9
+	pick := x % total
+	for _, node := range candidates {
+		w := uint64(node.weight)
+		if pick < w {
+			return node
+		}
+		pick -= w
+	}
+	return candidates[len(candidates)-1]
 }
 
 func (p *upstreamPool) hasHealthy() bool {
@@ -118,9 +267,21 @@ func (p *upstreamPool) closeIdleConnections() {
 func (p *upstreamPool) healthSnapshot() []map[string]any {
 	out := make([]map[string]any, 0, len(p.nodes))
 	for _, node := range p.nodes {
-		out = append(out, map[string]any{"url": node.url.String(), "healthy": node.healthy.Load()})
+		out = append(out, map[string]any{
+			"name": node.name, "url": node.url.String(), "healthy": node.healthy.Load(),
+			"weight": node.weight, "priority": node.priority, "active_requests": node.active.Load(),
+			"scheduler_selections": node.selections.Load(), "health_failures": node.healthFailures.Load(),
+			"health_recoveries": node.healthRecoveries.Load(), "ewma_latency_ms": node.ewmaMS(),
+		})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i]["url"].(string) < out[j]["url"].(string) })
 	return out
+}
+
+func (p *upstreamPool) schedulerSnapshot() map[string]any {
+	return map[string]any{
+		"algorithm": p.algorithm, "latency_sensitivity": p.sensitivity, "ewma_alpha": p.ewmaAlpha,
+	}
 }
 
 func (p *upstreamPool) runHealthChecks(ctx context.Context, cfg config.HealthCheckConfig, onChange func(healthChange)) {
@@ -144,13 +305,7 @@ func (p *upstreamPool) runHealthChecks(ctx context.Context, cfg config.HealthChe
 			if p.healthHost != "" {
 				req.Host = p.healthHost
 			}
-			client := &http.Client{
-				Transport: node.transport,
-				Timeout:   cfg.Timeout.Duration,
-				CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-					return http.ErrUseLastResponse
-				},
-			}
+			client := &http.Client{Transport: node.transport, Timeout: cfg.Timeout.Duration, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 			resp, err := client.Do(req)
 			elapsed := time.Since(started)
 			if err != nil {
@@ -179,10 +334,6 @@ func (p *upstreamPool) runHealthChecks(ctx context.Context, cfg config.HealthChe
 	}
 }
 
-// healthCheckHost returns a representative public Host value for active
-// checks when normal proxy traffic preserves the incoming Host header. This
-// keeps virtual-hosted origins from being marked unhealthy merely because the
-// probe connected through an internal IP address or service name.
 func healthCheckHost(route config.RouteConfig) string {
 	if !route.PreserveHost {
 		return ""
@@ -209,7 +360,14 @@ func healthCheckHost(route config.RouteConfig) string {
 
 func setNodeHealth(node *upstream, healthy bool, change healthChange, onChange func(healthChange)) {
 	previous := node.healthy.Swap(healthy)
-	if previous != healthy && onChange != nil {
-		onChange(change)
+	if previous != healthy {
+		if healthy {
+			node.healthRecoveries.Add(1)
+		} else {
+			node.healthFailures.Add(1)
+		}
+		if onChange != nil {
+			onChange(change)
+		}
 	}
 }

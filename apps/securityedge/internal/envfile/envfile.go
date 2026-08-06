@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode/utf8"
 )
 
@@ -18,13 +19,12 @@ const (
 	applicationModulePath       = "github.com/Javad2004/SecureEdge-Platform/apps/securityedge"
 )
 
-var keyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var (
+	keyPattern    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	managedMu     sync.Mutex
+	managedValues = map[string]string{}
+)
 
-// ApplicationCandidates returns the repository-relative application dotenv
-// path and adds a local .env candidate only when the current working directory
-// is the matching Go module. This keeps per-application dotenv discovery
-// working from either the repository root or the application directory without
-// treating an unrelated repository-root .env as shared configuration.
 func ApplicationCandidates(repositoryPath string) []string {
 	candidates := []string{repositoryPath}
 	if currentModulePath() == applicationModulePath {
@@ -47,14 +47,13 @@ func currentModulePath() string {
 	return ""
 }
 
-// Load loads an explicitly selected dotenv file, or the first existing file
-// from candidates. Existing process environment variables are never
-// overwritten, so deployment-level environment settings take precedence over
-// local dotenv values. A missing auto-discovered file is not an error.
+// Load loads the selected dotenv file without overriding deployment-provided
+// process variables. Values set by this package are tracked so Reload can
+// transactionally replace them when the watched file changes.
 func Load(explicit string, candidates ...string) (string, error) {
 	explicit = strings.TrimSpace(explicit)
 	if explicit != "" {
-		if err := loadFile(explicit); err != nil {
+		if err := loadFile(explicit, false); err != nil {
 			return "", fmt.Errorf("load environment file %q: %w", explicit, err)
 		}
 		return explicit, nil
@@ -74,7 +73,7 @@ func Load(explicit string, candidates ...string) (string, error) {
 		if !info.Mode().IsRegular() {
 			return "", fmt.Errorf("environment path %q is not a regular file", candidate)
 		}
-		if err := loadFile(candidate); err != nil {
+		if err := loadFile(candidate, false); err != nil {
 			return "", fmt.Errorf("load environment file %q: %w", candidate, err)
 		}
 		return candidate, nil
@@ -82,40 +81,111 @@ func Load(explicit string, candidates ...string) (string, error) {
 	return "", nil
 }
 
-func loadFile(path string) error {
-	file, err := os.Open(path)
+// Reload atomically replaces only variables previously managed by this
+// package. Deployment-level environment variables remain authoritative.
+func Reload(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	if err := loadFile(path, true); err != nil {
+		return fmt.Errorf("reload environment file %q: %w", path, err)
+	}
+	return nil
+}
+
+func loadFile(path string, reload bool) error {
+	values, err := readValues(path)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	managedMu.Lock()
+	defer managedMu.Unlock()
 
+	previousManaged := make(map[string]string, len(managedValues))
+	for key, value := range managedValues {
+		previousManaged[key] = value
+	}
+	previousEnv := map[string]*string{}
+	record := func(key string) {
+		if _, exists := previousEnv[key]; exists {
+			return
+		}
+		if value, exists := os.LookupEnv(key); exists {
+			v := value
+			previousEnv[key] = &v
+		} else {
+			previousEnv[key] = nil
+		}
+	}
+	rollback := func() {
+		for key, value := range previousEnv {
+			if value == nil {
+				_ = os.Unsetenv(key)
+			} else {
+				_ = os.Setenv(key, *value)
+			}
+		}
+		managedValues = previousManaged
+	}
+
+	if reload {
+		for key := range managedValues {
+			if _, keep := values[key]; keep {
+				continue
+			}
+			record(key)
+			if err := os.Unsetenv(key); err != nil {
+				rollback()
+				return fmt.Errorf("unset %s: %w", key, err)
+			}
+			delete(managedValues, key)
+		}
+	}
+	for key, value := range values {
+		_, alreadyManaged := managedValues[key]
+		if !alreadyManaged {
+			if _, exists := os.LookupEnv(key); exists {
+				continue
+			}
+		}
+		record(key)
+		if err := os.Setenv(key, value); err != nil {
+			rollback()
+			return fmt.Errorf("set %s: %w", key, err)
+		}
+		managedValues[key] = value
+	}
+	return nil
+}
+
+func readValues(path string) (map[string]string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return fmt.Errorf("stat file: %w", err)
+		return nil, fmt.Errorf("stat file: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return errors.New("environment path is not a regular file")
+		return nil, errors.New("environment path is not a regular file")
 	}
 	if info.Size() > maxFileBytes {
-		return fmt.Errorf("environment file exceeds the %d-byte safety limit", maxFileBytes)
+		return nil, fmt.Errorf("environment file exceeds the %d-byte safety limit", maxFileBytes)
 	}
-
 	data, err := io.ReadAll(io.LimitReader(file, maxFileBytes+1))
 	if err != nil {
-		return fmt.Errorf("read file: %w", err)
+		return nil, fmt.Errorf("read file: %w", err)
 	}
 	if int64(len(data)) > maxFileBytes {
-		return fmt.Errorf("environment file exceeds the %d-byte safety limit", maxFileBytes)
+		return nil, fmt.Errorf("environment file exceeds the %d-byte safety limit", maxFileBytes)
 	}
 	if !utf8.Valid(data) {
-		return errors.New("environment file must be valid UTF-8")
+		return nil, errors.New("environment file must be valid UTF-8")
 	}
-
 	values := make(map[string]string)
 	scanner := bufio.NewScanner(bytes.NewReader(data))
-	// Scanner requires room beyond the token itself for boundary detection.
-	// The file-size check already caps total input, so one extra byte lets a
-	// valid file whose final line reaches the exact 1 MiB limit be accepted.
 	scanner.Buffer(make([]byte, 4096), int(maxFileBytes)+1)
 	lineNumber := 0
 	for scanner.Scan() {
@@ -126,25 +196,16 @@ func loadFile(path string) error {
 		}
 		key, value, ok, err := parseLine(line)
 		if err != nil {
-			return fmt.Errorf("line %d: %w", lineNumber, err)
+			return nil, fmt.Errorf("line %d: %w", lineNumber, err)
 		}
 		if ok {
 			values[key] = value
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return err
+		return nil, err
 	}
-
-	for key, value := range values {
-		if _, exists := os.LookupEnv(key); exists {
-			continue
-		}
-		if err := os.Setenv(key, value); err != nil {
-			return fmt.Errorf("set %s: %w", key, err)
-		}
-	}
-	return nil
+	return values, nil
 }
 
 func parseLine(raw string) (key, value string, ok bool, err error) {

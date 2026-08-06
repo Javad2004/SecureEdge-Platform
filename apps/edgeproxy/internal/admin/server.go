@@ -15,21 +15,27 @@ import (
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/accesslog"
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/control"
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/metrics"
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/proxy"
 )
 
 type Server struct {
-	cfg     config.AdminConfig
-	logger  *slog.Logger
-	metrics *metrics.Registry
-	proxy   *proxy.Handler
-	logs    *accesslog.Store
-	http    *http.Server
+	cfg        config.AdminConfig
+	logger     *slog.Logger
+	metrics    *metrics.Registry
+	proxy      *proxy.Handler
+	logs       *accesslog.Store
+	controller *control.Manager
+	http       *http.Server
 }
 
-func New(cfg config.AdminConfig, logger *slog.Logger, registry *metrics.Registry, handler *proxy.Handler, logStore *accesslog.Store) *Server {
-	s := &Server{cfg: cfg, logger: logger, metrics: registry, proxy: handler, logs: logStore}
+func New(cfg config.AdminConfig, logger *slog.Logger, registry *metrics.Registry, handler *proxy.Handler, logStore *accesslog.Store, controllers ...*control.Manager) *Server {
+	var controller *control.Manager
+	if len(controllers) > 0 {
+		controller = controllers[0]
+	}
+	s := &Server{cfg: cfg, logger: logger, metrics: registry, proxy: handler, logs: logStore, controller: controller}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.ready)
@@ -38,6 +44,22 @@ func New(cfg config.AdminConfig, logger *slog.Logger, registry *metrics.Registry
 	mux.HandleFunc("GET /api/v1/logs", s.auth(s.logsHandler))
 	mux.HandleFunc("DELETE /api/v1/logs", s.auth(s.clearLogsHandler))
 	mux.HandleFunc("POST /api/v1/cache/purge", s.auth(s.purgeHandler))
+	if controller != nil {
+		mux.HandleFunc("GET /api/v1/config", s.auth(s.configGet))
+		mux.HandleFunc("PUT /api/v1/config", s.auth(s.configReplace))
+		mux.HandleFunc("POST /api/v1/config/reload", s.auth(s.configReload))
+		mux.HandleFunc("GET /api/v1/config/watch", s.auth(s.configWatch))
+		mux.HandleFunc("GET /api/v1/routes", s.auth(s.routesList))
+		mux.HandleFunc("POST /api/v1/routes", s.auth(s.routesCreate))
+		mux.HandleFunc("GET /api/v1/routes/{route}", s.auth(s.routeGet))
+		mux.HandleFunc("PUT /api/v1/routes/{route}", s.auth(s.routeUpdate))
+		mux.HandleFunc("DELETE /api/v1/routes/{route}", s.auth(s.routeDelete))
+		mux.HandleFunc("GET /api/v1/routes/{route}/origins", s.auth(s.originsList))
+		mux.HandleFunc("POST /api/v1/routes/{route}/origins", s.auth(s.originsCreate))
+		mux.HandleFunc("GET /api/v1/routes/{route}/origins/{origin}", s.auth(s.originGet))
+		mux.HandleFunc("PUT /api/v1/routes/{route}/origins/{origin}", s.auth(s.originUpdate))
+		mux.HandleFunc("DELETE /api/v1/routes/{route}/origins/{origin}", s.auth(s.originDelete))
+	}
 	s.http = &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           mux,

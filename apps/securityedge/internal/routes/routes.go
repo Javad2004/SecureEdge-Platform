@@ -46,10 +46,11 @@ func Load(path string) (*Table, error) {
 		if cfg.Routes[i].Name == "" || len(cfg.Routes[i].Hosts) == 0 {
 			return nil, fmt.Errorf("edgeproxy route %d is incomplete", i)
 		}
-		if seenNames[cfg.Routes[i].Name] {
-			return nil, fmt.Errorf("edgeproxy route name %q is duplicated", cfg.Routes[i].Name)
+		nameKey := strings.ToLower(cfg.Routes[i].Name)
+		if seenNames[nameKey] {
+			return nil, fmt.Errorf("edgeproxy route name %q is duplicated (route names are case-insensitive)", cfg.Routes[i].Name)
 		}
-		seenNames[cfg.Routes[i].Name] = true
+		seenNames[nameKey] = true
 		hosts := make([]string, 0, len(cfg.Routes[i].Hosts))
 		seenHosts := map[string]bool{}
 		for _, raw := range cfg.Routes[i].Hosts {

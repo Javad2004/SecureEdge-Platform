@@ -1028,3 +1028,99 @@ canvas {
   background:var(--danger);
   box-shadow:0 0 0 5px rgba(255,113,136,.12)
 }
+
+/* Unified control-plane workspace */
+.control-kpis {
+  display:grid;
+  grid-template-columns:repeat(4,minmax(180px,1fr));
+  gap:14px;
+  margin-bottom:18px
+}
+.control-kpis strong.ready { color:var(--accent) }
+.control-kpis strong.warn { color:var(--warn) }
+.control-kpis strong.error { color:var(--danger) }
+.control-toolbar {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:24px;
+  padding:20px 22px;
+  margin-bottom:18px
+}
+.control-toolbar h2 { margin:4px 0 6px }
+.control-toolbar p:last-child { margin:0; color:var(--muted); max-width:760px; line-height:1.55 }
+.managed-route { padding:20px }
+.managed-route .route-head { align-items:flex-start }
+.managed-route .route-head p { margin:5px 0 0; color:var(--muted); font-size:11px; overflow-wrap:anywhere }
+.scheduler-banner {
+  display:grid;
+  grid-template-columns:auto 1fr auto;
+  align-items:center;
+  gap:10px;
+  margin:15px 0;
+  padding:11px 13px;
+  border:1px solid rgba(98,213,179,.22);
+  border-radius:10px;
+  background:rgba(98,213,179,.06)
+}
+.scheduler-banner span,.scheduler-banner small { color:var(--muted); font-size:10px }
+.scheduler-banner strong { color:var(--accent); font-size:12px }
+.route-actions { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:18px }
+.compact-button { padding:5px 8px; border-radius:7px; font-size:10px }
+.managed-origin { align-items:center; gap:12px }
+.managed-origin > div:first-child { min-width:0; flex:1 }
+.managed-origin strong,.managed-origin small { display:block }
+.managed-origin small { margin-top:3px; color:var(--muted); font-size:10px; overflow-wrap:anywhere }
+.origin-state { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; color:var(--muted); font-size:10px }
+.telemetry-panel { margin-bottom:18px }
+.table-subline { display:block; margin-top:4px; color:var(--muted) }
+.config-editor-grid .panel { min-width:0 }
+.code-editor {
+  width:100%;
+  min-height:430px;
+  resize:vertical;
+  border:1px solid var(--border);
+  border-radius:10px;
+  outline:none;
+  background:#09101d;
+  color:#cce3ff;
+  padding:15px;
+  font:11px/1.55 ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;
+  tab-size:2
+}
+.code-editor:focus { border-color:var(--accent2); box-shadow:0 0 0 3px rgba(103,166,255,.1) }
+.editor-dialog {
+  width:min(760px,calc(100vw - 32px));
+  max-height:calc(100vh - 40px);
+  border:1px solid var(--border);
+  border-radius:16px;
+  padding:0;
+  background:linear-gradient(180deg,#172239,#10182a);
+  color:var(--text);
+  box-shadow:0 30px 90px rgba(0,0,0,.6)
+}
+.editor-dialog::backdrop { background:rgba(2,7,16,.78); backdrop-filter:blur(5px) }
+.editor-form { padding:23px }
+.dialog-head,.dialog-actions { display:flex; align-items:center; justify-content:space-between; gap:14px }
+.dialog-head { margin-bottom:20px }
+.dialog-head h2 { margin:4px 0 0 }
+.dialog-actions { justify-content:flex-end; margin-top:20px }
+.icon-button { width:38px; height:38px; padding:0; font-size:24px; line-height:1 }
+.editor-form > label,.editor-form .form-grid > label { display:grid; gap:7px; color:var(--muted); font-size:11px }
+.editor-form input,.editor-form select {
+  width:100%; border:1px solid var(--border); border-radius:8px; background:#0b1425; color:var(--text); padding:10px 11px
+}
+.editor-form input:focus,.editor-form select:focus { outline:none; border-color:var(--accent2) }
+.editor-form input[readonly] { color:#8d9ab2; background:#0d1524 }
+.switch-row.compact { align-self:end; min-height:39px }
+@media(max-width:1100px) {
+  .control-kpis { grid-template-columns:repeat(2,minmax(0,1fr)) }
+  .config-editor-grid { grid-template-columns:1fr!important }
+}
+@media(max-width:700px) {
+  .control-kpis { grid-template-columns:1fr }
+  .control-toolbar { align-items:flex-start; flex-direction:column }
+  .control-toolbar .top-actions { width:100%; flex-wrap:wrap }
+  .scheduler-banner { grid-template-columns:1fr }
+  .origin-state { justify-content:flex-start }
+}

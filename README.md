@@ -4,8 +4,8 @@ SecureEdge Platform is a modular, multi-module Go project that combines a high-p
 
 The repository contains two independently executable applications:
 
-- **[EdgeProxy](apps/edgeproxy/README.md)** — host/path routing, reverse proxying, origin health, retries, HTTP caching, access logs, metrics, and an authenticated Admin API.
-- **[SecurityEdge](apps/securityedge/README.md)** — Web Application Firewall inspection, HTTP flood and overload controls, security telemetry, dependency monitoring, and an operations dashboard placed in front of EdgeProxy.
+- **[EdgeProxy](apps/edgeproxy/README.md)** — host/path routing, six per-route load-balancing algorithms, health-aware failover, reverse proxying, HTTP caching, detailed telemetry, automatic reload/restart, and a transactional Admin Control Plane.
+- **[SecurityEdge](apps/securityedge/README.md)** — Web Application Firewall inspection, HTTP flood and overload controls, security telemetry, independent configuration watchers, and an authenticated operations/control dashboard placed in front of EdgeProxy.
 
 The active runtime model uses **standalone non-embedded gateway mode**. SecurityEdge accepts public HTTP traffic, inspects and admits each request, and forwards accepted traffic to EdgeProxy over loopback in host deployments or over a private service network in Docker Compose.
 
@@ -53,6 +53,16 @@ SecurityEdge dashboard     127.0.0.1:9191   local operations access
 ```
 
 Each application has its own `go.mod`, tests, configuration files, scripts, Dockerfile, Makefile, and README.
+
+## Managed operations
+
+The platform can be administered without manually stopping either executable:
+
+- EdgeProxy watches its JSON profile and `.env`, hot-applies data-plane changes, and gracefully restarts listener generations for process-owned changes.
+- SecurityEdge independently watches its own JSON, the shared EdgeProxy Route table, and `.env`; Route changes never trigger an unnecessary SecurityEdge listener restart.
+- Authenticated APIs and PowerShell tools provide full configuration replacement plus Route, Origin, and security-policy CRUD.
+- The Dashboard exposes the same Control Plane and shows per-route cache/latency/request telemetry, per-Origin health/weight/priority/EWMA/active work, and watcher/revision state.
+- Atomic persistence, timestamped backups, strict JSON validation, redacted secrets, and last-known-good runtime behavior protect management operations.
 
 ## Requirements
 
@@ -349,7 +359,7 @@ docker compose `
   down -v
 ```
 
-SecurityEdge stores its mutable policy configuration and rotated NDJSON logs in named Docker volumes. Environment-provided tokens and endpoint overrides take precedence at runtime and are never written back by policy updates.
+The full stack stores EdgeProxy configuration, SecurityEdge configuration, and rotated SecurityEdge NDJSON logs in named Docker volumes. SecurityEdge receives the same EdgeProxy volume read-only, so Dashboard/API Route changes are atomically persisted once and observed by both services without copying files. Environment-provided tokens and endpoint overrides take precedence at runtime and are never written into persisted JSON.
 
 ### Build the SecurityEdge image directly
 

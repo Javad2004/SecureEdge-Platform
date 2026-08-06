@@ -64,14 +64,17 @@ Token:  the SECURITYEDGE_ADMIN_TOKEN value from deployments/docker/.env
 
 ## Persistent state
 
-Two named volumes are used:
+Three named volumes are used:
 
 ```text
-securityedge-config   mutable SecurityEdge policy configuration
+edgeproxy-config      mutable shared EdgeProxy routes, Origins, and scheduler configuration
+securityedge-config   mutable SecurityEdge policy and gateway configuration
 securityedge-logs     rotated SecurityEdge NDJSON event logs
 ```
 
-The image initializes `securityedge-config` with the container profile on first creation. Dashboard policy changes are atomically written to this volume. Rebuilding the image does not overwrite an existing configuration volume. Values injected from the Compose `.env` remain runtime-only and are not written into the persisted JSON.
+The EdgeProxy image initializes `/app/config/config.json` on first creation and mounts the directory read-write so atomic rename and timestamped backups remain valid. SecurityEdge mounts the same volume read-only at `/edgeproxy-config` and receives `SECURITYEDGE_EDGEPROXY_CONFIG_PATH=/edgeproxy-config/config.json`; both watchers therefore observe one authoritative Route table. The SecurityEdge image initializes its own configuration volume separately.
+
+Dashboard/API changes are atomically written to the corresponding configuration volume. Rebuilding images does not overwrite existing volume data. Values injected from the Compose `.env` remain runtime-only and are not written into persisted JSON.
 
 To stop services while retaining state:
 
@@ -97,7 +100,7 @@ The deployment:
 
 - runs all application processes as non-root users;
 - uses read-only root filesystems;
-- provides writable volumes only for SecurityEdge configuration and logs;
+- provides narrowly scoped writable volumes for EdgeProxy configuration, SecurityEdge configuration, and SecurityEdge logs;
 - drops all Linux capabilities;
 - enables `no-new-privileges`;
 - keeps EdgeProxy and Origin unpublished from the host;
@@ -131,4 +134,4 @@ The checked-in stack is a hardened project demonstration, not a complete Interne
 - define resource limits appropriate to the host;
 - export logs and metrics to managed observability systems;
 - use an external application Origin instead of the included demo Origin;
-- test backup and restore of the SecurityEdge configuration volume.
+- test backup and restore of both configuration volumes and the SecurityEdge log volume.

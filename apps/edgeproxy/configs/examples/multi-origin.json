@@ -40,15 +40,24 @@
       "upstreams": [
         {
           "url": "http://10.36.74.43:9000",
-          "insecure_skip_verify": false
+          "insecure_skip_verify": false,
+          "name": "origin-1",
+          "weight": 1,
+          "priority": 1
         },
         {
           "url": "http://10.36.74.44:9000",
-          "insecure_skip_verify": false
+          "insecure_skip_verify": false,
+          "name": "origin-2",
+          "weight": 1,
+          "priority": 2
         },
         {
           "url": "http://10.36.74.45:9000",
-          "insecure_skip_verify": false
+          "insecure_skip_verify": false,
+          "name": "origin-3",
+          "weight": 1,
+          "priority": 3
         }
       ],
       "proxy": {
@@ -95,6 +104,11 @@
         "healthy_statuses": [
           200
         ]
+      },
+      "load_balancing": {
+        "algorithm": "round_robin",
+        "latency_sensitivity": 1,
+        "ewma_alpha": 0.25
       }
     }
   ]

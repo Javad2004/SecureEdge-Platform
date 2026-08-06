@@ -65,7 +65,7 @@ func main() {
 		fmt.Println("configuration is valid")
 		return
 	}
-	if err := server.Run(cfg, logger); err != nil {
+	if err := server.RunManaged(configPath, loadedEnv, cfg, logger); err != nil {
 		logger.Error("server stopped with error", "error", err)
 		os.Exit(1)
 	}

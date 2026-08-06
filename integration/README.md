@@ -23,7 +23,7 @@ SecurityEdge and EdgeProxy run as separate processes on the gateway host. EdgePr
 Host client → SecurityEdge container → EdgeProxy container → Origin container
 ```
 
-All services share a private Docker network. Only SecurityEdge ingress and its loopback-bound host dashboard port are published. EdgeProxy and the Origin remain internal services.
+All services share a private Docker network. Only SecurityEdge ingress and its loopback-bound host dashboard port are published. EdgeProxy and the Origin remain internal services. A named configuration volume is writable only by EdgeProxy and mounted read-only by SecurityEdge for synchronized Route-table watching.
 
 ## Integration files
 
@@ -79,14 +79,13 @@ After the patch is applied, the EdgeProxy command loads `apps/edgeproxy/.env` an
 | `apps/securityedge/configs/compose.json` | `integration/edgeproxy-compose-behind-waf.json` | Full-platform Docker Compose |
 | `apps/securityedge/configs/embedded.json` | `integration/edgeproxy-local-behind-waf.json` | Optional embedded experiment |
 
-SecurityEdge resolves `edgeproxy.config_path` relative to the directory containing its own JSON configuration. The checked-in `../../../integration/...` values therefore work both in the source tree and after the Compose profile is copied to `/app/config/securityedge.json` inside the image:
+SecurityEdge resolves `edgeproxy.config_path` relative to the directory containing its own JSON configuration. The checked-in `../../../integration/...` values are the source-tree defaults:
 
 ```text
 Source tree: /repository/apps/securityedge/configs + ../../../integration = /repository/integration
-Container:   /app/config                         + ../../../integration = /integration
 ```
 
-Do not rewrite these values as paths relative to the shell's working directory.
+The full-platform Compose deployment intentionally overrides this value with `SECURITYEDGE_EDGEPROXY_CONFIG_PATH=/edgeproxy-config/config.json`. EdgeProxy writes that file through a named volume, while SecurityEdge mounts the same volume read-only. This arrangement preserves atomic rename and backups and ensures that both processes watch one authoritative, writable Route table. Do not rewrite host-mode values as paths relative to the shell's working directory.
 
 ## Client-address forwarding contract
 

@@ -48,6 +48,8 @@ type Runtime struct {
 	bans      *ratelimit.BanManager
 	admission *admission.Limiter
 	clients   *clientip.Resolver
+	watchMu   sync.RWMutex
+	watch     WatchStatus
 }
 
 type preparedRuntime struct {
@@ -56,6 +58,8 @@ type preparedRuntime struct {
 	edge      *edgeadmin.Client
 	inspector *waf.Inspector
 	clients   *clientip.Resolver
+	watchMu   sync.RWMutex
+	watch     WatchStatus
 }
 
 // Validate checks the complete SecurityEdge configuration, including the
@@ -157,6 +161,103 @@ func (r *Runtime) Config() config.Config {
 	defer r.mu.RUnlock()
 	return cloneConfig(r.cfg)
 }
+func (r *Runtime) RedactedConfig() config.Config {
+	cfg := r.Config()
+	if strings.TrimSpace(cfg.Admin.AuthToken) != "" {
+		cfg.Admin.AuthToken = "[REDACTED]"
+	}
+	if strings.TrimSpace(cfg.EdgeProxy.AdminToken) != "" {
+		cfg.EdgeProxy.AdminToken = "[REDACTED]"
+	}
+	return cfg
+}
+func (r *Runtime) WatchStatusMap() map[string]any {
+	status := r.WatchStatus()
+	return map[string]any{
+		"enabled": status.Enabled, "security_config": status.SecurityConfig,
+		"edgeproxy_config": status.EdgeProxyConfig, "environment_file": status.EnvironmentFile,
+		"revision": status.Revision, "applied_revision": status.AppliedRevision,
+		"restart_scheduled": status.RestartScheduled, "last_changed_file": status.LastChangedFile,
+		"last_change_at": status.LastChangeAt, "last_applied_at": status.LastAppliedAt, "last_error": status.LastError,
+	}
+}
+
+func (r *Runtime) ConfigPath() string { return r.configPath }
+func (r *Runtime) EdgeConfigPath() string {
+	r.mu.RLock()
+	edgePath := r.cfg.EdgeProxy.ConfigPath
+	r.mu.RUnlock()
+	return resolveEdgeConfigPath(r.configPath, edgePath)
+}
+
+// ReloadEdgeRoutes reloads only the shared EdgeProxy route table. It deliberately
+// does not compare SecurityEdge listener/admin fields and therefore never
+// schedules a SecurityEdge restart for a route or origin edit.
+func (r *Runtime) ReloadEdgeRoutes() error {
+	r.configMu.Lock()
+	defer r.configMu.Unlock()
+	r.mu.RLock()
+	cfg := cloneConfig(r.cfg)
+	r.mu.RUnlock()
+	table, err := routes.Load(resolveEdgeConfigPath(r.configPath, cfg.EdgeProxy.ConfigPath))
+	if err != nil {
+		return err
+	}
+	if err := validateRoutePolicies(cfg, table); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.table = table
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *Runtime) ReplaceConfig(candidate config.Config) error {
+	r.configMu.Lock()
+	defer r.configMu.Unlock()
+	fileCfg, err := config.LoadFile(r.configPath)
+	if err != nil {
+		return err
+	}
+	if candidate.Admin.AuthToken == "[REDACTED]" {
+		candidate.Admin.AuthToken = fileCfg.Admin.AuthToken
+	}
+	if candidate.EdgeProxy.AdminToken == "[REDACTED]" {
+		candidate.EdgeProxy.AdminToken = fileCfg.EdgeProxy.AdminToken
+	}
+	if err := candidate.Validate(); err != nil {
+		return err
+	}
+	runtimeCfg := cloneConfig(candidate)
+	if err := config.ApplyEnvironmentOverrides(&runtimeCfg); err != nil {
+		return err
+	}
+	r.mu.RLock()
+	current := cloneConfig(r.cfg)
+	r.mu.RUnlock()
+	if fields := restartRequiredChanges(current, runtimeCfg); len(fields) > 0 {
+		// Persist a validated restart-required revision. The file-specific
+		// watcher will observe this write and perform a graceful generation
+		// restart; route-table-only edits are handled by a different watcher.
+		if err := config.Save(r.configPath, candidate); err != nil {
+			return err
+		}
+		r.MarkRestartScheduled(r.configPath)
+		return &restartRequiredError{fields: fields}
+	}
+	prepared, err := r.prepareReload(runtimeCfg)
+	if err != nil {
+		return err
+	}
+	if err := config.Save(r.configPath, candidate); err != nil {
+		return err
+	}
+	if err := r.applyReload(prepared); err != nil {
+		rollbackErr := config.Save(r.configPath, fileCfg)
+		return errors.Join(err, rollbackErr)
+	}
+	return nil
+}
 func (r *Runtime) ServerConfig() config.ServerConfig {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -180,6 +281,11 @@ func (r *Runtime) EffectivePolicy(route string) config.Policy {
 	defer r.mu.RUnlock()
 	if p, ok := r.cfg.RoutePolicies[route]; ok {
 		return clonePolicy(p)
+	}
+	for name, policy := range r.cfg.RoutePolicies {
+		if strings.EqualFold(name, route) {
+			return clonePolicy(policy)
+		}
 	}
 	return clonePolicy(r.cfg.DefaultPolicy)
 }
@@ -220,21 +326,33 @@ func (r *Runtime) UpdateDefaultPolicy(p config.Policy) error {
 	return r.update(func(cfg *config.Config) { cfg.DefaultPolicy = p })
 }
 func (r *Runtime) UpdateRoutePolicy(route string, p config.Policy) error {
-	if !r.routeExists(route) {
+	canonical, ok := r.canonicalRouteName(route)
+	if !ok {
 		return fmt.Errorf("route %q does not exist in edgeproxy config", route)
 	}
 	return r.update(func(cfg *config.Config) {
 		if cfg.RoutePolicies == nil {
 			cfg.RoutePolicies = map[string]config.Policy{}
 		}
-		cfg.RoutePolicies[route] = p
+		for key := range cfg.RoutePolicies {
+			if strings.EqualFold(key, canonical) && key != canonical {
+				delete(cfg.RoutePolicies, key)
+			}
+		}
+		cfg.RoutePolicies[canonical] = p
 	})
 }
 func (r *Runtime) DeleteRoutePolicy(route string) error {
-	if route == "" {
+	if strings.TrimSpace(route) == "" {
 		return fmt.Errorf("route name is required")
 	}
-	return r.update(func(cfg *config.Config) { delete(cfg.RoutePolicies, route) })
+	return r.update(func(cfg *config.Config) {
+		for key := range cfg.RoutePolicies {
+			if strings.EqualFold(key, route) {
+				delete(cfg.RoutePolicies, key)
+			}
+		}
+	})
 }
 
 type restartRequiredError struct {
@@ -389,14 +507,19 @@ func restartRequiredChanges(current, next config.Config) []string {
 }
 
 func validateRoutePolicies(cfg config.Config, table *routes.Table) error {
-	known := make(map[string]struct{})
+	known := make(map[string]string)
 	for _, route := range table.Routes() {
-		known[route.Name] = struct{}{}
+		known[strings.ToLower(route.Name)] = route.Name
 	}
+	seen := make(map[string]string)
 	for name := range cfg.RoutePolicies {
-		if _, exists := known[name]; !exists {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if canonical, exists := known[key]; !exists {
 			return fmt.Errorf("route policy %q does not match any EdgeProxy route", name)
+		} else if previous, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("route policies %q and %q refer to the same case-insensitive EdgeProxy route %q", previous, name, canonical)
 		}
+		seen[key] = name
 	}
 	return nil
 }
@@ -407,13 +530,19 @@ func resolveEdgeConfigPath(securityConfigPath, edgeConfigPath string) string {
 	}
 	return filepath.Clean(filepath.Join(filepath.Dir(securityConfigPath), edgeConfigPath))
 }
-func (r *Runtime) routeExists(name string) bool {
+func (r *Runtime) canonicalRouteName(name string) (string, bool) {
+	name = strings.TrimSpace(name)
 	for _, route := range r.Routes() {
-		if route.Name == name {
-			return true
+		if strings.EqualFold(route.Name, name) {
+			return route.Name, true
 		}
 	}
-	return false
+	return "", false
+}
+
+func (r *Runtime) routeExists(name string) bool {
+	_, ok := r.canonicalRouteName(name)
+	return ok
 }
 
 func cloneConfig(in config.Config) config.Config {

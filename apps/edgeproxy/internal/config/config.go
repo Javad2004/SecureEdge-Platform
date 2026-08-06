@@ -1,11 +1,8 @@
 package config
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -62,20 +59,30 @@ type AdminLogConfig struct {
 }
 
 type RouteConfig struct {
-	Name         string            `json:"name"`
-	Hosts        []string          `json:"hosts"`
-	PathPrefix   string            `json:"path_prefix"`
-	StripPrefix  bool              `json:"strip_prefix"`
-	PreserveHost bool              `json:"preserve_host"`
-	Upstreams    []UpstreamConfig  `json:"upstreams"`
-	Proxy        ProxyConfig       `json:"proxy"`
-	Cache        CacheConfig       `json:"cache"`
-	HealthCheck  HealthCheckConfig `json:"health_check"`
+	Name          string              `json:"name"`
+	Hosts         []string            `json:"hosts"`
+	PathPrefix    string              `json:"path_prefix"`
+	StripPrefix   bool                `json:"strip_prefix"`
+	PreserveHost  bool                `json:"preserve_host"`
+	Upstreams     []UpstreamConfig    `json:"upstreams"`
+	LoadBalancing LoadBalancingConfig `json:"load_balancing"`
+	Proxy         ProxyConfig         `json:"proxy"`
+	Cache         CacheConfig         `json:"cache"`
+	HealthCheck   HealthCheckConfig   `json:"health_check"`
 }
 
 type UpstreamConfig struct {
+	Name               string `json:"name,omitempty"`
 	URL                string `json:"url"`
 	InsecureSkipVerify bool   `json:"insecure_skip_verify"`
+	Weight             int    `json:"weight,omitempty"`
+	Priority           int    `json:"priority,omitempty"`
+}
+
+type LoadBalancingConfig struct {
+	Algorithm          string  `json:"algorithm"`
+	LatencySensitivity float64 `json:"latency_sensitivity,omitempty"`
+	EWMAAlpha          float64 `json:"ewma_alpha,omitempty"`
 }
 
 type ProxyConfig struct {
@@ -114,21 +121,9 @@ type HealthCheckConfig struct {
 }
 
 func Load(path string) (Config, error) {
-	data, err := os.ReadFile(path)
+	cfg, err := LoadFile(path)
 	if err != nil {
-		return Config{}, fmt.Errorf("read config: %w", err)
-	}
-	cfg := Default()
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&cfg); err != nil {
-		return Config{}, fmt.Errorf("parse config: %w", err)
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return Config{}, errors.New("parse config: expected exactly one JSON value")
-		}
-		return Config{}, fmt.Errorf("parse config: %w", err)
+		return Config{}, err
 	}
 	if err := ApplyEnvironmentOverrides(&cfg); err != nil {
 		return Config{}, err
@@ -369,10 +364,13 @@ func (c *Config) Validate() error {
 		r.Name = strings.TrimSpace(r.Name)
 		if r.Name == "" {
 			errs = append(errs, fmt.Errorf("routes[%d].name is required", i))
-		} else if _, exists := names[r.Name]; exists {
-			errs = append(errs, fmt.Errorf("duplicate route name %q", r.Name))
 		} else {
-			names[r.Name] = struct{}{}
+			nameKey := strings.ToLower(r.Name)
+			if _, exists := names[nameKey]; exists {
+				errs = append(errs, fmt.Errorf("duplicate route name %q (route names are case-insensitive)", r.Name))
+			} else {
+				names[nameKey] = struct{}{}
+			}
 		}
 		if len(r.Hosts) == 0 {
 			errs = append(errs, fmt.Errorf("route %q requires at least one host", r.Name))
@@ -400,6 +398,27 @@ func (c *Config) Validate() error {
 		if len(r.Upstreams) == 0 {
 			errs = append(errs, fmt.Errorf("route %q requires at least one upstream", r.Name))
 		}
+		r.LoadBalancing.Algorithm = strings.ToLower(strings.TrimSpace(r.LoadBalancing.Algorithm))
+		if r.LoadBalancing.Algorithm == "" {
+			r.LoadBalancing.Algorithm = "round_robin"
+		}
+		switch r.LoadBalancing.Algorithm {
+		case "round_robin", "weighted_round_robin", "least_connections", "priority_failover", "adaptive_latency", "random_weighted":
+		default:
+			errs = append(errs, fmt.Errorf("route %q load_balancing.algorithm %q is not supported", r.Name, r.LoadBalancing.Algorithm))
+		}
+		if r.LoadBalancing.LatencySensitivity == 0 {
+			r.LoadBalancing.LatencySensitivity = 1
+		}
+		if r.LoadBalancing.LatencySensitivity < 0.1 || r.LoadBalancing.LatencySensitivity > 8 {
+			errs = append(errs, fmt.Errorf("route %q load_balancing.latency_sensitivity must be between 0.1 and 8", r.Name))
+		}
+		if r.LoadBalancing.EWMAAlpha == 0 {
+			r.LoadBalancing.EWMAAlpha = 0.25
+		}
+		if r.LoadBalancing.EWMAAlpha <= 0 || r.LoadBalancing.EWMAAlpha > 1 {
+			errs = append(errs, fmt.Errorf("route %q load_balancing.ewma_alpha must be greater than 0 and no greater than 1", r.Name))
+		}
 		for _, host := range r.Hosts {
 			if host == "" {
 				continue
@@ -411,8 +430,31 @@ func (c *Config) Validate() error {
 				selectors[key] = r.Name
 			}
 		}
+		seenUpstreamNames := map[string]struct{}{}
 		for j := range r.Upstreams {
+			r.Upstreams[j].Name = strings.TrimSpace(r.Upstreams[j].Name)
 			r.Upstreams[j].URL = strings.TrimSpace(r.Upstreams[j].URL)
+			if r.Upstreams[j].Weight == 0 {
+				r.Upstreams[j].Weight = 1
+			}
+			if r.Upstreams[j].Priority == 0 {
+				r.Upstreams[j].Priority = j + 1
+			}
+			if r.Upstreams[j].Name == "" {
+				r.Upstreams[j].Name = fmt.Sprintf("origin-%d", j+1)
+			}
+			nameKey := strings.ToLower(r.Upstreams[j].Name)
+			if _, exists := seenUpstreamNames[nameKey]; exists {
+				errs = append(errs, fmt.Errorf("route %q contains duplicate upstream name %q", r.Name, r.Upstreams[j].Name))
+			} else {
+				seenUpstreamNames[nameKey] = struct{}{}
+			}
+			if r.Upstreams[j].Weight < 1 || r.Upstreams[j].Weight > 10000 {
+				errs = append(errs, fmt.Errorf("route %q upstream[%d] weight must be between 1 and 10000", r.Name, j))
+			}
+			if r.Upstreams[j].Priority < 1 || r.Upstreams[j].Priority > 10000 {
+				errs = append(errs, fmt.Errorf("route %q upstream[%d] priority must be between 1 and 10000", r.Name, j))
+			}
 			up := r.Upstreams[j]
 			parsed, err := url.Parse(up.URL)
 			if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Hostname() == "" {

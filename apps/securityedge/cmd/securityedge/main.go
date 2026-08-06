@@ -87,77 +87,171 @@ func run() int {
 		fmt.Println("configuration is valid")
 		return 0
 	}
-	runtime, err := securityedge.New(configPath, logger)
-	if err != nil {
-		logger.Error("configuration failed", "error", err)
-		return 1
-	}
-	defer runtime.Close()
-	cfg := runtime.Config()
-	var adminServer *http.Server
-	if cfg.Admin.Enabled {
-		adminServer, err = runtime.AdminServer()
+	return runManaged(configPath, loadedEnv, logger)
+
+}
+
+type securityGeneration struct {
+	runtime       *securityedge.Runtime
+	cfg           config.Config
+	gatewayServer *http.Server
+	adminServer   *http.Server
+	errCh         chan error
+}
+
+func runManaged(configPath, envPath string, logger *slog.Logger) int {
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	var previousWatch securityedge.WatchStatus
+	for {
+		gen, err := startSecurityGeneration(configPath, envPath, previousWatch, logger)
 		if err != nil {
-			logger.Error("admin setup failed", "error", err)
+			logger.Error("configuration failed", "error", err)
 			return 1
 		}
+		restart, runErr := superviseSecurityGeneration(sigCtx, gen, envPath, logger)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), gen.cfg.Server.ShutdownTimeout.Duration)
+		shutdownErr := shutdownServers(shutdownCtx,
+			namedHTTPServer{name: "gateway", server: gen.gatewayServer},
+			namedHTTPServer{name: "admin", server: gen.adminServer},
+		)
+		cancel()
+		previousWatch = gen.runtime.WatchStatus()
+		gen.runtime.Close()
+		if shutdownErr != nil {
+			logger.Error("graceful shutdown failed", "error", shutdownErr)
+		}
+		if runErr != nil || shutdownErr != nil {
+			return 1
+		}
+		if !restart {
+			return 0
+		}
+		logger.Info("SecurityEdge generation restarted automatically")
 	}
-	errCh := make(chan error, 2)
-	var gatewayServer *http.Server
+}
+
+func startSecurityGeneration(configPath, envPath string, previousWatch securityedge.WatchStatus, logger *slog.Logger) (*securityGeneration, error) {
+	runtime, err := securityedge.New(configPath, logger)
+	if err != nil {
+		return nil, err
+	}
+	runtime.ConfigureWatcher(envPath, previousWatch)
+	cfg := runtime.Config()
+	gen := &securityGeneration{runtime: runtime, cfg: cfg, errCh: make(chan error, 2)}
+	if cfg.Admin.Enabled {
+		gen.adminServer, err = runtime.AdminServer()
+		if err != nil {
+			runtime.Close()
+			return nil, fmt.Errorf("admin setup failed: %w", err)
+		}
+	}
 	if cfg.Server.Mode == "gateway" {
 		target, err := url.Parse(cfg.Server.UpstreamProxyURL)
 		if err != nil {
-			logger.Error("invalid upstream proxy URL", "error", err)
-			return 1
+			runtime.Close()
+			return nil, fmt.Errorf("invalid upstream proxy URL: %w", err)
 		}
 		reverse := newReverseProxy(target, cfg.Server, logger)
-		// Runtime.Wrap enforces the request-body limit so the same protection and
-		// security-event accounting also apply when SecurityEdge is embedded or
-		// used with a different downstream handler.
-		wrapped := runtime.Wrap(reverse)
-		gatewayServer = &http.Server{
-			Addr: cfg.Server.ListenAddr, Handler: wrapped,
+		gen.gatewayServer = &http.Server{
+			Addr: cfg.Server.ListenAddr, Handler: runtime.Wrap(reverse),
 			ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout.Duration, ReadTimeout: cfg.Server.ReadTimeout.Duration,
 			WriteTimeout: cfg.Server.WriteTimeout.Duration, IdleTimeout: cfg.Server.IdleTimeout.Duration,
 			MaxHeaderBytes: cfg.Server.MaxHeaderBytes,
 		}
 		go func() {
 			logger.Info("security gateway starting", "address", cfg.Server.ListenAddr, "upstream", cfg.Server.UpstreamProxyURL, "max_concurrent", cfg.Server.MaxConcurrentRequests, "max_body_bytes", cfg.Server.MaxRequestBodyBytes)
-			if err := gatewayServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				errCh <- fmt.Errorf("security gateway: %w", err)
+			if err := gen.gatewayServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				gen.errCh <- fmt.Errorf("security gateway: %w", err)
 			}
 		}()
 	}
-	if adminServer != nil {
+	if gen.adminServer != nil {
 		go func() {
 			logger.Info("security admin and dashboard starting", "address", cfg.Admin.ListenAddr)
-			if err := adminServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				errCh <- fmt.Errorf("security admin: %w", err)
+			if err := gen.adminServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				gen.errCh <- fmt.Errorf("security admin: %w", err)
 			}
 		}()
 	}
-	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	var runErr error
-	select {
-	case <-sigCtx.Done():
-		logger.Info("shutdown signal received")
-	case runErr = <-errCh:
-		logger.Error("listener failed", "error", runErr)
+	return gen, nil
+}
+
+func superviseSecurityGeneration(ctx context.Context, gen *securityGeneration, envPath string, logger *slog.Logger) (bool, error) {
+	securityPath := gen.runtime.ConfigPath()
+	edgePath := gen.runtime.EdgeConfigPath()
+	securityDigest, _ := securityedge.FileDigest(securityPath)
+	edgeDigest, _ := securityedge.FileDigest(edgePath)
+	var envDigest [32]byte
+	if envPath != "" {
+		envDigest, _ = securityedge.FileDigest(envPath)
 	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout.Duration)
-	defer cancel()
-	shutdownErr := shutdownServers(shutdownCtx,
-		namedHTTPServer{name: "gateway", server: gatewayServer},
-		namedHTTPServer{name: "admin", server: adminServer},
-	)
-	if shutdownErr != nil {
-		logger.Error("graceful shutdown failed", "error", shutdownErr)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Info("shutdown signal received")
+			return false, nil
+		case err := <-gen.errCh:
+			logger.Error("listener failed", "error", err)
+			return false, err
+		case <-ticker.C:
+			if envPath != "" {
+				if digest, err := securityedge.FileDigest(envPath); err != nil {
+					gen.runtime.RecordWatchChange(envPath, false, false, err)
+				} else if digest != envDigest {
+					envDigest = digest
+					if err := envfile.Reload(envPath); err != nil {
+						gen.runtime.RecordWatchChange(envPath, false, false, err)
+					} else {
+						gen.runtime.RecordWatchChange(envPath, false, true, nil)
+						return true, nil
+					}
+				}
+			}
+
+			if digest, err := securityedge.FileDigest(securityPath); err != nil {
+				gen.runtime.RecordWatchChange(securityPath, false, false, err)
+			} else if digest != securityDigest {
+				securityDigest = digest
+				err := gen.runtime.Reload()
+				if err != nil {
+					var restart interface{ RestartRequired() bool }
+					if errors.As(err, &restart) && restart.RestartRequired() {
+						gen.runtime.RecordWatchChange(securityPath, false, true, nil)
+						return true, nil
+					}
+					gen.runtime.RecordWatchChange(securityPath, false, false, err)
+				} else {
+					gen.runtime.RecordWatchChange(securityPath, true, false, nil)
+					edgePath = gen.runtime.EdgeConfigPath()
+					edgeDigest, _ = securityedge.FileDigest(edgePath)
+				}
+			}
+
+			currentEdgePath := gen.runtime.EdgeConfigPath()
+			if currentEdgePath != edgePath {
+				edgePath = currentEdgePath
+				edgeDigest, _ = securityedge.FileDigest(edgePath)
+			}
+			if digest, err := securityedge.FileDigest(edgePath); err != nil {
+				gen.runtime.RecordWatchChange(edgePath, false, false, err)
+			} else if digest != edgeDigest {
+				edgeDigest = digest
+				if err := gen.runtime.ReloadEdgeRoutes(); err != nil {
+					gen.runtime.RecordWatchChange(edgePath, false, false, err)
+				} else {
+					// This is the critical separation: an EdgeProxy route-table edit
+					// updates only SecurityEdge routing metadata and never restarts its listeners.
+					gen.runtime.RecordWatchChange(edgePath, true, false, nil)
+					logger.Info("shared EdgeProxy route table hot-reloaded", "path", edgePath)
+				}
+			}
+		}
 	}
-	if runErr != nil || shutdownErr != nil {
-		return 1
-	}
-	return 0
 }
 
 type namedHTTPServer struct {

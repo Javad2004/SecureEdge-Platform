@@ -14,11 +14,112 @@ import (
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/accesslog"
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/admin"
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/control"
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/metrics"
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/proxy"
 )
 
+type generation struct {
+	cfg         config.Config
+	handler     *proxy.Handler
+	mainServer  *http.Server
+	adminServer *http.Server
+	errCh       chan error
+}
+
+// Run starts one immutable listener generation. RunManaged should be preferred
+// by the executable because it also enables the authenticated control plane and
+// automatic config-file reload/restart supervision.
 func Run(cfg config.Config, logger *slog.Logger) error {
+	return runLoop("", "", cfg, logger, false)
+}
+
+func RunManaged(configPath, envPath string, cfg config.Config, logger *slog.Logger) error {
+	return runLoop(configPath, envPath, cfg, logger, true)
+}
+
+func runLoop(configPath, envPath string, cfg config.Config, logger *slog.Logger, managed bool) error {
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	var manager *control.Manager
+	var err error
+	if managed {
+		manager, err = control.New(configPath, envPath, logger)
+		if err != nil {
+			return err
+		}
+	}
+	watchStarted := false
+
+	for {
+		gen, err := startGeneration(cfg, logger, manager)
+		if err != nil {
+			return err
+		}
+		if manager != nil {
+			manager.Attach(gen.handler, cfg)
+			if !watchStarted {
+				manager.Start(sigCtx)
+				watchStarted = true
+			}
+		}
+
+		var runErr error
+		var next config.Config
+		restart := false
+		select {
+		case <-sigCtx.Done():
+			logger.Info("shutdown signal received")
+		case runErr = <-gen.errCh:
+			logger.Error("listener failed; shutting down generation", "error", runErr)
+		case next = <-restartRequests(manager):
+			restart = true
+			logger.Info("configuration requires automatic listener restart")
+		}
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), gen.cfg.Server.ShutdownTimeout.Duration)
+		shutdownErr := shutdownServers(shutdownCtx,
+			namedHTTPServer{name: "proxy", server: gen.mainServer},
+			namedHTTPServer{name: "admin", server: gen.adminServer},
+		)
+		cancel()
+		gen.handler.Close()
+		if runErr != nil || shutdownErr != nil {
+			return errors.Join(runErr, shutdownErr)
+		}
+		if !restart {
+			return nil
+		}
+		// Changes arriving while listeners drain are folded into the next
+		// generation, avoiding an unnecessary intermediate restart.
+		next = latestRestart(next, manager)
+		cfg = next
+	}
+}
+
+func latestRestart(current config.Config, manager *control.Manager) config.Config {
+	if manager == nil {
+		return current
+	}
+	for {
+		select {
+		case newer := <-manager.RestartRequests():
+			current = newer
+		default:
+			return current
+		}
+	}
+}
+
+func restartRequests(manager *control.Manager) <-chan config.Config {
+	if manager == nil {
+		return make(chan config.Config)
+	}
+	return manager.RestartRequests()
+}
+
+func startGeneration(cfg config.Config, logger *slog.Logger, manager *control.Manager) (*generation, error) {
 	registry := metrics.New()
 	var logStore *accesslog.Store
 	if cfg.Admin.Enabled && cfg.Admin.LogStore.Enabled {
@@ -26,11 +127,10 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 	}
 	handler, err := proxy.NewHandler(cfg, logger, registry, logStore)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer handler.Close()
-
-	mainServer := &http.Server{
+	gen := &generation{cfg: cfg, handler: handler, errCh: make(chan error, 2)}
+	gen.mainServer = &http.Server{
 		Addr: cfg.Server.ListenAddr, Handler: handler,
 		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout.Duration,
 		ReadTimeout:       cfg.Server.ReadTimeout.Duration,
@@ -38,49 +138,29 @@ func Run(cfg config.Config, logger *slog.Logger) error {
 		IdleTimeout:       cfg.Server.IdleTimeout.Duration,
 		MaxHeaderBytes:    cfg.Server.MaxHeaderBytes,
 	}
-
-	errCh := make(chan error, 2)
 	go func() {
 		logger.Info("proxy server starting", "address", cfg.Server.ListenAddr, "tls", cfg.Server.TLS.Enabled)
 		var serveErr error
 		if cfg.Server.TLS.Enabled {
-			serveErr = mainServer.ListenAndServeTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile)
+			serveErr = gen.mainServer.ListenAndServeTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile)
 		} else {
-			serveErr = mainServer.ListenAndServe()
+			serveErr = gen.mainServer.ListenAndServe()
 		}
 		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-			errCh <- fmt.Errorf("proxy server: %w", serveErr)
+			gen.errCh <- fmt.Errorf("proxy server: %w", serveErr)
 		}
 	}()
 
-	var adminServer *http.Server
 	if cfg.Admin.Enabled {
-		adminServer = admin.New(cfg.Admin, logger, registry, handler, logStore).HTTPServer()
+		gen.adminServer = admin.New(cfg.Admin, logger, registry, handler, logStore, manager).HTTPServer()
 		go func() {
 			logger.Info("admin server starting", "address", cfg.Admin.ListenAddr)
-			if serveErr := adminServer.ListenAndServe(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-				errCh <- fmt.Errorf("admin server: %w", serveErr)
+			if serveErr := gen.adminServer.ListenAndServe(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+				gen.errCh <- fmt.Errorf("admin server: %w", serveErr)
 			}
 		}()
 	}
-
-	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	var runErr error
-	select {
-	case <-sigCtx.Done():
-		logger.Info("shutdown signal received")
-	case runErr = <-errCh:
-		logger.Error("listener failed; shutting down remaining servers", "error", runErr)
-	}
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout.Duration)
-	defer cancel()
-	shutdownErr := shutdownServers(shutdownCtx,
-		namedHTTPServer{name: "proxy", server: mainServer},
-		namedHTTPServer{name: "admin", server: adminServer},
-	)
-	return errors.Join(runErr, shutdownErr)
+	return gen, nil
 }
 
 type namedHTTPServer struct {
@@ -103,10 +183,6 @@ func shutdownServers(ctx context.Context, servers ...namedHTTPServer) error {
 			defer wg.Done()
 			if err := item.server.Shutdown(ctx); err != nil {
 				gracefulErr := fmt.Errorf("%s graceful shutdown: %w", item.name, err)
-				// Shutdown stops accepting new connections but leaves active ones open
-				// when its deadline expires. Force-close them before runtime resources
-				// are released so requests cannot continue against a partially closed
-				// proxy after the configured shutdown budget has elapsed.
 				closeErr := item.server.Close()
 				if closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
 					errCh <- errors.Join(gracefulErr, fmt.Errorf("%s forced shutdown: %w", item.name, closeErr))

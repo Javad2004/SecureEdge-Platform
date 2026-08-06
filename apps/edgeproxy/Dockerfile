@@ -34,8 +34,9 @@ RUN apk add --no-cache ca-certificates \
 
 WORKDIR /app
 
+RUN mkdir -p /app/config && chown -R edgeproxy:edgeproxy /app/config
 COPY --from=build /out/edgeproxy /usr/local/bin/edgeproxy
-COPY configs/compose.json /app/config.json
+COPY --chown=edgeproxy:edgeproxy configs/compose.json /app/config/config.json
 
 USER edgeproxy
 EXPOSE 8080 9090
@@ -45,4 +46,4 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
 
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/local/bin/edgeproxy"]
-CMD ["-config", "/app/config.json"]
+CMD ["-config", "/app/config/config.json"]

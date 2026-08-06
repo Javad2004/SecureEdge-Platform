@@ -13,7 +13,13 @@ const state = {
   securityCursor: 0,
   securityHasMore: false,
   selectedPolicy: 'default',
-  trend: []
+  trend: [],
+  edgeConfig: null,
+  securityConfig: null,
+  edgeWatch: null,
+  securityWatch: null,
+  edgeEditorDirty: false,
+  securityEditorDirty: false
 };
 
 const $ = id => document.getElementById(id);
@@ -97,6 +103,7 @@ async function refreshAll() {
     state.policies = policies;
     state.rules = rules.rules || [];
     state.bans = bans.bans || [];
+    await loadControlData();
     renderAll();
     $('last-updated').textContent = `Updated ${new Date().toLocaleTimeString()}`;
     $('live-dot').classList.add('live');
@@ -416,14 +423,163 @@ async function loadEdgeLogs() {
   } catch (error) { $('edge-log-table').innerHTML = `<tr><td colspan="7" class="muted">${esc(error.message)}</td></tr>`; }
 }
 
+async function loadControlData() {
+  const requests = [
+    api('/api/v1/edgeproxy/config'), api('/api/v1/edgeproxy/config/watch'),
+    api('/api/v1/config'), api('/api/v1/config/watch')
+  ];
+  const [edgeConfig, edgeWatch, securityConfig, securityWatch] = await Promise.allSettled(requests);
+  if (edgeConfig.status === 'fulfilled') state.edgeConfig = edgeConfig.value;
+  if (edgeWatch.status === 'fulfilled') state.edgeWatch = edgeWatch.value;
+  if (securityConfig.status === 'fulfilled') state.securityConfig = securityConfig.value;
+  if (securityWatch.status === 'fulfilled') state.securityWatch = securityWatch.value;
+}
+
+function watchSummary(status) {
+  if (!status) return {state:'UNAVAILABLE', detail:'Control endpoint unavailable', cls:'error'};
+  if (status.last_error) return {state:'ERROR', detail:status.last_error, cls:'error'};
+  if (status.restart_scheduled) return {state:'RESTARTING', detail:`Revision ${fmt(status.revision)} · ${status.restart_fields?.join(', ') || 'process settings'}`, cls:'warn'};
+  return {state:'WATCHING', detail:`Revision ${fmt(status.applied_revision ?? status.revision)} · ${status.last_source || status.last_changed_file || 'ready'}`, cls:'ready'};
+}
+
+function routeStatus(name) {
+  return (state.overview?.edgeproxy_status?.routes || []).find(route => String(route.name).toLowerCase() === String(name).toLowerCase()) || null;
+}
+function routeMetrics(name) { return state.overview?.edgeproxy_metrics?.routes?.[name] || {}; }
+function statusOrigin(status, origin) {
+  return (status?.upstreams || []).find(item => String(item.name || '').toLowerCase() === String(origin.name || '').toLowerCase()) ||
+    (status?.upstreams || []).find(item => (item.url || item.upstream) === origin.url) || {};
+}
+function bytes(value) {
+  const n = Number(value || 0); if (n < 1024) return `${n} B`; if (n < 1048576) return `${(n/1024).toFixed(1)} KiB`;
+  if (n < 1073741824) return `${(n/1048576).toFixed(1)} MiB`; return `${(n/1073741824).toFixed(2)} GiB`;
+}
+
 function renderRoutes() {
-  const routes = state.overview?.edgeproxy_status?.routes || [];
-  if (!routes.length) { $('route-cards').innerHTML = '<article class="panel"><p>No route status available.</p></article>'; return; }
+  const routes = state.edgeConfig?.routes || [];
+  const edgeWatch = watchSummary(state.edgeWatch);
+  const securityWatch = watchSummary(state.securityWatch);
+  $('edge-watch-state').textContent = edgeWatch.state; $('edge-watch-state').className = edgeWatch.cls; $('edge-watch-detail').textContent = edgeWatch.detail;
+  $('security-watch-state').textContent = securityWatch.state; $('security-watch-state').className = securityWatch.cls; $('security-watch-detail').textContent = securityWatch.detail;
+  $('managed-route-count').textContent = fmt(routes.length);
+  $('managed-origin-count').textContent = `${fmt(routes.reduce((sum, route) => sum + (route.upstreams?.length || 0), 0))} origins`;
+  $('scheduler-count').textContent = fmt(new Set(routes.map(route => route.load_balancing?.algorithm || 'round_robin')).size);
+
+  if (!state.edgeEditorDirty && state.edgeConfig && document.activeElement !== $('edge-config-editor')) $('edge-config-editor').value = JSON.stringify(state.edgeConfig, null, 2);
+  if (!state.securityEditorDirty && state.securityConfig && document.activeElement !== $('security-config-editor')) $('security-config-editor').value = JSON.stringify(state.securityConfig, null, 2);
+
+  if (!routes.length) {
+    $('route-cards').innerHTML = '<article class="panel"><div class="empty-state">EdgeProxy configuration is unavailable or contains no routes.</div></article>';
+    $('route-telemetry-table').innerHTML = '<tr><td colspan="10" class="muted">No route telemetry available.</td></tr>';
+    $('origin-telemetry-table').innerHTML = '<tr><td colspan="10" class="muted">No origin telemetry available.</td></tr>';
+    return;
+  }
   $('route-cards').innerHTML = routes.map(route => {
-    const cache = route.cache ? metricRows([['Cache entries',fmt(route.cache.entries)],['Cache bytes',fmt(route.cache.bytes)],['LRU evictions',fmt(route.cache.evictions)]]) : '<p class="muted">Cache disabled</p>';
-    const origins = (route.upstreams || []).map(origin => `<div class="origin"><span>${esc(origin.url || origin.upstream)}</span><span class="badge ${origin.healthy ? 'ready' : 'error'}">${origin.healthy ? 'healthy' : 'unhealthy'}</span></div>`).join('');
-    return `<article class="route-card"><div class="route-head"><h2>${esc(route.name)}</h2><span class="badge ${route.ready ? 'ready' : 'error'}">${route.ready ? 'READY' : 'NOT READY'}</span></div>${cache}<h3>Origins</h3>${origins}</article>`;
+    const status = routeStatus(route.name);
+    const telemetry = routeMetrics(route.name);
+    const algorithm = route.load_balancing?.algorithm || 'round_robin';
+    const origins = (route.upstreams || []).map(origin => {
+      const live = statusOrigin(status, origin);
+      return `<div class="origin managed-origin"><div><strong>${esc(origin.name)}</strong><small>${esc(origin.url)}</small></div><div class="origin-state"><span class="badge ${live.healthy ? 'ready' : 'error'}">${live.healthy ? 'healthy' : 'unhealthy'}</span><span>W ${fmt(origin.weight)} · P ${fmt(origin.priority)}</span><button class="ghost compact-button" data-origin-edit="${esc(route.name)}" data-origin="${esc(origin.name)}">Edit</button></div></div>`;
+    }).join('');
+    return `<article class="route-card managed-route"><div class="route-head"><div><h2>${esc(route.name)}</h2><p>${esc((route.hosts || []).join(', '))} · ${esc(route.path_prefix || '/')}</p></div><span class="badge ${status?.ready ? 'ready' : 'error'}">${status?.ready ? 'READY' : 'NOT READY'}</span></div><div class="scheduler-banner"><span>Scheduler</span><strong>${esc(algorithm)}</strong><small>${fmt(telemetry.requests)} requests · ${pct(telemetry.cache_hit_ratio)}</small></div><div class="route-actions"><button class="ghost" data-route-edit="${esc(route.name)}">Edit route</button><button class="ghost" data-origin-add="${esc(route.name)}">Add origin</button><button class="danger ghost" data-route-delete="${esc(route.name)}">Delete</button></div><h3>Origins</h3>${origins || '<p class="muted">No origins configured.</p>'}</article>`;
   }).join('');
+
+  $('route-telemetry-table').innerHTML = routes.map(route => {
+    const m = routeMetrics(route.name), latency = m.response_latency_ms || {}, upstream = m.upstream || {};
+    return `<tr><td><strong>${esc(route.name)}</strong></td><td>${esc(route.load_balancing?.algorithm || 'round_robin')}</td><td>${fmt(m.requests)}</td><td>${pct(m.success_rate)}</td><td>${pct(m.cache_hit_ratio)}</td><td>${ms(m.average_response_time_ms)} / ${ms(latency.p95)}</td><td>${fmt(m.upstream_calls)}</td><td>${fmt(m.retries)}</td><td>${fmt(Number(m.proxy_errors||0)+Number(m.server_errors||0)+Number(upstream.failures||0))}</td><td>${bytes(m.bytes_in)} / ${bytes(m.bytes_out)}</td></tr>`;
+  }).join('');
+
+  const originRows = [];
+  routes.forEach(route => {
+    const status = routeStatus(route.name), m = routeMetrics(route.name);
+    (route.upstreams || []).forEach(origin => {
+      const live = statusOrigin(status, origin), om = m.upstreams?.[origin.url] || {};
+      originRows.push(`<tr><td><strong>${esc(route.name)}</strong><small class="table-subline">${esc(origin.name)}</small></td><td>${esc(origin.url)}</td><td><span class="badge ${live.healthy ? 'ready':'error'}">${live.healthy ? 'healthy':'unhealthy'}</span></td><td>${fmt(origin.weight)} / ${fmt(origin.priority)}</td><td>${fmt(om.calls)}</td><td>${pct(om.success_rate)}</td><td>${ms(om.latency_ms?.average)} / ${ms(om.latency_ms?.p95)}</td><td>${fmt(live.active_requests)}</td><td>${ms(live.ewma_latency_ms)}</td><td><button class="ghost compact-button" data-origin-edit="${esc(route.name)}" data-origin="${esc(origin.name)}">Edit</button></td></tr>`);
+    });
+  });
+  $('origin-telemetry-table').innerHTML = originRows.join('') || '<tr><td colspan="10" class="muted">No origins configured.</td></tr>';
+  bindRouteActions();
+}
+
+function findConfigRoute(name) { return (state.edgeConfig?.routes || []).find(route => String(route.name).toLowerCase() === String(name).toLowerCase()); }
+function findConfigOrigin(route, name) { return (route?.upstreams || []).find(origin => String(origin.name).toLowerCase() === String(name).toLowerCase()); }
+
+function openRouteDialog(name = '') {
+  const route = name ? findConfigRoute(name) : null;
+  if (!route && name) return toast('Route no longer exists.');
+  if (!route && !state.edgeConfig?.routes?.length) return toast('Load EdgeProxy configuration before creating a route.');
+  $('route-dialog-title').textContent = route ? `Edit ${route.name}` : 'Add route';
+  $('route-original-name').value = route?.name || '';
+  $('route-name').value = route?.name || ''; $('route-name').readOnly = Boolean(route);
+  $('route-hosts').value = (route?.hosts || []).join(', '); $('route-path').value = route?.path_prefix || '/';
+  $('route-algorithm').value = route?.load_balancing?.algorithm || 'round_robin';
+  $('route-sensitivity').value = route?.load_balancing?.latency_sensitivity ?? 1;
+  $('route-alpha').value = route?.load_balancing?.ewma_alpha ?? 0.25;
+  $('route-preserve-host').checked = Boolean(route?.preserve_host);
+  $('initial-origin-fields').classList.toggle('hidden', Boolean(route));
+  $('route-origin-name').value = 'origin-1'; $('route-origin-url').value = ''; $('route-origin-weight').value = 1; $('route-origin-priority').value = 1;
+  $('route-form-error').textContent = ''; $('route-dialog').showModal();
+}
+
+function openOriginDialog(routeName, originName = '') {
+  const route = findConfigRoute(routeName), origin = originName ? findConfigOrigin(route, originName) : null;
+  if (!route) return toast('Route no longer exists.');
+  $('origin-dialog-title').textContent = origin ? `Edit ${origin.name}` : `Add origin to ${route.name}`;
+  $('origin-route-name').value = route.name; $('origin-original-name').value = origin?.name || '';
+  $('origin-name').value = origin?.name || `origin-${(route.upstreams?.length || 0)+1}`; $('origin-name').readOnly = Boolean(origin);
+  $('origin-url').value = origin?.url || ''; $('origin-weight').value = origin?.weight || 1; $('origin-priority').value = origin?.priority || ((route.upstreams?.length || 0)+1);
+  $('origin-insecure').checked = Boolean(origin?.insecure_skip_verify); $('origin-form-error').textContent = ''; $('origin-dialog').showModal();
+}
+
+function bindRouteActions() {
+  document.querySelectorAll('[data-route-edit]').forEach(button => button.onclick = () => openRouteDialog(button.dataset.routeEdit));
+  document.querySelectorAll('[data-origin-add]').forEach(button => button.onclick = () => openOriginDialog(button.dataset.originAdd));
+  document.querySelectorAll('[data-origin-edit]').forEach(button => button.onclick = () => openOriginDialog(button.dataset.originEdit, button.dataset.origin));
+  document.querySelectorAll('[data-route-delete]').forEach(button => button.onclick = async () => {
+    const name = button.dataset.routeDelete;
+    if (!confirm(`Delete route ${name}, all of its origins, and any SecurityEdge policy override?`)) return;
+    try { await api(`/api/v1/edgeproxy/routes/${encodeURIComponent(name)}`, {method:'DELETE'}); await refreshAll(); toast('Route deleted'); } catch(error) { toast(error.message); }
+  });
+}
+
+async function saveRoute(event) {
+  event.preventDefault(); $('route-form-error').textContent = '';
+  try {
+    const original = $('route-original-name').value;
+    const base = structuredClone(original ? findConfigRoute(original) : state.edgeConfig.routes[0]);
+    base.name = $('route-name').value.trim(); base.hosts = csv($('route-hosts').value); base.path_prefix = $('route-path').value.trim();
+    base.preserve_host = $('route-preserve-host').checked;
+    base.load_balancing = {algorithm:$('route-algorithm').value, latency_sensitivity:Number($('route-sensitivity').value), ewma_alpha:Number($('route-alpha').value)};
+    if (!original) {
+      const originURL = $('route-origin-url').value.trim(); if (!originURL) throw new Error('Initial origin URL is required.');
+      base.upstreams = [{name:$('route-origin-name').value.trim() || 'origin-1', url:originURL, weight:Number($('route-origin-weight').value), priority:Number($('route-origin-priority').value), insecure_skip_verify:false}];
+    }
+    const path = original ? `/api/v1/edgeproxy/routes/${encodeURIComponent(original)}` : '/api/v1/edgeproxy/routes';
+    await api(path, {method:original ? 'PUT':'POST', body:JSON.stringify(base)});
+    $('route-dialog').close(); await refreshAll(); toast(original ? 'Route updated' : 'Route created');
+  } catch(error) { $('route-form-error').textContent = error.message; }
+}
+
+async function saveOrigin(event) {
+  event.preventDefault(); $('origin-form-error').textContent = '';
+  try {
+    const route = $('origin-route-name').value, original = $('origin-original-name').value;
+    const origin = {name:$('origin-name').value.trim(), url:$('origin-url').value.trim(), weight:Number($('origin-weight').value), priority:Number($('origin-priority').value), insecure_skip_verify:$('origin-insecure').checked};
+    const base = `/api/v1/edgeproxy/routes/${encodeURIComponent(route)}/origins`;
+    await api(original ? `${base}/${encodeURIComponent(original)}` : base, {method:original ? 'PUT':'POST', body:JSON.stringify(origin)});
+    $('origin-dialog').close(); await refreshAll(); toast(original ? 'Origin updated' : 'Origin added');
+  } catch(error) { $('origin-form-error').textContent = error.message; }
+}
+
+async function saveRawConfig(kind) {
+  const edge = kind === 'edge', editor = $(edge ? 'edge-config-editor':'security-config-editor'), result = $(edge ? 'edge-config-result':'security-config-result');
+  try {
+    const candidate = JSON.parse(editor.value); const response = await api(edge ? '/api/v1/edgeproxy/config':'/api/v1/config', {method:'PUT', body:JSON.stringify(candidate)});
+    if (edge) state.edgeEditorDirty = false; else state.securityEditorDirty = false;
+    result.textContent = response.restart_required ? 'Saved. An automatic graceful restart is scheduled.' : 'Validated, saved, and hot-applied.';
+    await refreshAll(); toast(edge ? 'EdgeProxy configuration saved' : 'SecurityEdge configuration saved');
+  } catch(error) { result.textContent = error.message; }
 }
 
 async function loadPolicies() { state.policies = await api('/api/v1/policies'); renderPolicies(); }
@@ -541,6 +697,15 @@ $('check-connectivity').onclick = async () => {
   finally { button.disabled = false; button.textContent = 'Run checks'; }
 };
 $('reload-config').onclick = async () => { await api('/api/v1/reload',{method:'POST'}); await refreshAll(); toast('Configuration reloaded'); };
+$('refresh-control').onclick = async () => { await loadControlData(); renderRoutes(); toast('Control-plane data refreshed'); };
+$('add-route').onclick = () => openRouteDialog();
+$('route-form').onsubmit = saveRoute; $('origin-form').onsubmit = saveOrigin;
+document.querySelectorAll('[data-close-dialog]').forEach(button => button.onclick = () => $(button.dataset.closeDialog).close());
+$('edge-config-editor').addEventListener('input', () => { state.edgeEditorDirty = true; });
+$('security-config-editor').addEventListener('input', () => { state.securityEditorDirty = true; });
+$('save-edge-config').onclick = () => saveRawConfig('edge'); $('save-security-config').onclick = () => saveRawConfig('security');
+$('reload-edge-config').onclick = async () => { try { await api('/api/v1/edgeproxy/config/reload',{method:'POST'}); state.edgeEditorDirty=false; await refreshAll(); toast('EdgeProxy configuration reloaded'); } catch(error) { $('edge-config-result').textContent=error.message; } };
+$('reload-security-config').onclick = async () => { try { await api('/api/v1/reload',{method:'POST'}); state.securityEditorDirty=false; await refreshAll(); toast('SecurityEdge configuration reloaded'); } catch(error) { $('security-config-result').textContent=error.message; } };
 window.addEventListener('resize', () => state.overview && drawTrend());
 
 if (state.token) login(state.token).catch(lock);

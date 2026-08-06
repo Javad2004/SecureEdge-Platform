@@ -228,9 +228,11 @@ EdgeProxy provides:
 - response-stream failures recorded in metrics and structured logs even when the final HTTP status has already been sent;
 - graceful shutdown.
 
+Configuration validation also places explicit ceilings on work-amplifying and memory-backed settings: at most 2,048 Routes, 256 hosts and 256 Origins per Route, 10 retries, 1,000,000 transport idle-connection slots, 4,096 trusted-proxy CIDRs, and 128 entries in each cache-header, cache-status, or health-status collection. Validation work itself stops at these ceilings, so a rejected oversized profile cannot amplify CPU or diagnostic-memory use before it is discarded.
+
 ## HTTP cache
 
-The cache is an in-memory, thread-safe LRU with:
+The cache is an in-memory, thread-safe LRU with a validated maximum of 1,000,000 entries, 64 GiB total configured capacity, and 1 GiB per object. It provides:
 
 - entry-count, total-byte, and per-object limits;
 - TTL derived from `s-maxage`, `max-age`, `Expires`, or the route default;

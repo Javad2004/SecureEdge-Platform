@@ -259,6 +259,67 @@ func TestManagerRecoversLastHealthyConfigurationAfterLateRestartFailure(t *testi
 	}
 }
 
+func TestManagerRollbackPreservesLatestSuccessfulHotReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "edgeproxy.json")
+	cfg := testConfig(t)
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager, err := New(path, "", logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := proxy.NewHandler(cfg, logger, metrics.New(), accesslog.New(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handler.Close()
+	manager.Attach(handler, cfg)
+
+	if result, err := manager.Update(func(next *config.Config) error {
+		next.Routes[0].LoadBalancing.Algorithm = "weighted_round_robin"
+		return nil
+	}, "hot_reload_before_restart"); err != nil {
+		t.Fatal(err)
+	} else if !result.Applied || result.RestartRequired {
+		t.Fatalf("unexpected hot-reload result: %#v", result)
+	}
+
+	if _, err := manager.Update(func(next *config.Config) error {
+		next.Server.ListenAddr = availableListenerAddress(t)
+		return nil
+	}, "late_failure_after_hot_reload"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-manager.RestartRequests():
+	case <-time.After(time.Second):
+		t.Fatal("restart was not scheduled")
+	}
+
+	recovered, err := manager.RecoverFailedRestart(errors.New("late bind failure"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := recovered.Routes[0].LoadBalancing.Algorithm; got != "weighted_round_robin" {
+		t.Fatalf("recovered runtime lost hot reload: algorithm=%q", got)
+	}
+	if recovered.Server.ListenAddr != cfg.Server.ListenAddr {
+		t.Fatalf("recovered listener=%q, want %q", recovered.Server.ListenAddr, cfg.Server.ListenAddr)
+	}
+	saved, err := config.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := saved.Routes[0].LoadBalancing.Algorithm; got != "weighted_round_robin" {
+		t.Fatalf("persisted rollback lost hot reload: algorithm=%q", got)
+	}
+	if saved.Server.ListenAddr != cfg.Server.ListenAddr {
+		t.Fatalf("persisted rollback listener=%q, want %q", saved.Server.ListenAddr, cfg.Server.ListenAddr)
+	}
+}
+
 func TestManagerPreservesRedactedSecret(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "edgeproxy.json")
 	cfg := testConfig(t)

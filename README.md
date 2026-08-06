@@ -64,7 +64,7 @@ The platform can be administered without manually stopping either executable:
 - The Dashboard exposes the same Control Plane with complete form-based Route, scheduler, retry, cache, health-check, Origin, SecurityEdge runtime/Admin/WAF, EdgeProxy dependency, and EdgeProxy listener/Admin management; raw JSON remains available only as an advanced escape hatch.
 - Complete per-route and per-Origin telemetry includes traffic, cache efficiency, status distributions, failures, retries, latency percentiles, scheduler selections, EWMA, active work, and watcher/revision state.
 - SecurityEdge retains a bounded, atomically persisted telemetry timeline for request/rejection rates and condensed Route/Origin history, so dashboard trends survive refreshes and service restarts.
-- Atomic persistence, timestamped backups, strict JSON validation, redacted secrets, restart preflight for sockets/TLS/persistent resources, synchronous listener binding, and post-preflight rollback to the last successfully started generation protect management operations.
+- Atomic persistence, timestamped backups, strict JSON validation, redacted secrets, bounded resource settings, restart preflight for sockets/TLS/persistent resources, synchronous listener binding, and post-preflight rollback to the latest successfully started or hot-applied file-backed revision protect management operations.
 
 ## Requirements
 
@@ -193,7 +193,7 @@ On Linux:
 bash ./scripts/dev-watch.sh
 ```
 
-The watcher fingerprints the repository, debounces save bursts, builds an isolated candidate generation before stopping a healthy process, and restores the previous generation if startup fails. Go source, embedded Dashboard assets, workspace files, deployment files, and integration contracts restart only the affected applications. The active JSON and `.env` files remain owned by each application's transactional runtime watcher, so hot-applicable revisions do not cause a development-process restart. Build products are written under ignored `.dev/`.
+The watcher fingerprints the repository, debounces save bursts, builds an isolated candidate generation before stopping a healthy process, and restores the previous generation if startup fails. Go source, embedded Dashboard assets, workspace files, deployment files, and integration contracts restart only the affected applications. Its default EdgeProxy profile is the same authoritative `integration/edgeproxy-local-behind-waf.json` Route table referenced by the SecurityEdge local profile, so Dashboard/API mutations and both runtime watchers remain synchronized. The active JSON and `.env` files remain owned by each application's transactional runtime watcher, so hot-applicable revisions do not cause a development-process restart. Build products are written under ignored `.dev/`.
 
 ## Reference LAN deployment
 

@@ -5,10 +5,20 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 DEV="$ROOT/.dev"
 BIN="$DEV/bin"
 mkdir -p "$BIN"
-EDGE_CONFIG=${EDGEPROXY_CONFIG:-$ROOT/apps/edgeproxy/configs/local-dev.json}
-SEC_CONFIG=${SECURITYEDGE_CONFIG:-$ROOT/apps/securityedge/configs/local-dev.json}
-EDGE_ENV=${EDGEPROXY_ENV_FILE:-$ROOT/apps/edgeproxy/.env}
-SEC_ENV=${SECURITYEDGE_ENV_FILE:-$ROOT/apps/securityedge/.env}
+project_path() {
+  local value=$1 path dir base
+  if [[ "$value" == /* ]]; then path=$value; else path="$ROOT/${value#./}"; fi
+  dir=$(dirname -- "$path"); base=$(basename -- "$path")
+  if [[ -d "$dir" ]]; then
+    (cd -- "$dir" && printf '%s/%s\n' "$PWD" "$base")
+  else
+    printf '%s\n' "$path"
+  fi
+}
+EDGE_CONFIG=$(project_path "${EDGEPROXY_CONFIG:-integration/edgeproxy-local-behind-waf.json}")
+SEC_CONFIG=$(project_path "${SECURITYEDGE_CONFIG:-apps/securityedge/configs/local-dev.json}")
+EDGE_ENV=$(project_path "${EDGEPROXY_ENV_FILE:-apps/edgeproxy/.env}")
+SEC_ENV=$(project_path "${SECURITYEDGE_ENV_FILE:-apps/securityedge/.env}")
 POLL_SECONDS=${POLL_SECONDS:-0.5}
 DEBOUNCE_SECONDS=${DEBOUNCE_SECONDS:-0.75}
 EDGE_PID=""

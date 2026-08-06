@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$EdgeProxyConfig = 'apps/edgeproxy/configs/local-dev.json',
+    [string]$EdgeProxyConfig = 'integration/edgeproxy-local-behind-waf.json',
     [string]$SecurityEdgeConfig = 'apps/securityedge/configs/local-dev.json',
     [string]$EdgeProxyEnv = 'apps/edgeproxy/.env',
     [string]$SecurityEdgeEnv = 'apps/securityedge/.env',
@@ -19,18 +19,24 @@ $DevDirectory = Join-Path $Root '.dev'
 $BinDirectory = Join-Path $DevDirectory 'bin'
 $IsWindowsHost = $env:OS -eq 'Windows_NT'
 $ExecutableSuffix = if ($IsWindowsHost) { '.exe' } else { '' }
+
+function Resolve-ProjectPath([string]$Path) {
+    if ([IO.Path]::IsPathRooted($Path)) { return [IO.Path]::GetFullPath($Path) }
+    return [IO.Path]::GetFullPath((Join-Path $Root $Path))
+}
+
 New-Item -ItemType Directory -Force -Path $BinDirectory | Out-Null
 
 $services = @{
     edgeproxy = [pscustomobject]@{
         Key = 'edgeproxy'; Name = 'EdgeProxy'; App = Join-Path $Root 'apps/edgeproxy'; Package = './cmd/edgeproxy';
-        Config = [IO.Path]::GetFullPath((Join-Path $Root $EdgeProxyConfig));
-        Env = [IO.Path]::GetFullPath((Join-Path $Root $EdgeProxyEnv)); Process = $null; ActiveBinary = ''
+        Config = Resolve-ProjectPath $EdgeProxyConfig;
+        Env = Resolve-ProjectPath $EdgeProxyEnv; Process = $null; ActiveBinary = ''
     }
     securityedge = [pscustomobject]@{
         Key = 'securityedge'; Name = 'SecurityEdge'; App = Join-Path $Root 'apps/securityedge'; Package = './cmd/securityedge';
-        Config = [IO.Path]::GetFullPath((Join-Path $Root $SecurityEdgeConfig));
-        Env = [IO.Path]::GetFullPath((Join-Path $Root $SecurityEdgeEnv)); Process = $null; ActiveBinary = ''
+        Config = Resolve-ProjectPath $SecurityEdgeConfig;
+        Env = Resolve-ProjectPath $SecurityEdgeEnv; Process = $null; ActiveBinary = ''
     }
 }
 

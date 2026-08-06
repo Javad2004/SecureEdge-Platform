@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -90,6 +91,89 @@ func TestValidateRejectsExcessiveProxyResponseHeaderLimit(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil || !strings.Contains(err.Error(), "proxy.max_response_header_bytes") {
 		t.Fatalf("expected excessive proxy response header limit to be rejected, got %v", err)
+	}
+}
+
+func TestValidateRejectsRuntimeResourceExhaustionLimits(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+		field  string
+	}{
+		{name: "trusted proxy CIDRs", field: "trusted_proxy_cidrs", mutate: func(cfg *Config) {
+			cfg.Server.TrustedProxyCIDRs = make([]string, maxTrustedProxyCIDRs+1)
+			for i := range cfg.Server.TrustedProxyCIDRs {
+				cfg.Server.TrustedProxyCIDRs[i] = "127.0.0.1/32"
+			}
+		}},
+		{name: "route count", field: "routes", mutate: func(cfg *Config) {
+			cfg.Routes = make([]RouteConfig, maxRoutes+1)
+			for i := range cfg.Routes {
+				cfg.Routes[i] = validRouteForValidation()
+				cfg.Routes[i].Name = fmt.Sprintf("route-%d", i)
+			}
+		}},
+		{name: "hosts per route", field: "hosts", mutate: func(cfg *Config) {
+			cfg.Routes[0].Hosts = make([]string, maxHostsPerRoute+1)
+			for i := range cfg.Routes[0].Hosts {
+				cfg.Routes[0].Hosts[i] = fmt.Sprintf("host-%d.example", i)
+			}
+		}},
+		{name: "upstreams per route", field: "upstreams", mutate: func(cfg *Config) {
+			cfg.Routes[0].Upstreams = make([]UpstreamConfig, maxUpstreamsPerRoute+1)
+			for i := range cfg.Routes[0].Upstreams {
+				cfg.Routes[0].Upstreams[i] = UpstreamConfig{Name: fmt.Sprintf("origin-%d", i), URL: fmt.Sprintf("http://127.0.0.1:%d", 10000+i)}
+			}
+		}},
+		{name: "retry count", field: "retry_count", mutate: func(cfg *Config) { cfg.Routes[0].Proxy.RetryCount = maxProxyRetryCount + 1 }},
+		{name: "idle connections", field: "connection limits", mutate: func(cfg *Config) { cfg.Routes[0].Proxy.MaxIdleConns = maxProxyIdleConnections + 1 }},
+		{name: "cache entries", field: "cache.max_entries", mutate: func(cfg *Config) { cfg.Routes[0].Cache.MaxEntries = maxCacheEntries + 1 }},
+		{name: "cache bytes", field: "cache.max_bytes", mutate: func(cfg *Config) { cfg.Routes[0].Cache.MaxBytes = maxCacheBytes + 1 }},
+		{name: "cache object bytes", field: "cache.max_object_bytes", mutate: func(cfg *Config) {
+			cfg.Routes[0].Cache.MaxObjectBytes = maxCacheObjectBytes + 1
+			cfg.Routes[0].Cache.MaxBytes = maxCacheBytes
+		}},
+		{name: "cache vary headers", field: "vary_request_headers", mutate: func(cfg *Config) {
+			cfg.Routes[0].Cache.VaryRequestHeaders = make([]string, maxCacheVaryHeaders+1)
+			for i := range cfg.Routes[0].Cache.VaryRequestHeaders {
+				cfg.Routes[0].Cache.VaryRequestHeaders[i] = fmt.Sprintf("X-Vary-%d", i)
+			}
+		}},
+		{name: "effective cache vary headers", field: "effective cache.vary_request_headers", mutate: func(cfg *Config) {
+			cfg.Routes[0].Cache.VaryRequestHeaders = make([]string, maxCacheVaryHeaders)
+			for i := range cfg.Routes[0].Cache.VaryRequestHeaders {
+				cfg.Routes[0].Cache.VaryRequestHeaders[i] = fmt.Sprintf("X-Vary-%d", i)
+			}
+			cfg.Routes[0].Cache.CacheAuthorizedRequests = true
+		}},
+		{name: "cacheable statuses", field: "cache.cacheable_status_codes", mutate: func(cfg *Config) {
+			cfg.Routes[0].Cache.CacheableStatusCodes = make([]int, maxCacheStatusCodes+1)
+			for i := range cfg.Routes[0].Cache.CacheableStatusCodes {
+				cfg.Routes[0].Cache.CacheableStatusCodes[i] = http.StatusOK
+			}
+		}},
+		{name: "healthy statuses", field: "health_check.healthy_statuses", mutate: func(cfg *Config) {
+			cfg.Routes[0].HealthCheck.Enabled = true
+			cfg.Routes[0].HealthCheck.HealthyStatuses = make([]int, maxHealthStatuses+1)
+			for i := range cfg.Routes[0].HealthCheck.HealthyStatuses {
+				cfg.Routes[0].HealthCheck.HealthyStatuses[i] = http.StatusOK
+			}
+		}},
+		{name: "health timeout", field: "health_check.timeout", mutate: func(cfg *Config) {
+			cfg.Routes[0].HealthCheck = HealthCheckConfig{Enabled: true, Path: "/healthz", Interval: Duration{time.Second}, Timeout: Duration{2 * time.Second}, HealthyStatuses: []int{200}}
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Routes = []RouteConfig{validRouteForValidation()}
+			tc.mutate(&cfg)
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.field) {
+				t.Fatalf("expected %s validation error, got %v", tc.field, err)
+			}
+		})
 	}
 }
 

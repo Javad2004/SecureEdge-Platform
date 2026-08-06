@@ -14,9 +14,21 @@ import (
 )
 
 const (
-	maxAdminLogStoreCapacity    = 100_000
-	maxServerHeaderBytes        = 16 << 20
-	maxProxyResponseHeaderBytes = 16 << 20
+	maxAdminLogStoreCapacity          = 100_000
+	maxServerHeaderBytes              = 16 << 20
+	maxProxyResponseHeaderBytes       = 16 << 20
+	maxTrustedProxyCIDRs              = 4_096
+	maxRoutes                         = 2_048
+	maxHostsPerRoute                  = 256
+	maxUpstreamsPerRoute              = 256
+	maxProxyRetryCount                = 10
+	maxProxyIdleConnections           = 1_000_000
+	maxCacheEntries                   = 1_000_000
+	maxCacheBytes               int64 = 64 << 30
+	maxCacheObjectBytes         int64 = 1 << 30
+	maxCacheVaryHeaders               = 128
+	maxCacheStatusCodes               = 128
+	maxHealthStatuses                 = 128
 )
 
 type Config struct {
@@ -303,9 +315,13 @@ func (c *Config) Validate() error {
 	} else if reservedClientIPSourceHeader(c.Server.ForwardedForHeader) {
 		errs = append(errs, fmt.Errorf("server.forwarded_for_header %q is reserved and cannot be used as a client IP source", c.Server.ForwardedForHeader))
 	}
-	trusted := make([]string, 0, len(c.Server.TrustedProxyCIDRs))
+	if len(c.Server.TrustedProxyCIDRs) > maxTrustedProxyCIDRs {
+		errs = append(errs, fmt.Errorf("server.trusted_proxy_cidrs cannot contain more than %d entries", maxTrustedProxyCIDRs))
+	}
+	trustedInput := c.Server.TrustedProxyCIDRs[:validationLimit(len(c.Server.TrustedProxyCIDRs), maxTrustedProxyCIDRs)]
+	trusted := make([]string, 0, len(trustedInput))
 	seenTrusted := map[string]struct{}{}
-	for _, raw := range c.Server.TrustedProxyCIDRs {
+	for _, raw := range trustedInput {
 		_, network, err := net.ParseCIDR(strings.TrimSpace(raw))
 		if err != nil {
 			errs = append(errs, fmt.Errorf("invalid server.trusted_proxy_cidrs entry %q", raw))
@@ -356,14 +372,19 @@ func (c *Config) Validate() error {
 
 	if len(c.Routes) == 0 {
 		errs = append(errs, errors.New("at least one route is required"))
+	} else if len(c.Routes) > maxRoutes {
+		errs = append(errs, fmt.Errorf("routes cannot contain more than %d entries", maxRoutes))
 	}
 	names := map[string]struct{}{}
 	selectors := map[string]string{}
-	for i := range c.Routes {
+	routeLimit := validationLimit(len(c.Routes), maxRoutes)
+	for i := 0; i < routeLimit; i++ {
 		r := &c.Routes[i]
 		r.Name = strings.TrimSpace(r.Name)
 		if r.Name == "" {
 			errs = append(errs, fmt.Errorf("routes[%d].name is required", i))
+		} else if len(r.Name) > 256 {
+			errs = append(errs, fmt.Errorf("routes[%d].name cannot exceed 256 bytes", i))
 		} else {
 			nameKey := strings.ToLower(r.Name)
 			if _, exists := names[nameKey]; exists {
@@ -374,9 +395,12 @@ func (c *Config) Validate() error {
 		}
 		if len(r.Hosts) == 0 {
 			errs = append(errs, fmt.Errorf("route %q requires at least one host", r.Name))
+		} else if len(r.Hosts) > maxHostsPerRoute {
+			errs = append(errs, fmt.Errorf("route %q cannot contain more than %d hosts", r.Name, maxHostsPerRoute))
 		}
+		hostLimit := validationLimit(len(r.Hosts), maxHostsPerRoute)
 		seenHosts := map[string]struct{}{}
-		for j, rawHost := range r.Hosts {
+		for j, rawHost := range r.Hosts[:hostLimit] {
 			host, hostErr := normalizeRouteHostPattern(rawHost)
 			if hostErr != nil {
 				errs = append(errs, fmt.Errorf("route %q hosts[%d]: %w", r.Name, j, hostErr))
@@ -397,6 +421,8 @@ func (c *Config) Validate() error {
 		}
 		if len(r.Upstreams) == 0 {
 			errs = append(errs, fmt.Errorf("route %q requires at least one upstream", r.Name))
+		} else if len(r.Upstreams) > maxUpstreamsPerRoute {
+			errs = append(errs, fmt.Errorf("route %q cannot contain more than %d upstreams", r.Name, maxUpstreamsPerRoute))
 		}
 		r.LoadBalancing.Algorithm = strings.ToLower(strings.TrimSpace(r.LoadBalancing.Algorithm))
 		if r.LoadBalancing.Algorithm == "" {
@@ -419,7 +445,7 @@ func (c *Config) Validate() error {
 		if r.LoadBalancing.EWMAAlpha <= 0 || r.LoadBalancing.EWMAAlpha > 1 {
 			errs = append(errs, fmt.Errorf("route %q load_balancing.ewma_alpha must be greater than 0 and no greater than 1", r.Name))
 		}
-		for _, host := range r.Hosts {
+		for _, host := range r.Hosts[:hostLimit] {
 			if host == "" {
 				continue
 			}
@@ -431,7 +457,8 @@ func (c *Config) Validate() error {
 			}
 		}
 		seenUpstreamNames := map[string]struct{}{}
-		for j := range r.Upstreams {
+		upstreamLimit := validationLimit(len(r.Upstreams), maxUpstreamsPerRoute)
+		for j := 0; j < upstreamLimit; j++ {
 			r.Upstreams[j].Name = strings.TrimSpace(r.Upstreams[j].Name)
 			r.Upstreams[j].URL = strings.TrimSpace(r.Upstreams[j].URL)
 			if r.Upstreams[j].Weight == 0 {
@@ -442,6 +469,9 @@ func (c *Config) Validate() error {
 			}
 			if r.Upstreams[j].Name == "" {
 				r.Upstreams[j].Name = fmt.Sprintf("origin-%d", j+1)
+			}
+			if len(r.Upstreams[j].Name) > 256 {
+				errs = append(errs, fmt.Errorf("route %q upstream[%d] name cannot exceed 256 bytes", r.Name, j))
 			}
 			nameKey := strings.ToLower(r.Upstreams[j].Name)
 			if _, exists := seenUpstreamNames[nameKey]; exists {
@@ -484,19 +514,24 @@ func (c *Config) Validate() error {
 		if r.Proxy.IdleConnTimeout.Duration < 0 || r.Proxy.RetryBackoff.Duration < 0 {
 			errs = append(errs, fmt.Errorf("route %q proxy idle timeout and retry backoff cannot be negative", r.Name))
 		}
-		if r.Proxy.RetryCount < 0 {
-			errs = append(errs, fmt.Errorf("route %q retry_count cannot be negative", r.Name))
+		if r.Proxy.RetryCount < 0 || r.Proxy.RetryCount > maxProxyRetryCount {
+			errs = append(errs, fmt.Errorf("route %q retry_count must be between 0 and %d", r.Name, maxProxyRetryCount))
 		}
-		if r.Proxy.MaxIdleConns <= 0 || r.Proxy.MaxIdleConnsPerHost <= 0 {
-			errs = append(errs, fmt.Errorf("route %q proxy connection limits must be positive", r.Name))
+		if r.Proxy.MaxIdleConns <= 0 || r.Proxy.MaxIdleConns > maxProxyIdleConnections || r.Proxy.MaxIdleConnsPerHost <= 0 || r.Proxy.MaxIdleConnsPerHost > maxProxyIdleConnections {
+			errs = append(errs, fmt.Errorf("route %q proxy connection limits must be between 1 and %d", r.Name, maxProxyIdleConnections))
 		}
 		if r.Proxy.MaxResponseHeaderBytes <= 0 || r.Proxy.MaxResponseHeaderBytes > maxProxyResponseHeaderBytes {
 			errs = append(errs, fmt.Errorf("route %q proxy.max_response_header_bytes must be between 1 and %d", r.Name, maxProxyResponseHeaderBytes))
 		}
 
 		if r.Cache.Enabled {
-			varied := make([]string, 0, len(r.Cache.VaryRequestHeaders)+2)
+			if len(r.Cache.VaryRequestHeaders) > maxCacheVaryHeaders {
+				errs = append(errs, fmt.Errorf("route %q cache.vary_request_headers cannot contain more than %d entries", r.Name, maxCacheVaryHeaders))
+			}
+			varyInput := r.Cache.VaryRequestHeaders[:validationLimit(len(r.Cache.VaryRequestHeaders), maxCacheVaryHeaders)]
+			varied := make([]string, 0, maxCacheVaryHeaders)
 			seenVary := map[string]struct{}{}
+			varyOverflow := false
 			addVary := func(raw string) {
 				name := http.CanonicalHeaderKey(strings.TrimSpace(raw))
 				if !validHTTPToken(name) {
@@ -507,10 +542,17 @@ func (c *Config) Validate() error {
 				if _, exists := seenVary[key]; exists {
 					return
 				}
+				if len(varied) >= maxCacheVaryHeaders {
+					if !varyOverflow {
+						errs = append(errs, fmt.Errorf("route %q effective cache.vary_request_headers cannot contain more than %d entries", r.Name, maxCacheVaryHeaders))
+						varyOverflow = true
+					}
+					return
+				}
 				seenVary[key] = struct{}{}
 				varied = append(varied, name)
 			}
-			for _, name := range r.Cache.VaryRequestHeaders {
+			for _, name := range varyInput {
 				addVary(name)
 			}
 			if r.Cache.CacheAuthorizedRequests {
@@ -526,16 +568,25 @@ func (c *Config) Validate() error {
 			if r.Cache.StaleIfError.Duration < 0 {
 				errs = append(errs, fmt.Errorf("route %q cache.stale_if_error cannot be negative", r.Name))
 			}
-			if r.Cache.MaxEntries <= 0 || r.Cache.MaxBytes <= 0 || r.Cache.MaxObjectBytes <= 0 {
-				errs = append(errs, fmt.Errorf("route %q cache limits must be positive", r.Name))
+			if r.Cache.MaxEntries <= 0 || r.Cache.MaxEntries > maxCacheEntries {
+				errs = append(errs, fmt.Errorf("route %q cache.max_entries must be between 1 and %d", r.Name, maxCacheEntries))
+			}
+			if r.Cache.MaxBytes <= 0 || r.Cache.MaxBytes > maxCacheBytes {
+				errs = append(errs, fmt.Errorf("route %q cache.max_bytes must be between 1 and %d", r.Name, maxCacheBytes))
+			}
+			if r.Cache.MaxObjectBytes <= 0 || r.Cache.MaxObjectBytes > maxCacheObjectBytes {
+				errs = append(errs, fmt.Errorf("route %q cache.max_object_bytes must be between 1 and %d", r.Name, maxCacheObjectBytes))
 			}
 			if r.Cache.MaxObjectBytes > r.Cache.MaxBytes {
 				errs = append(errs, fmt.Errorf("route %q max_object_bytes cannot exceed max_bytes", r.Name))
 			}
 			if len(r.Cache.CacheableStatusCodes) == 0 {
 				errs = append(errs, fmt.Errorf("route %q cache.cacheable_status_codes cannot be empty", r.Name))
+			} else if len(r.Cache.CacheableStatusCodes) > maxCacheStatusCodes {
+				errs = append(errs, fmt.Errorf("route %q cache.cacheable_status_codes cannot contain more than %d entries", r.Name, maxCacheStatusCodes))
 			}
-			for _, status := range r.Cache.CacheableStatusCodes {
+			statusLimit := validationLimit(len(r.Cache.CacheableStatusCodes), maxCacheStatusCodes)
+			for _, status := range r.Cache.CacheableStatusCodes[:statusLimit] {
 				if status < 100 || status > 599 {
 					errs = append(errs, fmt.Errorf("route %q has invalid cacheable status %d", r.Name, status))
 				}
@@ -551,8 +602,14 @@ func (c *Config) Validate() error {
 			}
 			if r.HealthCheck.Interval.Duration <= 0 || r.HealthCheck.Timeout.Duration <= 0 {
 				errs = append(errs, fmt.Errorf("route %q health-check durations must be positive", r.Name))
+			} else if r.HealthCheck.Timeout.Duration > r.HealthCheck.Interval.Duration {
+				errs = append(errs, fmt.Errorf("route %q health_check.timeout cannot exceed interval", r.Name))
 			}
-			for _, status := range r.HealthCheck.HealthyStatuses {
+			if len(r.HealthCheck.HealthyStatuses) > maxHealthStatuses {
+				errs = append(errs, fmt.Errorf("route %q health_check.healthy_statuses cannot contain more than %d entries", r.Name, maxHealthStatuses))
+			}
+			healthStatusLimit := validationLimit(len(r.HealthCheck.HealthyStatuses), maxHealthStatuses)
+			for _, status := range r.HealthCheck.HealthyStatuses[:healthStatusLimit] {
 				if status < 100 || status > 599 {
 					errs = append(errs, fmt.Errorf("route %q has invalid healthy status %d", r.Name, status))
 				}
@@ -560,6 +617,13 @@ func (c *Config) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func validationLimit(length, maximum int) int {
+	if length > maximum {
+		return maximum
+	}
+	return length
 }
 
 func normalizeRouteHostPattern(raw string) (string, error) {

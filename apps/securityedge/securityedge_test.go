@@ -689,6 +689,56 @@ func TestReplaceConfigPersistsValidatedRestartRevision(t *testing.T) {
 	}
 }
 
+func TestRestartFallbackPreservesLatestSuccessfulHotReload(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.Admin.AuthToken = "security-secret"
+	cfg.EdgeProxy.AdminToken = "edge-secret"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	hot := runtime.RedactedConfig()
+	hot.WAF.MaximumMatchesPerRequest = 48
+	if err := runtime.ReplaceConfig(hot); err != nil {
+		t.Fatalf("hot update failed: %v", err)
+	}
+
+	restartCandidate := runtime.RedactedConfig()
+	restartCandidate.Server.ListenAddr = availableListenerAddress(t)
+	err = runtime.ReplaceConfig(restartCandidate)
+	var marker restartRequiredMarker
+	if !errors.As(err, &marker) || !marker.RestartRequired() {
+		t.Fatalf("expected restart-required marker, got %v", err)
+	}
+
+	path, fallback := runtime.RestartFallback()
+	if path != cfgPath {
+		t.Fatalf("fallback path=%q, want %q", path, cfgPath)
+	}
+	if fallback.WAF.MaximumMatchesPerRequest != 48 {
+		t.Fatalf("fallback lost hot-applied WAF revision: %#v", fallback.WAF)
+	}
+	if fallback.Server.ListenAddr != cfg.Server.ListenAddr {
+		t.Fatalf("fallback captured unstarted listener %q, want %q", fallback.Server.ListenAddr, cfg.Server.ListenAddr)
+	}
+	if fallback.Admin.AuthToken != "security-secret" || fallback.EdgeProxy.AdminToken != "edge-secret" {
+		t.Fatalf("fallback did not preserve file-backed secrets: admin=%q edge=%q", fallback.Admin.AuthToken, fallback.EdgeProxy.AdminToken)
+	}
+}
+
 func TestWatcherStatusSurvivesManagedGenerationRestart(t *testing.T) {
 	dir := t.TempDir()
 	edgePath := filepath.Join(dir, "edge.json")

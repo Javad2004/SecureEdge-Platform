@@ -87,3 +87,28 @@ func TestDashboardAdvancedControlPlaneContract(t *testing.T) {
 		}
 	}
 }
+
+func TestDashboardResourceInputsMatchBackendSafetyLimits(t *testing.T) {
+	index, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(index)
+	for _, required := range []string{
+		`id="route-retry-count" type="number" min="0" max="10"`,
+		`id="route-max-idle" type="number" min="1" max="1000000"`,
+		`id="route-cache-entries" type="number" min="1" max="1000000"`,
+		`id="route-cache-mib" type="number" min="1" max="65536"`,
+		`id="route-cache-object-mib" type="number" min="0.001" max="1024"`,
+		`name="upstream_transport.max_idle_conns" type="number" min="1" max="1000000"`,
+		`name="upstream_transport.max_idle_conns_per_host" type="number" min="1" max="1000000"`,
+		`name="upstream_transport.max_conns_per_host" type="number" min="0" max="1000000"`,
+		`name="requests_per_second" type="number" step="0.1" min="0.1" max="1000000"`,
+		`name="violation_threshold" type="number" min="1" max="10000"`,
+		`name="max_tracked_clients" type="number" min="1" max="1000000"`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard safety boundary is missing %q", required)
+		}
+	}
+}

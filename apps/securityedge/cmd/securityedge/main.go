@@ -95,7 +95,6 @@ func run() int {
 type securityGeneration struct {
 	runtime       *securityedge.Runtime
 	cfg           config.Config
-	fileCfg       config.Config
 	gatewayServer *http.Server
 	adminServer   *http.Server
 	errCh         chan error
@@ -145,7 +144,8 @@ func runManaged(configPath, envPath string, logger *slog.Logger, allowEnvironmen
 		}
 		restart, nextConfigPath, runErr := superviseSecurityGeneration(sigCtx, gen, envPath, defaultConfigPath, allowEnvironmentConfigPath, logger)
 		if restart {
-			fallback = &securityRestartFallback{path: gen.runtime.ConfigPath(), cfg: gen.fileCfg, watch: gen.runtime.WatchStatus()}
+			fallbackPath, fallbackConfig := gen.runtime.RestartFallback()
+			fallback = &securityRestartFallback{path: fallbackPath, cfg: fallbackConfig, watch: gen.runtime.WatchStatus()}
 		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), gen.cfg.Server.ShutdownTimeout.Duration)
 		shutdownErr := shutdownServers(shutdownCtx,
@@ -170,17 +170,13 @@ func runManaged(configPath, envPath string, logger *slog.Logger, allowEnvironmen
 }
 
 func startSecurityGeneration(configPath, envPath string, previousWatch securityedge.WatchStatus, logger *slog.Logger) (*securityGeneration, error) {
-	fileCfg, err := config.LoadFile(configPath)
-	if err != nil {
-		return nil, err
-	}
 	runtime, err := securityedge.New(configPath, logger)
 	if err != nil {
 		return nil, err
 	}
 	runtime.ConfigureWatcher(envPath, previousWatch)
 	cfg := runtime.Config()
-	gen := &securityGeneration{runtime: runtime, cfg: cfg, fileCfg: fileCfg, errCh: make(chan error, 2)}
+	gen := &securityGeneration{runtime: runtime, cfg: cfg, errCh: make(chan error, 2)}
 	var gatewayListener net.Listener
 	var adminListener net.Listener
 	if cfg.Admin.Enabled {

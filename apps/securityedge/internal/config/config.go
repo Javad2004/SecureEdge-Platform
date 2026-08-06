@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net"
 	"net/url"
@@ -27,6 +28,25 @@ const (
 	maxRateLimitBuckets            = 1_000_000
 	maxAutoBanTrackedClients       = 1_000_000
 	maxUpstreamResponseHeaderBytes = 16 << 20
+	maxUpstreamConnections         = 1_000_000
+	maxTrustedProxyCIDRs           = 4_096
+	maxDNSProbeNames               = 256
+	maxDNSExpectedAddresses        = 256
+	maxCustomRules                 = 256
+	maxCustomRuleIDBytes           = 128
+	maxCustomRuleNameBytes         = 256
+	maxCustomRuleCategoryBytes     = 128
+	maxCustomRuleDescriptionBytes  = 2_048
+	maxCustomRulePatternBytes      = 4 << 10
+	maxRoutePolicies               = 2_048
+	maxPolicyBodyTypes             = 128
+	maxPolicyMethods               = 128
+	maxPolicyPathPrefixes          = 4_096
+	maxPolicyDisabledRules         = 4_096
+	maxPolicyIPEntries             = 4_096
+	maxRateLimitRequestsPerSecond  = 1_000_000.0
+	maxRateLimitBurst              = 1_000_000
+	maxAutoBanViolationThreshold   = 10_000
 )
 
 type Config struct {
@@ -445,9 +465,13 @@ func (c *Config) Validate() error {
 	} else if reservedClientIPSourceHeader(c.Server.ForwardedForHeader) {
 		errs = append(errs, fmt.Errorf("server.forwarded_for_header %q is reserved and cannot be used as a client IP source", c.Server.ForwardedForHeader))
 	}
-	trusted := make([]string, 0, len(c.Server.TrustedProxyCIDRs))
+	if len(c.Server.TrustedProxyCIDRs) > maxTrustedProxyCIDRs {
+		errs = append(errs, fmt.Errorf("server.trusted_proxy_cidrs cannot contain more than %d entries", maxTrustedProxyCIDRs))
+	}
+	trustedInput := c.Server.TrustedProxyCIDRs[:validationLimit(len(c.Server.TrustedProxyCIDRs), maxTrustedProxyCIDRs)]
+	trusted := make([]string, 0, len(trustedInput))
 	seenTrusted := map[string]struct{}{}
-	for _, raw := range c.Server.TrustedProxyCIDRs {
+	for _, raw := range trustedInput {
 		_, network, err := net.ParseCIDR(strings.TrimSpace(raw))
 		if err != nil {
 			errs = append(errs, fmt.Errorf("invalid server.trusted_proxy_cidrs entry %q", raw))
@@ -514,12 +538,19 @@ func (c *Config) Validate() error {
 				errs = append(errs, errors.New("admin.connectivity.history_capacity must be between 1 and 10000"))
 			}
 			if c.Admin.Connectivity.DNS.Enabled {
+				if len(c.Admin.Connectivity.DNS.Names) > maxDNSProbeNames {
+					errs = append(errs, fmt.Errorf("admin.connectivity.dns.names cannot contain more than %d entries", maxDNSProbeNames))
+				}
+				if len(c.Admin.Connectivity.DNS.ExpectedAddresses) > maxDNSExpectedAddresses {
+					errs = append(errs, fmt.Errorf("admin.connectivity.dns.expected_addresses cannot contain more than %d entries", maxDNSExpectedAddresses))
+				}
 				if err := validateHostPort("admin.connectivity.dns.server", c.Admin.Connectivity.DNS.Server, false); err != nil {
 					errs = append(errs, err)
 				}
-				names := make([]string, 0, len(c.Admin.Connectivity.DNS.Names))
+				nameInput := c.Admin.Connectivity.DNS.Names[:validationLimit(len(c.Admin.Connectivity.DNS.Names), maxDNSProbeNames)]
+				names := make([]string, 0, len(nameInput))
 				seenNames := map[string]struct{}{}
-				for _, raw := range c.Admin.Connectivity.DNS.Names {
+				for _, raw := range nameInput {
 					name, nameErr := normalizeDNSProbeName(raw)
 					if nameErr != nil {
 						errs = append(errs, fmt.Errorf("invalid admin.connectivity.dns.names entry %q: %w", raw, nameErr))
@@ -536,9 +567,10 @@ func (c *Config) Validate() error {
 					errs = append(errs, errors.New("admin.connectivity.dns.names must contain at least one domain when DNS probing is enabled"))
 				}
 
-				expected := make([]string, 0, len(c.Admin.Connectivity.DNS.ExpectedAddresses))
+				expectedInput := c.Admin.Connectivity.DNS.ExpectedAddresses[:validationLimit(len(c.Admin.Connectivity.DNS.ExpectedAddresses), maxDNSExpectedAddresses)]
+				expected := make([]string, 0, len(expectedInput))
 				seenExpected := map[string]struct{}{}
-				for _, raw := range c.Admin.Connectivity.DNS.ExpectedAddresses {
+				for _, raw := range expectedInput {
 					ip := net.ParseIP(strings.TrimSpace(raw))
 					if ip == nil {
 						errs = append(errs, fmt.Errorf("invalid admin.connectivity.dns.expected_addresses entry %q", raw))
@@ -590,9 +622,13 @@ func (c *Config) Validate() error {
 	if c.DefaultPolicy.MaxInspectionBodyBytes > c.Server.MaxRequestBodyBytes {
 		errs = append(errs, errors.New("default_policy.max_inspection_body_bytes cannot exceed server.max_request_body_bytes"))
 	}
-	names := make([]string, 0, len(c.RoutePolicies))
-	for name := range c.RoutePolicies {
-		names = append(names, name)
+	names := make([]string, 0, validationLimit(len(c.RoutePolicies), maxRoutePolicies))
+	if len(c.RoutePolicies) > maxRoutePolicies {
+		errs = append(errs, fmt.Errorf("route_policies cannot contain more than %d entries", maxRoutePolicies))
+	} else {
+		for name := range c.RoutePolicies {
+			names = append(names, name)
+		}
 	}
 	sort.Strings(names)
 	for _, name := range names {
@@ -624,6 +660,13 @@ func (c *Config) Validate() error {
 	return errors.Join(errs...)
 }
 
+func validationLimit(length, maximum int) int {
+	if length > maximum {
+		return maximum
+	}
+	return length
+}
+
 func validateTransport(t TransportConfig) error {
 	var errs []error
 	for name, d := range map[string]Duration{
@@ -635,8 +678,10 @@ func validateTransport(t TransportConfig) error {
 			errs = append(errs, fmt.Errorf("server.upstream_transport.%s must be positive", name))
 		}
 	}
-	if t.MaxIdleConns <= 0 || t.MaxIdleConnsPerHost <= 0 || t.MaxConnsPerHost < 0 {
-		errs = append(errs, errors.New("server upstream connection limits are invalid"))
+	if t.MaxIdleConns <= 0 || t.MaxIdleConns > maxUpstreamConnections ||
+		t.MaxIdleConnsPerHost <= 0 || t.MaxIdleConnsPerHost > maxUpstreamConnections ||
+		t.MaxConnsPerHost < 0 || t.MaxConnsPerHost > maxUpstreamConnections {
+		errs = append(errs, fmt.Errorf("server upstream connection limits must be between 0 or 1 (as applicable) and %d", maxUpstreamConnections))
 	}
 	if t.MaxResponseHeaderBytes <= 0 || t.MaxResponseHeaderBytes > maxUpstreamResponseHeaderBytes {
 		errs = append(errs, fmt.Errorf("server.upstream_transport.max_response_header_bytes must be between 1 and %d", maxUpstreamResponseHeaderBytes))
@@ -646,9 +691,16 @@ func validateTransport(t TransportConfig) error {
 
 func validateCustomRules(rules []CustomRuleConfig) error {
 	var errs []error
+	if len(rules) > maxCustomRules {
+		errs = append(errs, fmt.Errorf("waf.custom_rules cannot contain more than %d entries", maxCustomRules))
+	}
 	seen := map[string]bool{}
 	validTargets := map[string]bool{"path": true, "query": true, "body": true, "headers": true, "cookies": true}
-	for i := range rules {
+	limit := len(rules)
+	if limit > maxCustomRules {
+		limit = maxCustomRules
+	}
+	for i := 0; i < limit; i++ {
 		r := &rules[i]
 		r.ID = strings.ToUpper(strings.TrimSpace(r.ID))
 		r.Name = strings.TrimSpace(r.Name)
@@ -660,16 +712,36 @@ func validateCustomRules(rules []CustomRuleConfig) error {
 		if r.Name == "" || r.Category == "" || r.Description == "" || len(r.Targets) == 0 || r.Pattern == "" {
 			errs = append(errs, fmt.Errorf("waf.custom_rules[%d] is incomplete", i))
 		}
+		if len(r.ID) > maxCustomRuleIDBytes || len(r.Name) > maxCustomRuleNameBytes || len(r.Category) > maxCustomRuleCategoryBytes || len(r.Description) > maxCustomRuleDescriptionBytes {
+			errs = append(errs, fmt.Errorf("waf.custom_rules[%d] contains an overlong id, name, category, or description", i))
+		}
+		if len(r.Pattern) > maxCustomRulePatternBytes {
+			errs = append(errs, fmt.Errorf("waf.custom_rules[%d].pattern cannot exceed %d bytes", i, maxCustomRulePatternBytes))
+		}
 		if r.Score <= 0 || r.Score > MaxCustomRuleScore {
 			errs = append(errs, fmt.Errorf("waf.custom_rules[%d].score must be between 1 and %d", i, MaxCustomRuleScore))
 		}
+		if len(r.Targets) > len(validTargets) {
+			errs = append(errs, fmt.Errorf("waf.custom_rules[%d].targets cannot contain more than %d entries", i, len(validTargets)))
+		}
+		targets := make([]string, 0, len(r.Targets))
+		seenTargets := map[string]bool{}
 		for _, target := range r.Targets {
-			if !validTargets[strings.ToLower(strings.TrimSpace(target))] {
+			target = strings.ToLower(strings.TrimSpace(target))
+			if !validTargets[target] {
 				errs = append(errs, fmt.Errorf("waf.custom_rules[%d] has unsupported target %q", i, target))
+				continue
+			}
+			if !seenTargets[target] {
+				seenTargets[target] = true
+				targets = append(targets, target)
 			}
 		}
-		if _, err := regexp.Compile(r.Pattern); err != nil {
-			errs = append(errs, fmt.Errorf("waf.custom_rules[%d].pattern: %w", i, err))
+		r.Targets = targets
+		if len(r.Pattern) <= maxCustomRulePatternBytes {
+			if _, err := regexp.Compile(r.Pattern); err != nil {
+				errs = append(errs, fmt.Errorf("waf.custom_rules[%d].pattern: %w", i, err))
+			}
 		}
 	}
 	return errors.Join(errs...)
@@ -690,9 +762,25 @@ func validatePolicy(name string, p *Policy) error {
 	if p.InspectRequestBody && p.MaxInspectionBodyBytes <= 0 {
 		errs = append(errs, fmt.Errorf("%s.max_inspection_body_bytes must be positive when request-body inspection is enabled", name))
 	}
-	bodyTypes := make([]string, 0, len(p.BodyContentTypes))
+	if len(p.BodyContentTypes) > maxPolicyBodyTypes {
+		errs = append(errs, fmt.Errorf("%s.body_content_types cannot contain more than %d entries", name, maxPolicyBodyTypes))
+	}
+	if len(p.AllowedMethods) > maxPolicyMethods {
+		errs = append(errs, fmt.Errorf("%s.allowed_methods cannot contain more than %d entries", name, maxPolicyMethods))
+	}
+	if len(p.ExcludedPathPrefixes) > maxPolicyPathPrefixes {
+		errs = append(errs, fmt.Errorf("%s.excluded_path_prefixes cannot contain more than %d entries", name, maxPolicyPathPrefixes))
+	}
+	if len(p.DisabledRules) > maxPolicyDisabledRules {
+		errs = append(errs, fmt.Errorf("%s.disabled_rules cannot contain more than %d entries", name, maxPolicyDisabledRules))
+	}
+	if len(p.IPAllowlist) > maxPolicyIPEntries || len(p.IPDenylist) > maxPolicyIPEntries {
+		errs = append(errs, fmt.Errorf("%s IP allow/deny lists cannot contain more than %d entries each", name, maxPolicyIPEntries))
+	}
+	bodyTypeInput := p.BodyContentTypes[:validationLimit(len(p.BodyContentTypes), maxPolicyBodyTypes)]
+	bodyTypes := make([]string, 0, len(bodyTypeInput))
 	seenBodyTypes := map[string]bool{}
-	for _, raw := range p.BodyContentTypes {
+	for _, raw := range bodyTypeInput {
 		mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(raw))
 		mediaType = strings.ToLower(strings.TrimSpace(mediaType))
 		if err != nil || mediaType == "" || len(params) != 0 {
@@ -714,9 +802,10 @@ func validatePolicy(name string, p *Policy) error {
 	if p.MaxHeaderCount <= 0 || p.MaxHeaderCount > 10000 || p.MaxHeaderValueBytes <= 0 || p.MaxHeaderValueBytes > 16<<20 {
 		errs = append(errs, fmt.Errorf("%s header limits are invalid", name))
 	}
-	methods := make([]string, 0, len(p.AllowedMethods))
+	methodInput := p.AllowedMethods[:validationLimit(len(p.AllowedMethods), maxPolicyMethods)]
+	methods := make([]string, 0, len(methodInput))
 	seen := map[string]bool{}
-	for _, m := range p.AllowedMethods {
+	for _, m := range methodInput {
 		m = strings.ToUpper(strings.TrimSpace(m))
 		if m == "" {
 			continue
@@ -732,9 +821,10 @@ func validatePolicy(name string, p *Policy) error {
 	}
 	p.AllowedMethods = methods
 
-	excludedPaths := make([]string, 0, len(p.ExcludedPathPrefixes))
+	excludedPathInput := p.ExcludedPathPrefixes[:validationLimit(len(p.ExcludedPathPrefixes), maxPolicyPathPrefixes)]
+	excludedPaths := make([]string, 0, len(excludedPathInput))
 	seenExcludedPaths := map[string]bool{}
-	for _, rawPrefix := range p.ExcludedPathPrefixes {
+	for _, rawPrefix := range excludedPathInput {
 		prefix, err := normalizePolicyPathPrefix(rawPrefix)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s.excluded_path_prefixes contains invalid path %q: %w", name, rawPrefix, err))
@@ -750,9 +840,10 @@ func validatePolicy(name string, p *Policy) error {
 	}
 	p.ExcludedPathPrefixes = excludedPaths
 
-	disabledRules := make([]string, 0, len(p.DisabledRules))
+	disabledRuleInput := p.DisabledRules[:validationLimit(len(p.DisabledRules), maxPolicyDisabledRules)]
+	disabledRules := make([]string, 0, len(disabledRuleInput))
 	seenDisabledRules := map[string]bool{}
-	for _, raw := range p.DisabledRules {
+	for _, raw := range disabledRuleInput {
 		id := strings.ToUpper(strings.TrimSpace(raw))
 		if id != "" && !seenDisabledRules[id] {
 			seenDisabledRules[id] = true
@@ -762,20 +853,24 @@ func validatePolicy(name string, p *Policy) error {
 	p.DisabledRules = disabledRules
 
 	if p.RateLimit.Enabled {
-		if p.RateLimit.RequestsPerSecond <= 0 || p.RateLimit.Burst <= 0 || p.RateLimit.GlobalRequestsPerSecond <= 0 || p.RateLimit.GlobalBurst <= 0 {
-			errs = append(errs, fmt.Errorf("%s rate_limit rates and bursts must be positive", name))
+		if p.RateLimit.RequestsPerSecond <= 0 || math.IsNaN(p.RateLimit.RequestsPerSecond) || math.IsInf(p.RateLimit.RequestsPerSecond, 0) || p.RateLimit.RequestsPerSecond > maxRateLimitRequestsPerSecond ||
+			p.RateLimit.GlobalRequestsPerSecond <= 0 || math.IsNaN(p.RateLimit.GlobalRequestsPerSecond) || math.IsInf(p.RateLimit.GlobalRequestsPerSecond, 0) || p.RateLimit.GlobalRequestsPerSecond > maxRateLimitRequestsPerSecond ||
+			p.RateLimit.Burst <= 0 || p.RateLimit.Burst > maxRateLimitBurst || p.RateLimit.GlobalBurst <= 0 || p.RateLimit.GlobalBurst > maxRateLimitBurst {
+			errs = append(errs, fmt.Errorf("%s rate_limit rates and bursts must be positive and cannot exceed %.0f requests/s or %d burst tokens", name, maxRateLimitRequestsPerSecond, maxRateLimitBurst))
 		}
 		if p.RateLimit.CleanupInterval.Duration <= 0 || p.RateLimit.IdleTTL.Duration <= 0 || p.RateLimit.MaxBuckets < 2 || p.RateLimit.MaxBuckets > maxRateLimitBuckets {
 			errs = append(errs, fmt.Errorf("%s rate_limit lifecycle settings must be positive and max_buckets must be between 2 and %d", name, maxRateLimitBuckets))
 		}
 	}
 	if p.AutoBan.Enabled {
-		if p.AutoBan.ViolationThreshold <= 0 || p.AutoBan.Window.Duration <= 0 || p.AutoBan.BanDuration.Duration <= 0 || p.AutoBan.MaxTrackedClients <= 0 || p.AutoBan.MaxTrackedClients > maxAutoBanTrackedClients {
-			errs = append(errs, fmt.Errorf("%s auto_ban settings must be positive and max_tracked_clients cannot exceed %d", name, maxAutoBanTrackedClients))
+		if p.AutoBan.ViolationThreshold <= 0 || p.AutoBan.ViolationThreshold > maxAutoBanViolationThreshold || p.AutoBan.Window.Duration <= 0 || p.AutoBan.BanDuration.Duration <= 0 || p.AutoBan.MaxTrackedClients <= 0 || p.AutoBan.MaxTrackedClients > maxAutoBanTrackedClients {
+			errs = append(errs, fmt.Errorf("%s auto_ban settings must be positive, violation_threshold cannot exceed %d, and max_tracked_clients cannot exceed %d", name, maxAutoBanViolationThreshold, maxAutoBanTrackedClients))
 		}
 	}
-	p.IPAllowlist, errs = normalizeIPList(name+".ip_allowlist", p.IPAllowlist, errs)
-	p.IPDenylist, errs = normalizeIPList(name+".ip_denylist", p.IPDenylist, errs)
+	allowInput := p.IPAllowlist[:validationLimit(len(p.IPAllowlist), maxPolicyIPEntries)]
+	denyInput := p.IPDenylist[:validationLimit(len(p.IPDenylist), maxPolicyIPEntries)]
+	p.IPAllowlist, errs = normalizeIPList(name+".ip_allowlist", allowInput, errs)
+	p.IPDenylist, errs = normalizeIPList(name+".ip_denylist", denyInput, errs)
 	denied := make(map[string]struct{}, len(p.IPDenylist))
 	for _, item := range p.IPDenylist {
 		denied[item] = struct{}{}

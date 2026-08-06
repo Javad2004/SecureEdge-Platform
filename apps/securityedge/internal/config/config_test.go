@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"reflect"
 	"strings"
@@ -623,6 +624,13 @@ func TestValidateRejectsResourceExhaustionLimits(t *testing.T) {
 			wantDetail: "max_concurrent_requests",
 		},
 		{
+			name: "upstream transport connections",
+			mutate: func(cfg *Config) {
+				cfg.Server.UpstreamTransport.MaxIdleConns = maxUpstreamConnections + 1
+			},
+			wantDetail: "upstream connection limits",
+		},
+		{
 			name: "persistent log file size",
 			mutate: func(cfg *Config) {
 				cfg.Admin.LogStore.FilePath = "security.ndjson"
@@ -651,6 +659,93 @@ func TestValidateRejectsResourceExhaustionLimits(t *testing.T) {
 				cfg.DefaultPolicy.AutoBan.MaxTrackedClients = maxAutoBanTrackedClients + 1
 			},
 			wantDetail: "max_tracked_clients",
+		},
+		{
+			name: "trusted proxy cidrs",
+			mutate: func(cfg *Config) {
+				cfg.Server.TrustedProxyCIDRs = make([]string, maxTrustedProxyCIDRs+1)
+			},
+			wantDetail: "trusted_proxy_cidrs",
+		},
+		{
+			name: "dns probe names",
+			mutate: func(cfg *Config) {
+				cfg.Admin.Connectivity.DNS.Enabled = true
+				cfg.Admin.Connectivity.DNS.Server = "127.0.0.1:53"
+				cfg.Admin.Connectivity.DNS.Names = make([]string, maxDNSProbeNames+1)
+			},
+			wantDetail: "dns.names",
+		},
+		{
+			name: "dns expected addresses",
+			mutate: func(cfg *Config) {
+				cfg.Admin.Connectivity.DNS.Enabled = true
+				cfg.Admin.Connectivity.DNS.Server = "127.0.0.1:53"
+				cfg.Admin.Connectivity.DNS.ExpectedAddresses = make([]string, maxDNSExpectedAddresses+1)
+			},
+			wantDetail: "expected_addresses",
+		},
+		{
+			name: "custom rules",
+			mutate: func(cfg *Config) {
+				cfg.WAF.CustomRules = make([]CustomRuleConfig, maxCustomRules+1)
+			},
+			wantDetail: "custom_rules",
+		},
+		{
+			name: "custom rule pattern",
+			mutate: func(cfg *Config) {
+				cfg.WAF.CustomRules = []CustomRuleConfig{{
+					ID: "CUSTOM-LONG", Name: "Long", Category: "custom", Description: "long pattern",
+					Score: 1, Targets: []string{"query"}, Pattern: strings.Repeat("a", maxCustomRulePatternBytes+1),
+				}}
+			},
+			wantDetail: "pattern cannot exceed",
+		},
+		{
+			name: "route policies",
+			mutate: func(cfg *Config) {
+				cfg.RoutePolicies = make(map[string]Policy, maxRoutePolicies+1)
+				for i := 0; i <= maxRoutePolicies; i++ {
+					cfg.RoutePolicies[string(rune(0x1000+i))] = cfg.DefaultPolicy
+				}
+			},
+			wantDetail: "route_policies",
+		},
+		{
+			name: "policy method list",
+			mutate: func(cfg *Config) {
+				cfg.DefaultPolicy.AllowedMethods = make([]string, maxPolicyMethods+1)
+			},
+			wantDetail: "allowed_methods",
+		},
+		{
+			name: "policy ip list",
+			mutate: func(cfg *Config) {
+				cfg.DefaultPolicy.IPDenylist = make([]string, maxPolicyIPEntries+1)
+			},
+			wantDetail: "IP allow/deny lists",
+		},
+		{
+			name: "non finite rate",
+			mutate: func(cfg *Config) {
+				cfg.DefaultPolicy.RateLimit.RequestsPerSecond = math.Inf(1)
+			},
+			wantDetail: "rates and bursts",
+		},
+		{
+			name: "rate burst",
+			mutate: func(cfg *Config) {
+				cfg.DefaultPolicy.RateLimit.Burst = maxRateLimitBurst + 1
+			},
+			wantDetail: "burst tokens",
+		},
+		{
+			name: "automatic ban threshold",
+			mutate: func(cfg *Config) {
+				cfg.DefaultPolicy.AutoBan.ViolationThreshold = maxAutoBanViolationThreshold + 1
+			},
+			wantDetail: "violation_threshold",
 		},
 	}
 

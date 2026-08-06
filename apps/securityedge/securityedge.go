@@ -48,8 +48,13 @@ type Runtime struct {
 	bans      *ratelimit.BanManager
 	admission *admission.Limiter
 	clients   *clientip.Resolver
-	watchMu   sync.RWMutex
-	watch     WatchStatus
+	// healthyFileCfg is the latest persisted configuration that was either used
+	// to start this generation or successfully hot-applied to it. Restart
+	// rollback must use this revision rather than the file as it existed only at
+	// process startup, or later WAF/policy/connection edits can be lost.
+	healthyFileCfg config.Config
+	watchMu        sync.RWMutex
+	watch          WatchStatus
 }
 
 type preparedRuntime struct {
@@ -105,7 +110,22 @@ func New(configPath string, logger *slog.Logger) (*Runtime, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	prepared, err := prepareRuntime(configPath)
+	// Load the file-backed and runtime views from one snapshot. Loading the
+	// file twice leaves a small race where a concurrent atomic update can make
+	// the rollback baseline differ from the configuration that actually started
+	// this generation.
+	fileCfg, err := config.LoadFile(configPath)
+	if err != nil {
+		return nil, err
+	}
+	runtimeCfg := cloneConfig(fileCfg)
+	if err := config.ApplyEnvironmentOverrides(&runtimeCfg); err != nil {
+		return nil, err
+	}
+	if err := runtimeCfg.Validate(); err != nil {
+		return nil, err
+	}
+	prepared, err := prepareRuntimeConfig(configPath, runtimeCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +137,7 @@ func New(configPath string, logger *slog.Logger) (*Runtime, error) {
 		configPath: configPath, logger: logger, cfg: prepared.cfg, table: prepared.table, edge: prepared.edge,
 		registry: metrics.New(), logs: logs, traffic: traffic.New(traffic.DefaultCapacity, traffic.DefaultWindow), inspector: prepared.inspector,
 		limiter: ratelimit.New(prepared.cfg.DefaultPolicy.RateLimit.CleanupInterval.Duration, prepared.cfg.DefaultPolicy.RateLimit.IdleTTL.Duration),
-		bans:    ratelimit.NewBanManager(), admission: admission.New(), clients: prepared.clients,
+		bans:    ratelimit.NewBanManager(), admission: admission.New(), clients: prepared.clients, healthyFileCfg: cloneConfig(fileCfg),
 	}, nil
 }
 
@@ -194,6 +214,16 @@ func (r *Runtime) EdgeConfigPath() string {
 	return resolveEdgeConfigPath(r.configPath, edgePath)
 }
 
+// RestartFallback returns the latest file-backed revision known to be healthy
+// in the active generation. It deliberately excludes a restart-required
+// candidate that may already have been persisted but has not successfully
+// bound its replacement listeners yet.
+func (r *Runtime) RestartFallback() (string, config.Config) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.configPath, cloneConfig(r.healthyFileCfg)
+}
+
 // ReloadEdgeRoutes reloads only the shared EdgeProxy route table. It deliberately
 // does not compare SecurityEdge listener/admin fields and therefore never
 // schedules a SecurityEdge restart for a route or origin edit.
@@ -263,6 +293,9 @@ func (r *Runtime) ReplaceConfig(candidate config.Config) error {
 		rollbackErr := config.Save(r.configPath, fileCfg)
 		return errors.Join(err, rollbackErr)
 	}
+	r.mu.Lock()
+	r.healthyFileCfg = cloneConfig(candidate)
+	r.mu.Unlock()
 	return nil
 }
 func (r *Runtime) ServerConfig() config.ServerConfig {
@@ -382,15 +415,28 @@ func (r *Runtime) Reload() error {
 	r.configMu.Lock()
 	defer r.configMu.Unlock()
 
-	cfg, err := config.Load(r.configPath)
+	fileCfg, err := config.LoadFile(r.configPath)
 	if err != nil {
+		return err
+	}
+	cfg := cloneConfig(fileCfg)
+	if err := config.ApplyEnvironmentOverrides(&cfg); err != nil {
+		return err
+	}
+	if err := cfg.Validate(); err != nil {
 		return err
 	}
 	prepared, err := r.prepareReload(cfg)
 	if err != nil {
 		return err
 	}
-	return r.applyReload(prepared)
+	if err := r.applyReload(prepared); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.healthyFileCfg = cloneConfig(fileCfg)
+	r.mu.Unlock()
+	return nil
 }
 
 // ValidateRestartConfig validates a configuration selected by a watched
@@ -493,6 +539,9 @@ func (r *Runtime) update(mutator func(*config.Config)) error {
 		rollbackErr := config.Save(r.configPath, fileCfg)
 		return errors.Join(err, rollbackErr)
 	}
+	r.mu.Lock()
+	r.healthyFileCfg = cloneConfig(candidate)
+	r.mu.Unlock()
 	return nil
 }
 

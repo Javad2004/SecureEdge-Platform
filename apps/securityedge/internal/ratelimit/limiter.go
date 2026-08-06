@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -90,9 +91,18 @@ func (l *Limiter) allowLocked(key string, rate float64, burst, maxBuckets int, n
 		return true, 0, ""
 	}
 	missing := 1 - b.tokens
-	retry := time.Duration((missing / rate) * float64(time.Second))
-	if retry < time.Millisecond {
+	waitSeconds := missing / rate
+	maxSeconds := float64(math.MaxInt64) / float64(time.Second)
+	var retry time.Duration
+	if math.IsNaN(waitSeconds) || waitSeconds <= 0 {
 		retry = time.Millisecond
+	} else if math.IsInf(waitSeconds, 1) || waitSeconds >= maxSeconds {
+		retry = time.Duration(math.MaxInt64)
+	} else {
+		retry = time.Duration(waitSeconds * float64(time.Second))
+		if retry < time.Millisecond {
+			retry = time.Millisecond
+		}
 	}
 	return false, retry, "rate_exceeded"
 }
@@ -130,6 +140,7 @@ type violation struct {
 	bannedUntil   time.Time
 	banViolations int
 	seen          time.Time
+	window        time.Duration
 }
 
 type Ban struct {
@@ -139,8 +150,9 @@ type Ban struct {
 }
 
 type BanManager struct {
-	mu      sync.Mutex
-	clients map[string]*violation
+	mu          sync.Mutex
+	clients     map[string]*violation
+	lastCleanup time.Time
 }
 
 func NewBanManager() *BanManager { return &BanManager{clients: map[string]*violation{}} }
@@ -149,7 +161,16 @@ func (m *BanManager) IsBanned(client string, now time.Time) (bool, time.Duration
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	v := m.clients[client]
-	if v == nil || !now.Before(v.bannedUntil) {
+	if v == nil {
+		return false, 0
+	}
+	if !now.Before(v.bannedUntil) {
+		// A completed ban has no pending violation timestamps. Remove it as
+		// soon as it is observed after expiry instead of retaining inactive
+		// clients until capacity pressure happens to evict them.
+		if len(v.times) == 0 && !v.bannedUntil.IsZero() {
+			delete(m.clients, client)
+		}
 		return false, 0
 	}
 	v.seen = now
@@ -164,6 +185,7 @@ func (m *BanManager) RecordViolation(client string, cfg config.AutoBanConfig, no
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.cleanupInactiveLocked(cfg, now)
 	v := m.clients[client]
 	if v == nil {
 		if len(m.clients) >= cfg.MaxTrackedClients {
@@ -178,6 +200,7 @@ func (m *BanManager) RecordViolation(client string, cfg config.AutoBanConfig, no
 		m.clients[client] = v
 	}
 	v.seen = now
+	v.window = cfg.Window.Duration
 	cutoff := now.Add(-cfg.Window.Duration)
 	kept := v.times[:0]
 	for _, t := range v.times {
@@ -202,6 +225,8 @@ func (m *BanManager) List(now time.Time) []Ban {
 	for client, v := range m.clients {
 		if now.Before(v.bannedUntil) {
 			out = append(out, Ban{Client: client, BannedUntil: v.bannedUntil.UTC().Format(time.RFC3339Nano), Violations: v.banViolations})
+		} else if len(v.times) == 0 && !v.bannedUntil.IsZero() {
+			delete(m.clients, client)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Client < out[j].Client })
@@ -228,12 +253,51 @@ func (m *BanManager) ActiveCount(now time.Time) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	n := 0
-	for _, v := range m.clients {
+	for client, v := range m.clients {
 		if now.Before(v.bannedUntil) {
 			n++
+		} else if len(v.times) == 0 && !v.bannedUntil.IsZero() {
+			delete(m.clients, client)
 		}
 	}
 	return n
+}
+
+func (m *BanManager) cleanupInactiveLocked(cfg config.AutoBanConfig, now time.Time) {
+	interval := cfg.Window.Duration / 2
+	if interval < time.Second {
+		interval = time.Second
+	}
+	if interval > time.Minute {
+		interval = time.Minute
+	}
+	if !m.lastCleanup.IsZero() {
+		elapsed := now.Sub(m.lastCleanup)
+		if elapsed >= 0 && elapsed < interval {
+			return
+		}
+	}
+	m.lastCleanup = now
+	for client, v := range m.clients {
+		if now.Before(v.bannedUntil) {
+			continue
+		}
+		window := v.window
+		if window <= 0 {
+			window = cfg.Window.Duration
+		}
+		cutoff := now.Add(-window)
+		kept := v.times[:0]
+		for _, occurred := range v.times {
+			if !occurred.Before(cutoff) {
+				kept = append(kept, occurred)
+			}
+		}
+		v.times = kept
+		if len(v.times) == 0 && now.Sub(v.seen) > window {
+			delete(m.clients, client)
+		}
+	}
 }
 
 func (m *BanManager) evictOldestInactiveLocked(now time.Time) bool {

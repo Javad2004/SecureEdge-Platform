@@ -18,9 +18,13 @@ bash ./scripts/dev-watch.sh
 
 The supervisor watches source code, embedded Dashboard HTML/CSS/JavaScript, workspace files, integration JSON, deployment assets, and platform scripts. Changes are debounced and classified so only the affected service is rebuilt. A uniquely named candidate binary is built before the healthy generation is stopped; a failed build leaves the running service untouched, and a candidate startup failure restores the preceding binary without terminating the watcher. If no healthy generation can be restored, the supervisor remains active and retries on a later poll. Unexpected process exits are rebuilt and restarted automatically.
 
+By default, EdgeProxy runs from `integration/edgeproxy-local-behind-waf.json`, which is the exact Route table referenced by `apps/securityedge/configs/local-dev.json`. Dashboard/API Route and Origin changes, EdgeProxy's internal watcher, and SecurityEdge's shared-table watcher therefore observe one authoritative file rather than two similar local profiles.
+
 The active application JSON and `.env` files are intentionally not handled as source changes. EdgeProxy and SecurityEdge watch those files internally, validate them transactionally, hot-apply safe changes, coalesce restart-required revisions, and preserve the last healthy runtime when a revision is invalid. This avoids duplicate restarts and scheduler resets.
 
 Generated development binaries are stored under ignored `.dev/bin/` and removed when the supervisor exits. The PowerShell watcher requires Windows PowerShell or PowerShell 7. The Linux watcher requires Bash and GNU `find`.
+
+Relative profile and dotenv arguments are resolved from the repository root in both supervisors, even when the command is invoked from another working directory; absolute external paths are preserved.
 
 Optional PowerShell parameters select external profiles, dotenv files, polling/debounce intervals, and pretty logs:
 

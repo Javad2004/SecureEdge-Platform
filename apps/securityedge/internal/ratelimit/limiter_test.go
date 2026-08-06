@@ -126,3 +126,91 @@ func TestAutoBanCapacityNeverEvictsWhenAllEntriesAreActive(t *testing.T) {
 		t.Fatal("untracked client unexpectedly appears banned")
 	}
 }
+
+func TestRetryAfterSaturatesWithoutOverflow(t *testing.T) {
+	l := New(time.Hour, time.Hour)
+	defer l.Close()
+	now := time.Unix(0, 0)
+	l.mu.Lock()
+	l.buckets["tiny"] = &bucket{tokens: 0, last: now, seen: now}
+	allowed, retry, reason := l.allowLocked("tiny", 1e-300, 1, 10, now)
+	l.mu.Unlock()
+	if allowed || reason != "rate_exceeded" {
+		t.Fatalf("unexpected decision: allowed=%v reason=%q", allowed, reason)
+	}
+	if retry != time.Duration(1<<63-1) {
+		t.Fatalf("retry=%v, want saturated duration", retry)
+	}
+}
+
+func TestAutoBanCleansInactiveViolationTracking(t *testing.T) {
+	m := NewBanManager()
+	cfg := config.AutoBanConfig{
+		Enabled:            true,
+		ViolationThreshold: 3,
+		Window:             config.Duration{Duration: 2 * time.Second},
+		BanDuration:        config.Duration{Duration: time.Minute},
+		MaxTrackedClients:  100,
+	}
+	now := time.Unix(100, 0)
+	_, _ = m.RecordViolation("stale", cfg, now)
+	_, _ = m.RecordViolation("current", cfg, now.Add(3*time.Second))
+
+	m.mu.Lock()
+	_, staleExists := m.clients["stale"]
+	_, currentExists := m.clients["current"]
+	m.mu.Unlock()
+	if staleExists {
+		t.Fatal("inactive violation entry was not cleaned after its window expired")
+	}
+	if !currentExists {
+		t.Fatal("current violation entry was removed unexpectedly")
+	}
+}
+
+func TestExpiredBanIsRemovedWhenObserved(t *testing.T) {
+	m := NewBanManager()
+	cfg := config.AutoBanConfig{
+		Enabled:            true,
+		ViolationThreshold: 1,
+		Window:             config.Duration{Duration: time.Minute},
+		BanDuration:        config.Duration{Duration: time.Second},
+		MaxTrackedClients:  10,
+	}
+	now := time.Unix(200, 0)
+	if banned, _ := m.RecordViolation("expired", cfg, now); !banned {
+		t.Fatal("expected immediate ban")
+	}
+	if banned, _ := m.IsBanned("expired", now.Add(2*time.Second)); banned {
+		t.Fatal("expired ban still active")
+	}
+	m.mu.Lock()
+	_, exists := m.clients["expired"]
+	m.mu.Unlock()
+	if exists {
+		t.Fatal("expired ban entry was retained")
+	}
+}
+
+func TestAutoBanCleanupUsesEachEntryWindow(t *testing.T) {
+	m := NewBanManager()
+	longWindow := config.AutoBanConfig{
+		Enabled:            true,
+		ViolationThreshold: 3,
+		Window:             config.Duration{Duration: 10 * time.Second},
+		BanDuration:        config.Duration{Duration: time.Minute},
+		MaxTrackedClients:  100,
+	}
+	shortWindow := longWindow
+	shortWindow.Window = config.Duration{Duration: time.Second}
+	now := time.Unix(300, 0)
+	_, _ = m.RecordViolation("long-window", longWindow, now)
+	_, _ = m.RecordViolation("short-window", shortWindow, now.Add(2*time.Second))
+
+	m.mu.Lock()
+	entry := m.clients["long-window"]
+	m.mu.Unlock()
+	if entry == nil || len(entry.times) != 1 {
+		t.Fatal("cleanup for a short-window policy removed another client's longer-window history")
+	}
+}

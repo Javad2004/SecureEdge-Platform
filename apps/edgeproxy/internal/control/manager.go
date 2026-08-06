@@ -297,6 +297,13 @@ func (m *Manager) apply(persisted, next config.Config, source string) (ApplyResu
 	m.mu.Lock()
 	m.current = next
 	m.persisted = persisted
+	// A successful hot reload becomes part of the currently healthy listener
+	// generation. Preserve its file-backed representation as the rollback point
+	// for any later listener restart failure; otherwise a failed restart could
+	// silently discard Route, Origin, cache, or scheduler edits applied since
+	// the generation originally started.
+	m.healthyPath = m.path
+	m.healthyConfig = clone(persisted)
 	m.status.AppliedRevision = revision
 	m.status.LastAppliedAt = now()
 	m.status.RestartScheduled = false

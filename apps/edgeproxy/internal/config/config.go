@@ -682,6 +682,14 @@ func listenerEndpointsOverlap(first, second string) bool {
 	return listenerHostsOverlap(firstHost, secondHost)
 }
 
+// ListenerEndpointsOverlap reports whether two validated TCP listener
+// endpoints can claim the same local socket. Runtime restart preflight uses the
+// same normalization rules as configuration validation so wildcard, loopback,
+// IPv4, IPv6, and registered service-name ports are treated consistently.
+func ListenerEndpointsOverlap(first, second string) bool {
+	return listenerEndpointsOverlap(first, second)
+}
+
 func normalizedListenerPort(raw string) (int, error) {
 	if port, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil {
 		return port, nil

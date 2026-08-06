@@ -3,12 +3,51 @@ package server
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
 )
+
+func TestStartGenerationClosesMainListenerWhenAdminBindFails(t *testing.T) {
+	occupiedAdmin, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupiedAdmin.Close()
+
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainAddress := probe.Addr().String()
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.LoadFile(filepath.Join("..", "..", "configs", "local-dev.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Server.ListenAddr = mainAddress
+	cfg.Admin.ListenAddr = occupiedAdmin.Addr().String()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if _, err := startGeneration(cfg, logger, nil); err == nil {
+		t.Fatal("expected occupied admin listener to fail generation startup")
+	}
+
+	rebound, err := net.Listen("tcp", mainAddress)
+	if err != nil {
+		t.Fatalf("failed generation leaked main listener %q: %v", mainAddress, err)
+	}
+	_ = rebound.Close()
+}
 
 func TestShutdownServersClosesAllListenersBeforeWaitingForHandlers(t *testing.T) {
 	type runningServer struct {

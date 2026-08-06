@@ -75,6 +75,10 @@ func prepareRuntime(configPath string) (preparedRuntime, error) {
 	if err != nil {
 		return preparedRuntime{}, err
 	}
+	return prepareRuntimeConfig(configPath, cfg)
+}
+
+func prepareRuntimeConfig(configPath string, cfg config.Config) (preparedRuntime, error) {
 	table, err := routes.Load(resolveEdgeConfigPath(configPath, cfg.EdgeProxy.ConfigPath))
 	if err != nil {
 		return preparedRuntime{}, err
@@ -236,6 +240,9 @@ func (r *Runtime) ReplaceConfig(candidate config.Config) error {
 	current := cloneConfig(r.cfg)
 	r.mu.RUnlock()
 	if fields := restartRequiredChanges(current, runtimeCfg); len(fields) > 0 {
+		if err := r.validateRestartCandidate(r.configPath, current, runtimeCfg); err != nil {
+			return err
+		}
 		// Persist a validated restart-required revision. The file-specific
 		// watcher will observe this write and perform a graceful generation
 		// restart; route-table-only edits are handled by a different watcher.
@@ -386,11 +393,27 @@ func (r *Runtime) Reload() error {
 	return r.applyReload(prepared)
 }
 
+// ValidateRestartConfig validates a configuration selected by a watched
+// SECURITYEDGE_CONFIG path before the healthy generation is drained.
+func (r *Runtime) ValidateRestartConfig(configPath string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	r.mu.RLock()
+	current := cloneConfig(r.cfg)
+	r.mu.RUnlock()
+	return r.validateRestartCandidate(configPath, current, cfg)
+}
+
 func (r *Runtime) prepareReload(cfg config.Config) (preparedReload, error) {
 	r.mu.RLock()
 	current := cloneConfig(r.cfg)
 	r.mu.RUnlock()
 	if fields := restartRequiredChanges(current, cfg); len(fields) > 0 {
+		if err := r.validateRestartCandidate(r.configPath, current, cfg); err != nil {
+			return preparedReload{}, err
+		}
 		return preparedReload{}, &restartRequiredError{fields: fields}
 	}
 

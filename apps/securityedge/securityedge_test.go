@@ -11,12 +11,26 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
 )
+
+func availableListenerAddress(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return address
+}
 
 func TestCheckedInConfigurationsValidate(t *testing.T) {
 	_, sourceFile, _, ok := runtime.Caller(0)
@@ -171,7 +185,7 @@ func TestReloadRejectsRestartRequiredChangesWithoutMutatingRuntime(t *testing.T)
 	defer runtime.Close()
 	originalListen := runtime.Config().Server.ListenAddr
 
-	cfg.Server.ListenAddr = "127.0.0.1:18082"
+	cfg.Server.ListenAddr = availableListenerAddress(t)
 	if err := config.Save(cfgPath, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -513,6 +527,120 @@ func TestReloadEdgeRoutesHotSwapsOnlySharedRouteTable(t *testing.T) {
 	}
 }
 
+func TestRestartPreflightRevalidatesUnchangedPersistentResources(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blockedDirectory := filepath.Join(dir, "blocked")
+	if err := os.WriteFile(blockedDirectory, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Admin.LogStore.FilePath = filepath.Join(blockedDirectory, "security.ndjson")
+	cfg.Admin.TelemetryHistory.FilePath = filepath.Join(blockedDirectory, "telemetry.json")
+	next := cfg
+	next.Server.ListenAddr = availableListenerAddress(t)
+
+	err := (&Runtime{}).validateRestartCandidate(filepath.Join(dir, "security.json"), cfg, next)
+	if err == nil {
+		t.Fatal("expected unchanged persistent resources to be revalidated before restart")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "admin.log_store") {
+		t.Fatalf("log-store failure missing from preflight error: %v", err)
+	}
+	if !strings.Contains(message, "admin.telemetry_history.file_path") {
+		t.Fatalf("telemetry-history failure missing from preflight error: %v", err)
+	}
+}
+
+func TestReplaceConfigRejectsOccupiedRestartListenerWithoutPersisting(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	candidate := runtime.RedactedConfig()
+	candidate.Server.Mode = "gateway"
+	candidate.Server.ListenAddr = occupied.Addr().String()
+	if err := runtime.ReplaceConfig(candidate); err == nil {
+		t.Fatal("expected occupied gateway listener to be rejected")
+	} else {
+		var marker restartRequiredMarker
+		if errors.As(err, &marker) {
+			t.Fatalf("unusable revision was accepted as restart-required: %v", err)
+		}
+	}
+
+	saved, err := config.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Server.Mode != "embedded" || saved.Server.ListenAddr != cfg.Server.ListenAddr {
+		t.Fatalf("rejected listener revision was persisted: %#v", saved.Server)
+	}
+	if got := runtime.Config().Server.Mode; got != "embedded" {
+		t.Fatalf("live runtime changed after rejected revision: %q", got)
+	}
+	if runtime.WatchStatus().RestartScheduled {
+		t.Fatal("rejected revision was exposed as a scheduled restart")
+	}
+}
+
+func TestValidateRestartConfigRejectsMissingRuntimeDependency(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	candidate := cfg
+	candidate.Server.Mode = "gateway"
+	candidate.EdgeProxy.ConfigPath = "missing-edge.json"
+	candidatePath := filepath.Join(dir, "candidate.json")
+	if err := config.Save(candidatePath, candidate); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ValidateRestartConfig(candidatePath); err == nil {
+		t.Fatal("expected missing EdgeProxy route table to fail restart preflight")
+	}
+}
+
 func TestReplaceConfigPersistsValidatedRestartRevision(t *testing.T) {
 	dir := t.TempDir()
 	edgePath := filepath.Join(dir, "edge.json")
@@ -535,7 +663,8 @@ func TestReplaceConfigPersistsValidatedRestartRevision(t *testing.T) {
 	defer runtime.Close()
 
 	candidate := runtime.RedactedConfig()
-	candidate.Server.ListenAddr = "127.0.0.1:18082"
+	restartAddress := availableListenerAddress(t)
+	candidate.Server.ListenAddr = restartAddress
 	err = runtime.ReplaceConfig(candidate)
 	var marker restartRequiredMarker
 	if !errors.As(err, &marker) || !marker.RestartRequired() {
@@ -545,8 +674,8 @@ func TestReplaceConfigPersistsValidatedRestartRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.Server.ListenAddr != "127.0.0.1:18082" {
-		t.Fatalf("restart revision was not persisted: %q", saved.Server.ListenAddr)
+	if saved.Server.ListenAddr != restartAddress {
+		t.Fatalf("restart revision was not persisted: got %q want %q", saved.Server.ListenAddr, restartAddress)
 	}
 	if saved.Admin.AuthToken != "security-secret" || saved.EdgeProxy.AdminToken != "edge-secret" {
 		t.Fatalf("redacted markers replaced persisted secrets: admin=%q edge=%q", saved.Admin.AuthToken, saved.EdgeProxy.AdminToken)

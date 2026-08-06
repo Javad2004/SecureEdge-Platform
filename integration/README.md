@@ -66,9 +66,9 @@ Binding to `0.0.0.0` is required inside the container, but the platform Compose 
 
 ### `edgeproxy-embedded-integration.patch`
 
-Optional experimental patch for a possible future in-process integration in which EdgeProxy imports the SecurityEdge package and wraps its HTTP handler. It is not applied to the active source tree and is not required for the supported gateway or Compose deployments.
+Optional experimental patch for a possible future in-process integration in which EdgeProxy imports the SecurityEdge package and wraps its HTTP handler. It is not applied to the active source tree and is not required for the supported gateway or Compose deployments. The patch is generated against the current managed-generation implementation rather than the earlier single-generation server: EdgeProxy, its Admin API, and the embedded SecurityEdge Admin dashboard all bind synchronously, and a partial startup closes every acquired listener and runtime resource.
 
-After the patch is applied, the EdgeProxy command loads `apps/edgeproxy/.env` and `apps/securityedge/.env` independently. Set `SECURITYEDGE_CONFIG=configs/embedded.json` in the SecurityEdge file for this mode. `SECURITYEDGE_ENV_FILE` can select an external SecurityEdge environment file, and EdgeProxy's `-no-env` flag disables both dotenv loaders. Validation through the patched EdgeProxy command checks both the EdgeProxy and embedded SecurityEdge configurations.
+After the patch is applied, the EdgeProxy command loads `apps/edgeproxy/.env` and `apps/securityedge/.env` independently. Set `SECURITYEDGE_CONFIG=configs/embedded.json` in the SecurityEdge file for this mode. `SECURITYEDGE_ENV_FILE` can select an external SecurityEdge environment file, and EdgeProxy's `-no-env` flag disables both dotenv loaders. Validation through the patched EdgeProxy command checks both the EdgeProxy and embedded SecurityEdge configurations. The patch requires `server.mode` to be `embedded`; applying a gateway profile is rejected before any listener starts.
 
 ## Configuration mapping
 

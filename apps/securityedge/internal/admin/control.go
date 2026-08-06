@@ -44,6 +44,56 @@ func (s *Server) configReplace(w http.ResponseWriter, r *http.Request) {
 		writeAdminDecodeError(w, err)
 		return
 	}
+	s.applySecurityConfig(w, runtime, candidate, "config_rejected")
+}
+
+func (s *Server) securityServerGet(w http.ResponseWriter, _ *http.Request) {
+	runtime, ok := s.configurableRuntime(w)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, runtime.RedactedConfig().Server)
+}
+
+func (s *Server) securityServerUpdate(w http.ResponseWriter, r *http.Request) {
+	runtime, ok := s.configurableRuntime(w)
+	if !ok {
+		return
+	}
+	var section config.ServerConfig
+	if err := s.decodeJSON(r, &section); err != nil {
+		writeAdminDecodeError(w, err)
+		return
+	}
+	candidate := runtime.RedactedConfig()
+	candidate.Server = section
+	s.applySecurityConfig(w, runtime, candidate, "server_update_failed")
+}
+
+func (s *Server) securityAdminGet(w http.ResponseWriter, _ *http.Request) {
+	runtime, ok := s.configurableRuntime(w)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, runtime.RedactedConfig().Admin)
+}
+
+func (s *Server) securityAdminUpdate(w http.ResponseWriter, r *http.Request) {
+	runtime, ok := s.configurableRuntime(w)
+	if !ok {
+		return
+	}
+	var section config.AdminConfig
+	if err := s.decodeJSON(r, &section); err != nil {
+		writeAdminDecodeError(w, err)
+		return
+	}
+	candidate := runtime.RedactedConfig()
+	candidate.Admin = section
+	s.applySecurityConfig(w, runtime, candidate, "admin_update_failed")
+}
+
+func (s *Server) applySecurityConfig(w http.ResponseWriter, runtime configRuntime, candidate config.Config, errorCode string) {
 	if err := runtime.ReplaceConfig(candidate); err != nil {
 		var restart interface{ RestartRequired() bool }
 		if errors.As(err, &restart) && restart.RestartRequired() {
@@ -53,7 +103,7 @@ func (s *Server) configReplace(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		writeError(w, http.StatusBadRequest, "config_rejected", err.Error())
+		writeError(w, http.StatusBadRequest, errorCode, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"applied": true, "watch": runtime.WatchStatusMap()})

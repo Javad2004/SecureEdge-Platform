@@ -64,7 +64,7 @@ The platform can be administered without manually stopping either executable:
 - The Dashboard exposes the same Control Plane with complete form-based Route, scheduler, retry, cache, health-check, and Origin management; raw JSON remains available only as an advanced escape hatch.
 - Complete per-route and per-Origin telemetry includes traffic, cache efficiency, status distributions, failures, retries, latency percentiles, scheduler selections, EWMA, active work, and watcher/revision state.
 - SecurityEdge retains a bounded, atomically persisted telemetry timeline for request/rejection rates and condensed Route/Origin history, so dashboard trends survive refreshes and service restarts.
-- Atomic persistence, timestamped backups, strict JSON validation, redacted secrets, and last-known-good runtime behavior protect management operations.
+- Atomic persistence, timestamped backups, strict JSON validation, redacted secrets, restart preflight for sockets/TLS/persistent resources, synchronous listener binding, and post-preflight rollback to the last successfully started generation protect management operations.
 
 ## Requirements
 

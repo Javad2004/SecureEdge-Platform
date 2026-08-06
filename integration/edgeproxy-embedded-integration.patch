@@ -1,6 +1,6 @@
 diff -ruN '--exclude=.git' a/cmd/edgeproxy/main.go b/cmd/edgeproxy/main.go
---- a/cmd/edgeproxy/main.go	2026-08-04 23:35:14.444716644 +0000
-+++ b/cmd/edgeproxy/main.go	2026-08-04 23:35:25.389243616 +0000
+--- a/cmd/edgeproxy/main.go	2026-08-06 12:09:56.000000000 +0000
++++ b/cmd/edgeproxy/main.go	2026-08-06 12:48:34.731075465 +0000
 @@ -11,6 +11,7 @@
  	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
  	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/envfile"
@@ -29,14 +29,14 @@ diff -ruN '--exclude=.git' a/cmd/edgeproxy/main.go b/cmd/edgeproxy/main.go
 +			fmt.Fprintln(os.Stderr, err)
 +			os.Exit(1)
 +		}
-+		securityConfig := resolveConfigPath(
++		securityConfigPath := resolveConfigPath(
 +			"",
 +			os.Getenv("SECURITYEDGE_CONFIG"),
 +			loadedSecurityEnv,
 +			!securityConfigEnvironmentPreexisting,
 +		)
-+		if securityConfig != "" {
-+			if err := os.Setenv("SECURITYEDGE_CONFIG", securityConfig); err != nil {
++		if securityConfigPath != "" {
++			if err := os.Setenv("SECURITYEDGE_CONFIG", securityConfigPath); err != nil {
 +				fmt.Fprintln(os.Stderr, "set SECURITYEDGE_CONFIG:", err)
 +				os.Exit(1)
 +			}
@@ -71,8 +71,8 @@ diff -ruN '--exclude=.git' a/cmd/edgeproxy/main.go b/cmd/edgeproxy/main.go
  		return
  	}
 diff -ruN '--exclude=.git' a/go.mod b/go.mod
---- a/go.mod	2026-08-04 23:23:48.000000000 +0000
-+++ b/go.mod	2026-08-04 23:35:25.389352648 +0000
+--- a/go.mod	2026-08-06 12:48:34.730037199 +0000
++++ b/go.mod	2026-08-06 12:48:34.731152530 +0000
 @@ -1,3 +1,7 @@
  module github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy
  
@@ -82,9 +82,9 @@ diff -ruN '--exclude=.git' a/go.mod b/go.mod
 +
 +replace github.com/Javad2004/SecureEdge-Platform/apps/securityedge => ../securityedge
 diff -ruN '--exclude=.git' a/internal/server/run.go b/internal/server/run.go
---- a/internal/server/run.go	2026-08-04 23:23:48.000000000 +0000
-+++ b/internal/server/run.go	2026-08-04 23:35:25.389419377 +0000
-@@ -8,6 +8,7 @@
+--- a/internal/server/run.go	2026-08-06 12:42:07.590139773 +0000
++++ b/internal/server/run.go	2026-08-06 12:48:34.731255623 +0000
+@@ -10,6 +10,7 @@
  	"net/http"
  	"os"
  	"os/signal"
@@ -92,74 +92,149 @@ diff -ruN '--exclude=.git' a/internal/server/run.go b/internal/server/run.go
  	"sync"
  	"syscall"
  
-@@ -16,6 +17,7 @@
- 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
+@@ -19,14 +20,17 @@
+ 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/control"
  	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/metrics"
  	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/proxy"
 +	securityedge "github.com/Javad2004/SecureEdge-Platform/apps/securityedge"
  )
  
- func Run(cfg config.Config, logger *slog.Logger) error {
-@@ -30,8 +32,26 @@
- 	}
- 	defer handler.Close()
+ type generation struct {
+-	cfg         config.Config
+-	handler     *proxy.Handler
+-	mainServer  *http.Server
+-	adminServer *http.Server
+-	errCh       chan error
++	cfg                 config.Config
++	handler             *proxy.Handler
++	securityRuntime     *securityedge.Runtime
++	mainServer          *http.Server
++	adminServer         *http.Server
++	securityAdminServer *http.Server
++	errCh               chan error
+ }
  
-+	mainHandler := http.Handler(handler)
-+	var securityRuntime *securityedge.Runtime
-+	var securityAdminServer *http.Server
-+	if securityConfig := strings.TrimSpace(os.Getenv("SECURITYEDGE_CONFIG")); securityConfig != "" {
-+		securityRuntime, err = securityedge.New(securityConfig, logger)
-+		if err != nil {
-+			return fmt.Errorf("securityedge initialization: %w", err)
+ // Run starts one immutable listener generation. RunManaged should be preferred
+@@ -96,10 +100,14 @@
+ 		shutdownCtx, cancel := context.WithTimeout(context.Background(), gen.cfg.Server.ShutdownTimeout.Duration)
+ 		shutdownErr := shutdownServers(shutdownCtx,
+ 			namedHTTPServer{name: "proxy", server: gen.mainServer},
+-			namedHTTPServer{name: "admin", server: gen.adminServer},
++			namedHTTPServer{name: "edgeproxy admin", server: gen.adminServer},
++			namedHTTPServer{name: "securityedge admin", server: gen.securityAdminServer},
+ 		)
+ 		cancel()
+ 		gen.handler.Close()
++		if gen.securityRuntime != nil {
++			gen.securityRuntime.Close()
 +		}
-+		defer securityRuntime.Close()
-+		mainHandler = securityRuntime.Wrap(handler)
-+		if securityRuntime.Config().Admin.Enabled {
-+			securityAdminServer, err = securityRuntime.AdminServer()
+ 		if runErr != nil || shutdownErr != nil {
+ 			return errors.Join(runErr, shutdownErr)
+ 		}
+@@ -145,9 +153,31 @@
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	gen := &generation{cfg: cfg, handler: handler, errCh: make(chan error, 2)}
++	mainHandler := http.Handler(handler)
++	gen := &generation{cfg: cfg, handler: handler, errCh: make(chan error, 3)}
++	if securityConfigPath := strings.TrimSpace(os.Getenv("SECURITYEDGE_CONFIG")); securityConfigPath != "" {
++		gen.securityRuntime, err = securityedge.New(securityConfigPath, logger)
++		if err != nil {
++			handler.Close()
++			return nil, fmt.Errorf("initialize embedded SecurityEdge: %w", err)
++		}
++		if mode := gen.securityRuntime.Config().Server.Mode; mode != "embedded" {
++			gen.securityRuntime.Close()
++			handler.Close()
++			return nil, fmt.Errorf("embedded SecurityEdge requires server.mode=embedded, got %q", mode)
++		}
++		mainHandler = gen.securityRuntime.Wrap(handler)
++		if gen.securityRuntime.Config().Admin.Enabled {
++			gen.securityAdminServer, err = gen.securityRuntime.AdminServer()
 +			if err != nil {
-+				return fmt.Errorf("securityedge admin initialization: %w", err)
++				gen.securityRuntime.Close()
++				handler.Close()
++				return nil, fmt.Errorf("initialize embedded SecurityEdge admin: %w", err)
 +			}
 +		}
 +	}
-+
- 	mainServer := &http.Server{
+ 	gen.mainServer = &http.Server{
 -		Addr: cfg.Server.ListenAddr, Handler: handler,
 +		Addr: cfg.Server.ListenAddr, Handler: mainHandler,
  		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout.Duration,
  		ReadTimeout:       cfg.Server.ReadTimeout.Duration,
  		WriteTimeout:      cfg.Server.WriteTimeout.Duration,
-@@ -39,7 +59,7 @@
- 		MaxHeaderBytes:    cfg.Server.MaxHeaderBytes,
+@@ -158,7 +188,7 @@
+ 	if cfg.Server.TLS.Enabled {
+ 		certificate, err := tls.LoadX509KeyPair(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile)
+ 		if err != nil {
+-			handler.Close()
++			closeGenerationResources(gen)
+ 			return nil, fmt.Errorf("load proxy TLS certificate: %w", err)
+ 		}
+ 		tlsConfig = &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12}
+@@ -166,7 +196,7 @@
+ 	}
+ 	mainListener, err := net.Listen("tcp", cfg.Server.ListenAddr)
+ 	if err != nil {
+-		handler.Close()
++		closeGenerationResources(gen)
+ 		return nil, fmt.Errorf("listen proxy server %q: %w", cfg.Server.ListenAddr, err)
  	}
  
--	errCh := make(chan error, 2)
-+	errCh := make(chan error, 3)
- 	go func() {
- 		logger.Info("proxy server starting", "address", cfg.Server.ListenAddr, "tls", cfg.Server.TLS.Enabled)
- 		var serveErr error
-@@ -53,6 +73,15 @@
+@@ -176,8 +206,21 @@
+ 		adminListener, err = net.Listen("tcp", cfg.Admin.ListenAddr)
+ 		if err != nil {
+ 			_ = mainListener.Close()
+-			handler.Close()
+-			return nil, fmt.Errorf("listen admin server %q: %w", cfg.Admin.ListenAddr, err)
++			closeGenerationResources(gen)
++			return nil, fmt.Errorf("listen edgeproxy admin server %q: %w", cfg.Admin.ListenAddr, err)
++		}
++	}
++
++	var securityAdminListener net.Listener
++	if gen.securityAdminServer != nil {
++		securityAdminListener, err = net.Listen("tcp", gen.securityAdminServer.Addr)
++		if err != nil {
++			_ = mainListener.Close()
++			if adminListener != nil {
++				_ = adminListener.Close()
++			}
++			closeGenerationResources(gen)
++			return nil, fmt.Errorf("listen embedded SecurityEdge admin server %q: %w", gen.securityAdminServer.Addr, err)
  		}
- 	}()
+ 	}
  
-+	if securityAdminServer != nil {
+@@ -202,9 +245,30 @@
+ 			}
+ 		}()
+ 	}
++	if gen.securityAdminServer != nil {
 +		go func() {
-+			logger.Info("securityedge admin server starting", "address", securityAdminServer.Addr)
-+			if serveErr := securityAdminServer.ListenAndServe(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-+				errCh <- fmt.Errorf("securityedge admin server: %w", serveErr)
++			logger.Info("embedded SecurityEdge admin server starting", "address", gen.securityAdminServer.Addr)
++			if serveErr := gen.securityAdminServer.Serve(securityAdminListener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
++				gen.errCh <- fmt.Errorf("embedded SecurityEdge admin server: %w", serveErr)
 +			}
 +		}()
 +	}
-+
- 	var adminServer *http.Server
- 	if cfg.Admin.Enabled {
- 		adminServer = admin.New(cfg.Admin, logger, registry, handler, logStore).HTTPServer()
-@@ -78,7 +107,8 @@
- 	defer cancel()
- 	shutdownErr := shutdownServers(shutdownCtx,
- 		namedHTTPServer{name: "proxy", server: mainServer},
--		namedHTTPServer{name: "admin", server: adminServer},
-+		namedHTTPServer{name: "edgeproxy admin", server: adminServer},
-+		namedHTTPServer{name: "securityedge admin", server: securityAdminServer},
- 	)
- 	return errors.Join(runErr, shutdownErr)
+ 	return gen, nil
  }
+ 
++func closeGenerationResources(gen *generation) {
++	if gen == nil {
++		return
++	}
++	if gen.securityRuntime != nil {
++		gen.securityRuntime.Close()
++		gen.securityRuntime = nil
++	}
++	if gen.handler != nil {
++		gen.handler.Close()
++	}
++}
++
+ type namedHTTPServer struct {
+ 	name   string
+ 	server *http.Server

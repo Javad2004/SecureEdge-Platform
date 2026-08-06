@@ -2,8 +2,11 @@ package control
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -13,6 +16,19 @@ import (
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/metrics"
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/proxy"
 )
+
+func availableListenerAddress(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return address
+}
 
 func testConfig(t *testing.T) config.Config {
 	t.Helper()
@@ -68,8 +84,9 @@ func TestManagerHotApplyAndRestartScheduling(t *testing.T) {
 		t.Fatalf("persisted algorithm=%q", got)
 	}
 
+	restartAddress := availableListenerAddress(t)
 	result, err = manager.Update(func(next *config.Config) error {
-		next.Server.ListenAddr = "127.0.0.1:18081"
+		next.Server.ListenAddr = restartAddress
 		return nil
 	}, "test_restart")
 	if err != nil {
@@ -80,8 +97,8 @@ func TestManagerHotApplyAndRestartScheduling(t *testing.T) {
 	}
 	select {
 	case next := <-manager.RestartRequests():
-		if next.Server.ListenAddr != "127.0.0.1:18081" {
-			t.Fatalf("restart config listen=%q", next.Server.ListenAddr)
+		if next.Server.ListenAddr != restartAddress {
+			t.Fatalf("restart config listen=%q, want %q", next.Server.ListenAddr, restartAddress)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("restart was not scheduled")
@@ -89,6 +106,156 @@ func TestManagerHotApplyAndRestartScheduling(t *testing.T) {
 	status := manager.WatchStatus()
 	if !status.RestartScheduled || status.Revision <= status.AppliedRevision {
 		t.Fatalf("unexpected watcher status: %#v", status)
+	}
+}
+
+func TestManagerRejectsOccupiedRestartListenerAndRollsBack(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+
+	path := filepath.Join(t.TempDir(), "edgeproxy.json")
+	cfg := testConfig(t)
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager, err := New(path, "", logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := proxy.NewHandler(cfg, logger, metrics.New(), accesslog.New(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handler.Close()
+	manager.Attach(handler, cfg)
+
+	if _, err := manager.Update(func(next *config.Config) error {
+		next.Server.ListenAddr = occupied.Addr().String()
+		return nil
+	}, "occupied_listener_test"); err == nil {
+		t.Fatal("expected occupied listener revision to be rejected")
+	}
+
+	saved, err := config.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Server.ListenAddr != cfg.Server.ListenAddr {
+		t.Fatalf("rejected listener was persisted: got %q want %q", saved.Server.ListenAddr, cfg.Server.ListenAddr)
+	}
+	select {
+	case restart := <-manager.RestartRequests():
+		t.Fatalf("rejected revision scheduled a restart: %#v", restart.Server)
+	default:
+	}
+	status := manager.WatchStatus()
+	if status.RestartScheduled {
+		t.Fatalf("rejected revision remained scheduled: %#v", status)
+	}
+	if status.LastError == "" {
+		t.Fatalf("preflight failure was not exposed: %#v", status)
+	}
+}
+
+func TestRestartPreflightRevalidatesUnchangedTLSMaterial(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Server.TLS.Enabled = true
+	cfg.Server.TLS.CertFile = filepath.Join(t.TempDir(), "missing-cert.pem")
+	cfg.Server.TLS.KeyFile = filepath.Join(t.TempDir(), "missing-key.pem")
+	next := cfg
+	next.Server.ListenAddr = availableListenerAddress(t)
+	if err := validateRestartCandidate(cfg, next); err == nil {
+		t.Fatal("expected every TLS-enabled restart to revalidate certificate material")
+	}
+}
+
+func TestManagerRejectsUnreadableRestartTLSMaterial(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "edgeproxy.json")
+	cfg := testConfig(t)
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager, err := New(path, "", logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := proxy.NewHandler(cfg, logger, metrics.New(), accesslog.New(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handler.Close()
+	manager.Attach(handler, cfg)
+
+	if _, err := manager.Update(func(next *config.Config) error {
+		next.Server.TLS.Enabled = true
+		next.Server.TLS.CertFile = filepath.Join(t.TempDir(), "missing-cert.pem")
+		next.Server.TLS.KeyFile = filepath.Join(t.TempDir(), "missing-key.pem")
+		return nil
+	}, "invalid_tls_test"); err == nil {
+		t.Fatal("expected unreadable TLS material to be rejected")
+	}
+	saved, err := config.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Server.TLS.Enabled {
+		t.Fatal("rejected TLS revision was persisted")
+	}
+}
+
+func TestManagerRecoversLastHealthyConfigurationAfterLateRestartFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "edgeproxy.json")
+	cfg := testConfig(t)
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager, err := New(path, "", logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := proxy.NewHandler(cfg, logger, metrics.New(), accesslog.New(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handler.Close()
+	manager.Attach(handler, cfg)
+
+	candidateAddress := availableListenerAddress(t)
+	if _, err := manager.Update(func(next *config.Config) error {
+		next.Server.ListenAddr = candidateAddress
+		return nil
+	}, "late_failure_test"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-manager.RestartRequests():
+	case <-time.After(time.Second):
+		t.Fatal("restart was not scheduled")
+	}
+
+	recovered, err := manager.RecoverFailedRestart(errors.New("late bind failure"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Server.ListenAddr != cfg.Server.ListenAddr {
+		t.Fatalf("recovered runtime listen=%q, want %q", recovered.Server.ListenAddr, cfg.Server.ListenAddr)
+	}
+	saved, err := config.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Server.ListenAddr != cfg.Server.ListenAddr {
+		t.Fatalf("last healthy configuration was not restored: got %q want %q", saved.Server.ListenAddr, cfg.Server.ListenAddr)
+	}
+	status := manager.WatchStatus()
+	if status.RestartScheduled || status.LastSource != "restart_rollback" || status.LastError == "" {
+		t.Fatalf("unexpected rollback status: %#v", status)
 	}
 }
 
@@ -217,5 +384,36 @@ func TestEnvironmentConfigPathCanFollowDotenvRevision(t *testing.T) {
 	t.Setenv("EDGEPROXY_CONFIG", filepath.Join(directory, "ignored.json"))
 	if got := manager.environmentConfigPath(); got != fallback {
 		t.Fatalf("pinned path changed to %q", got)
+	}
+}
+
+func TestFileDigestRejectsOversizedWatchedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oversized.json")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(maxWatchedFileBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fileDigest(path); err == nil {
+		t.Fatal("expected oversized watched file to be rejected")
+	}
+}
+
+func TestRecordErrorDeduplicatesUnchangedWatcherFailure(t *testing.T) {
+	manager := &Manager{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	failure := errors.New("watched file is unavailable")
+	manager.recordError("config_watcher", failure)
+	first := manager.WatchStatus()
+	time.Sleep(time.Millisecond)
+	manager.recordError("config_watcher", failure)
+	second := manager.WatchStatus()
+	if second.LastChangeAt != first.LastChangeAt {
+		t.Fatalf("duplicate error changed watcher timestamp: first=%q second=%q", first.LastChangeAt, second.LastChangeAt)
 	}
 }

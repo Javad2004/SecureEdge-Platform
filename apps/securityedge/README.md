@@ -343,6 +343,10 @@ GET     /api/v1/logs/export
 GET     /api/v1/rules
 GET     /api/v1/config
 PUT     /api/v1/config
+GET     /api/v1/server
+PUT     /api/v1/server
+GET     /api/v1/admin
+PUT     /api/v1/admin
 GET     /api/v1/config/watch
 GET     /api/v1/policies
 PUT     /api/v1/policies/default
@@ -374,7 +378,11 @@ SecurityEdge watches three inputs independently: its own JSON configuration, the
 - hot-applicable `.env` overrides are validated and applied in place; listener, transport, Admin listener/auth/log-store, process-wide limiter/ban-store, or configuration-path changes schedule an automatic graceful generation restart;
 - invalid JSON, referenced Route-table, or `.env` revisions restore the previous managed environment, keep the last healthy runtime, and are reported through `/api/v1/config/watch`.
 
-`POST /api/v1/reload` remains available for an explicit re-read. `PUT /api/v1/config` validates and atomically persists a complete candidate. Hot changes return `200 OK`; restart-required revisions from either endpoint return `202 Accepted` and are applied automatically by the managed process. Multiple rapid restart requests are coalesced so the newest valid revision wins. The service process remains the same while listeners and long-lived resources move to the new generation.
+`POST /api/v1/reload` remains available for an explicit re-read. `PUT /api/v1/config` validates and atomically persists a complete candidate. Hot changes return `200 OK`; restart-required revisions from either endpoint return `202 Accepted` and are applied automatically by the managed process. Before the active generation is drained, SecurityEdge rebuilds configuration-dependent runtime components, verifies the shared Route table, reopens the security log store, probes the telemetry-history destination, and tests every newly claimed listener. An occupied port or unavailable persistent resource is rejected without persisting the API revision or stopping the healthy generation. New gateway and Admin sockets are bound synchronously, and a partial bind failure closes every socket acquired by that candidate. If startup still loses a post-preflight race, the supervisor restores the last successfully started file-backed configuration, restarts that generation, and records the rejected candidate in watcher status.
+
+Dedicated `GET/PUT /api/v1/server` and `GET/PUT /api/v1/admin` endpoints provide section-scoped SecurityEdge configuration management without requiring a complete-document replacement. The PowerShell control client exposes the same operations as `GetServer`, `SetServer`, `GetAdmin`, and `SetAdmin`; full-document editing remains available for advanced or multi-section transactions.
+
+Multiple rapid restart requests are coalesced so the newest valid revision wins. The service process remains the same while listeners and long-lived resources move to the new generation.
 
 The restart-required comparison uses the file-backed SecurityEdge configuration independently of runtime/environment endpoint overrides. A change made to EdgeProxy routes from the Dashboard therefore cannot be misclassified as a SecurityEdge process change or cause an unnecessary listener restart.
 
@@ -449,6 +457,8 @@ The two management clients expose the complete Control Plane from PowerShell:
 .\scripts\manage-edgeproxy.ps1 -Action UpdateRoute -Route demo-app -BodyFile .\route.json
 .\scripts\manage-edgeproxy.ps1 -Action Telemetry
 .\scripts\manage-security.ps1 -Action Watch
+.\scripts\manage-security.ps1 -Action GetServer
+.\scripts\manage-security.ps1 -Action SetAdmin -BodyFile .\admin-settings.json
 .\scripts\manage-security.ps1 -Action Policies
 .\scripts\manage-security.ps1 -Action SetRoutePolicy -Route demo-app -BodyFile .\policy.json
 ```

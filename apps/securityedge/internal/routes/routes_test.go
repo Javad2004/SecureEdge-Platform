@@ -134,3 +134,30 @@ func TestLoadRejectsCaseInsensitiveDuplicateRouteNames(t *testing.T) {
 		t.Fatalf("expected case-insensitive duplicate error, got %v", err)
 	}
 }
+
+func TestLoadRejectsOversizedAndTrailingContent(t *testing.T) {
+	oversized := filepath.Join(t.TempDir(), "oversized.json")
+	file, err := os.Create(oversized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(maxEdgeProxyConfigBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(oversized); err == nil {
+		t.Fatal("expected oversized EdgeProxy route table to be rejected")
+	}
+
+	trailing := filepath.Join(t.TempDir(), "trailing.json")
+	payload := `{"routes":[{"name":"api","hosts":["app.example.com"],"path_prefix":"/"}]} {}`
+	if err := os.WriteFile(trailing, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(trailing); err == nil {
+		t.Fatal("expected trailing JSON value to be rejected")
+	}
+}

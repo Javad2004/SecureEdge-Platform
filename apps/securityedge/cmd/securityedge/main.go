@@ -95,9 +95,21 @@ func run() int {
 type securityGeneration struct {
 	runtime       *securityedge.Runtime
 	cfg           config.Config
+	fileCfg       config.Config
 	gatewayServer *http.Server
 	adminServer   *http.Server
 	errCh         chan error
+}
+
+type securityRestartFallback struct {
+	path  string
+	cfg   config.Config
+	watch securityedge.WatchStatus
+}
+
+type securityRollbackNotice struct {
+	path string
+	err  error
 }
 
 func runManaged(configPath, envPath string, logger *slog.Logger, allowEnvironmentConfigPath bool) int {
@@ -106,13 +118,35 @@ func runManaged(configPath, envPath string, logger *slog.Logger, allowEnvironmen
 
 	var previousWatch securityedge.WatchStatus
 	defaultConfigPath := configPath
+	var fallback *securityRestartFallback
+	var rollbackNotice *securityRollbackNotice
 	for {
 		gen, err := startSecurityGeneration(configPath, envPath, previousWatch, logger)
 		if err != nil {
+			if fallback != nil {
+				if rollbackErr := restoreSecurityFallback(*fallback, configPath); rollbackErr != nil {
+					logger.Error("replacement SecurityEdge generation failed and last-known-good configuration could not be restored", "startup_error", err, "rollback_error", rollbackErr)
+					return 1
+				}
+				logger.Error("replacement SecurityEdge generation failed after restart preflight; retrying the last healthy generation", "error", err, "config", fallback.path)
+				previousWatch = fallback.watch
+				rollbackNotice = &securityRollbackNotice{path: configPath, err: err}
+				configPath = fallback.path
+				fallback = nil
+				continue
+			}
 			logger.Error("configuration failed", "error", err)
 			return 1
 		}
+		fallback = nil
+		if rollbackNotice != nil {
+			gen.runtime.RecordWatchChange(rollbackNotice.path, false, false, fmt.Errorf("replacement generation failed; restored last healthy configuration: %w", rollbackNotice.err))
+			rollbackNotice = nil
+		}
 		restart, nextConfigPath, runErr := superviseSecurityGeneration(sigCtx, gen, envPath, defaultConfigPath, allowEnvironmentConfigPath, logger)
+		if restart {
+			fallback = &securityRestartFallback{path: gen.runtime.ConfigPath(), cfg: gen.fileCfg, watch: gen.runtime.WatchStatus()}
+		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), gen.cfg.Server.ShutdownTimeout.Duration)
 		shutdownErr := shutdownServers(shutdownCtx,
 			namedHTTPServer{name: "gateway", server: gen.gatewayServer},
@@ -136,13 +170,19 @@ func runManaged(configPath, envPath string, logger *slog.Logger, allowEnvironmen
 }
 
 func startSecurityGeneration(configPath, envPath string, previousWatch securityedge.WatchStatus, logger *slog.Logger) (*securityGeneration, error) {
+	fileCfg, err := config.LoadFile(configPath)
+	if err != nil {
+		return nil, err
+	}
 	runtime, err := securityedge.New(configPath, logger)
 	if err != nil {
 		return nil, err
 	}
 	runtime.ConfigureWatcher(envPath, previousWatch)
 	cfg := runtime.Config()
-	gen := &securityGeneration{runtime: runtime, cfg: cfg, errCh: make(chan error, 2)}
+	gen := &securityGeneration{runtime: runtime, cfg: cfg, fileCfg: fileCfg, errCh: make(chan error, 2)}
+	var gatewayListener net.Listener
+	var adminListener net.Listener
 	if cfg.Admin.Enabled {
 		gen.adminServer, err = runtime.AdminServer()
 		if err != nil {
@@ -163,9 +203,26 @@ func startSecurityGeneration(configPath, envPath string, previousWatch securitye
 			WriteTimeout: cfg.Server.WriteTimeout.Duration, IdleTimeout: cfg.Server.IdleTimeout.Duration,
 			MaxHeaderBytes: cfg.Server.MaxHeaderBytes,
 		}
+		gatewayListener, err = net.Listen("tcp", cfg.Server.ListenAddr)
+		if err != nil {
+			runtime.Close()
+			return nil, fmt.Errorf("listen security gateway %q: %w", cfg.Server.ListenAddr, err)
+		}
+	}
+	if gen.adminServer != nil {
+		adminListener, err = net.Listen("tcp", cfg.Admin.ListenAddr)
+		if err != nil {
+			if gatewayListener != nil {
+				_ = gatewayListener.Close()
+			}
+			runtime.Close()
+			return nil, fmt.Errorf("listen security admin %q: %w", cfg.Admin.ListenAddr, err)
+		}
+	}
+	if gen.gatewayServer != nil {
 		go func() {
 			logger.Info("security gateway starting", "address", cfg.Server.ListenAddr, "upstream", cfg.Server.UpstreamProxyURL, "max_concurrent", cfg.Server.MaxConcurrentRequests, "max_body_bytes", cfg.Server.MaxRequestBodyBytes)
-			if err := gen.gatewayServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := gen.gatewayServer.Serve(gatewayListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				gen.errCh <- fmt.Errorf("security gateway: %w", err)
 			}
 		}()
@@ -173,12 +230,25 @@ func startSecurityGeneration(configPath, envPath string, previousWatch securitye
 	if gen.adminServer != nil {
 		go func() {
 			logger.Info("security admin and dashboard starting", "address", cfg.Admin.ListenAddr)
-			if err := gen.adminServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := gen.adminServer.Serve(adminListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				gen.errCh <- fmt.Errorf("security admin: %w", err)
 			}
 		}()
 	}
 	return gen, nil
+}
+
+func restoreSecurityFallback(fallback securityRestartFallback, failedPath string) error {
+	// A config-path switch leaves the healthy file untouched. When the failed
+	// candidate replaced the same file, restore its last successfully started
+	// persisted representation before retrying the previous generation.
+	if filepath.Clean(fallback.path) != filepath.Clean(failedPath) {
+		return nil
+	}
+	if err := config.Save(fallback.path, fallback.cfg); err != nil {
+		return fmt.Errorf("restore last-known-good SecurityEdge configuration %q: %w", fallback.path, err)
+	}
+	return nil
 }
 
 func superviseSecurityGeneration(ctx context.Context, gen *securityGeneration, envPath, defaultConfigPath string, allowEnvironmentConfigPath bool, logger *slog.Logger) (bool, string, error) {
@@ -212,10 +282,10 @@ func superviseSecurityGeneration(ctx context.Context, gen *securityGeneration, e
 					hotApplied := false
 					err := envfile.ReloadValidated(envPath, func() error {
 						nextPath = watchedConfigPath(defaultConfigPath, envPath, securityPath, allowEnvironmentConfigPath)
-						if err := securityedge.Validate(nextPath); err != nil {
-							return fmt.Errorf("validate SECURITYEDGE_CONFIG target %q: %w", nextPath, err)
-						}
 						if nextPath != securityPath {
+							if err := gen.runtime.ValidateRestartConfig(nextPath); err != nil {
+								return fmt.Errorf("validate SECURITYEDGE_CONFIG target %q: %w", nextPath, err)
+							}
 							restartRequired = true
 							return nil
 						}

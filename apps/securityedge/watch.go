@@ -3,9 +3,12 @@ package securityedge
 import (
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"time"
 )
+
+const maxWatchedFileBytes int64 = 4 << 20
 
 type WatchStatus struct {
 	Enabled          bool   `json:"enabled"`
@@ -66,6 +69,9 @@ func (r *Runtime) MarkRestartScheduled(path string) {
 func (r *Runtime) RecordWatchChange(path string, applied, restart bool, err error) {
 	r.watchMu.Lock()
 	defer r.watchMu.Unlock()
+	if err != nil && r.watch.LastError == err.Error() && r.watch.LastChangedFile == path && !r.watch.RestartScheduled {
+		return
+	}
 	r.watch.Revision++
 	r.watch.LastChangedFile = path
 	r.watch.LastChangeAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -82,9 +88,30 @@ func (r *Runtime) RecordWatchChange(path string, applied, restart bool, err erro
 }
 
 func FileDigest(path string) ([32]byte, error) {
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return [32]byte{}, fmt.Errorf("read watched file %q: %w", path, err)
 	}
-	return sha256.Sum256(data), nil
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("stat watched file %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return [32]byte{}, fmt.Errorf("watched path %q is not a regular file", path)
+	}
+	if info.Size() > maxWatchedFileBytes {
+		return [32]byte{}, fmt.Errorf("watched file %q exceeds the %d-byte safety limit", path, maxWatchedFileBytes)
+	}
+	hash := sha256.New()
+	written, err := io.Copy(hash, io.LimitReader(file, maxWatchedFileBytes+1))
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("hash watched file %q: %w", path, err)
+	}
+	if written > maxWatchedFileBytes {
+		return [32]byte{}, fmt.Errorf("watched file %q exceeds the %d-byte safety limit", path, maxWatchedFileBytes)
+	}
+	var digest [32]byte
+	copy(digest[:], hash.Sum(nil))
+	return digest, nil
 }

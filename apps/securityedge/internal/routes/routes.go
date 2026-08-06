@@ -1,8 +1,11 @@
 package routes
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -10,6 +13,8 @@ import (
 	"path"
 	"strings"
 )
+
+const maxEdgeProxyConfigBytes int64 = 4 << 20
 
 type EdgeProxyConfig struct {
 	Routes []Route `json:"routes"`
@@ -23,12 +28,37 @@ type Route struct {
 type Table struct{ routes []Route }
 
 func Load(path string) (*Table, error) {
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("read edgeproxy config: %w", err)
 	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat edgeproxy config: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("edgeproxy config path is not a regular file")
+	}
+	if info.Size() > maxEdgeProxyConfigBytes {
+		return nil, fmt.Errorf("edgeproxy config exceeds the %d-byte safety limit", maxEdgeProxyConfigBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxEdgeProxyConfigBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read edgeproxy config: %w", err)
+	}
+	if int64(len(data)) > maxEdgeProxyConfigBytes {
+		return nil, fmt.Errorf("edgeproxy config exceeds the %d-byte safety limit", maxEdgeProxyConfigBytes)
+	}
 	var cfg EdgeProxyConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(&cfg); err != nil {
+		return nil, fmt.Errorf("parse edgeproxy config: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, errors.New("parse edgeproxy config: expected exactly one JSON value")
+		}
 		return nil, fmt.Errorf("parse edgeproxy config: %w", err)
 	}
 	if len(cfg.Routes) == 0 {

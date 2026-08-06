@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Status','Metrics','Watch','GetConfig','SetConfig','Reload','Policies','SetDefaultPolicy','SetRoutePolicy','DeleteRoutePolicy','Bans','DeleteBan','ClearBans','Logs')]
+    [ValidateSet('Status','Metrics','Watch','GetConfig','SetConfig','GetServer','SetServer','GetAdmin','SetAdmin','Reload','Policies','SetDefaultPolicy','SetRoutePolicy','DeleteRoutePolicy','Bans','DeleteBan','ClearBans','Logs')]
     [string]$Action = 'Status',
     [string]$BaseUrl = '',
     [string]$Token = '',
@@ -80,6 +80,10 @@ try {
         'Watch'             { $result = Invoke-ControlRequest GET '/config/watch' }
         'GetConfig'         { $result = Invoke-ControlRequest GET '/config' }
         'SetConfig'         { $result = Invoke-ControlRequest PUT '/config' (Get-RequestBody) }
+        'GetServer'         { $result = Invoke-ControlRequest GET '/server' }
+        'SetServer'         { $result = Invoke-ControlRequest PUT '/server' (Get-RequestBody) }
+        'GetAdmin'          { $result = Invoke-ControlRequest GET '/admin' }
+        'SetAdmin'          { $result = Invoke-ControlRequest PUT '/admin' (Get-RequestBody) }
         'Reload'            { $result = Invoke-ControlRequest POST '/reload' }
         'Policies'          { $result = Invoke-ControlRequest GET '/policies' }
         'SetDefaultPolicy'  { $result = Invoke-ControlRequest PUT '/policies/default' (Get-RequestBody) }

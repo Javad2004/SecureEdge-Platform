@@ -28,6 +28,7 @@ type fakeRuntime struct {
 	mu         sync.Mutex
 	cfg        config.Config
 	reloadErr  error
+	replaceErr error
 	edgeRaw    json.RawMessage
 	edgeStatus int
 	edgeErr    error
@@ -46,13 +47,35 @@ func (f *fakeRuntime) UpdateDefaultPolicy(config.Policy) error       { return ni
 func (f *fakeRuntime) UpdateRoutePolicy(string, config.Policy) error { return nil }
 func (f *fakeRuntime) DeleteRoutePolicy(string) error                { return nil }
 func (f *fakeRuntime) Reload() error                                 { return f.reloadErr }
-func (f *fakeRuntime) LimiterSize() int                              { return 0 }
-func (f *fakeRuntime) ActiveBans() []ratelimit.Ban                   { return nil }
-func (f *fakeRuntime) ActiveBanCount() int                           { return 0 }
-func (f *fakeRuntime) DeleteBan(string) bool                         { return false }
-func (f *fakeRuntime) ClearBans() int                                { return 0 }
-func (f *fakeRuntime) AdmissionSnapshot() admission.Snapshot         { return admission.Snapshot{} }
-func (f *fakeRuntime) Audit(string, string, map[string]string)       {}
+func (f *fakeRuntime) ReplaceConfig(candidate config.Config) error {
+	if f.replaceErr != nil {
+		return f.replaceErr
+	}
+	f.mu.Lock()
+	f.cfg = candidate
+	f.mu.Unlock()
+	return nil
+}
+func (f *fakeRuntime) RedactedConfig() config.Config {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := f.cfg
+	if out.Admin.AuthToken != "" {
+		out.Admin.AuthToken = "[REDACTED]"
+	}
+	if out.EdgeProxy.AdminToken != "" {
+		out.EdgeProxy.AdminToken = "[REDACTED]"
+	}
+	return out
+}
+func (f *fakeRuntime) WatchStatusMap() map[string]any          { return map[string]any{"revision": 1} }
+func (f *fakeRuntime) LimiterSize() int                        { return 0 }
+func (f *fakeRuntime) ActiveBans() []ratelimit.Ban             { return nil }
+func (f *fakeRuntime) ActiveBanCount() int                     { return 0 }
+func (f *fakeRuntime) DeleteBan(string) bool                   { return false }
+func (f *fakeRuntime) ClearBans() int                          { return 0 }
+func (f *fakeRuntime) AdmissionSnapshot() admission.Snapshot   { return admission.Snapshot{} }
+func (f *fakeRuntime) Audit(string, string, map[string]string) {}
 func (f *fakeRuntime) EdgeJSON(_ context.Context, method, path string, query url.Values, body any) (json.RawMessage, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -566,5 +589,91 @@ func TestEdgeProxyAdvancedControlPlaneForwarding(t *testing.T) {
 		if lastMethod != tt.method || lastPath != tt.forwardedPath {
 			t.Fatalf("%s %s forwarded as %s %s", tt.method, tt.requestPath, lastMethod, lastPath)
 		}
+	}
+}
+
+func TestSecurityConfigSectionEndpoints(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.EdgeProxy.AdminToken = "edge-secret"
+	cfg.Admin.AuthToken = "secret-token"
+	inspector, err := waf.NewInspector(nil, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &fakeRuntime{cfg: cfg}
+	server, err := New(cfg.Admin, runtime, metrics.New(), securitylog.New(100), traffic.New(100, time.Minute), inspector)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{"/api/v1/server", "/api/v1/admin"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer secret-token")
+		rr := httptest.NewRecorder()
+		server.HTTPServer().Handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("GET %s status=%d body=%s", path, rr.Code, rr.Body.String())
+		}
+		if strings.Contains(rr.Body.String(), "secret-token") || strings.Contains(rr.Body.String(), "edge-secret") {
+			t.Fatalf("GET %s exposed a secret: %s", path, rr.Body.String())
+		}
+	}
+
+	serverSection := cfg.Server
+	serverSection.MaxConcurrentRequests++
+	body, _ := json.Marshal(serverSection)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/server", strings.NewReader(string(body)))
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rr := httptest.NewRecorder()
+	server.HTTPServer().Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PUT server status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if runtime.cfg.Server.MaxConcurrentRequests != serverSection.MaxConcurrentRequests {
+		t.Fatal("server section was not applied")
+	}
+	if runtime.cfg.Admin.AuthToken != "[REDACTED]" {
+		t.Fatalf("test runtime did not receive redacted token marker: %q", runtime.cfg.Admin.AuthToken)
+	}
+
+	adminSection := cfg.Admin
+	adminSection.PollTimeout = config.Duration{Duration: 7 * time.Second}
+	adminSection.AuthToken = "[REDACTED]"
+	body, _ = json.Marshal(adminSection)
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/admin", strings.NewReader(string(body)))
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rr = httptest.NewRecorder()
+	server.HTTPServer().Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PUT admin status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if runtime.cfg.Admin.PollTimeout.Duration != 7*time.Second {
+		t.Fatal("admin section was not applied")
+	}
+}
+
+func TestSecurityConfigSectionEndpointReturns202ForRestart(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Admin.AuthToken = "secret-token"
+	inspector, err := waf.NewInspector(nil, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &fakeRuntime{cfg: cfg, replaceErr: fakeRestartRequiredError{}}
+	server, err := New(cfg.Admin, runtime, metrics.New(), securitylog.New(100), traffic.New(100, time.Minute), inspector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(cfg.Server)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/server", strings.NewReader(string(body)))
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rr := httptest.NewRecorder()
+	server.HTTPServer().Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }

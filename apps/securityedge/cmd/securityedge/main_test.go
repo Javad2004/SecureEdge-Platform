@@ -3,18 +3,62 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	securityedge "github.com/Javad2004/SecureEdge-Platform/apps/securityedge"
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
 )
+
+func TestStartSecurityGenerationClosesGatewayListenerWhenAdminBindFails(t *testing.T) {
+	occupiedAdmin, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupiedAdmin.Close()
+
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayAddress := probe.Addr().String()
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.ListenAddr = gatewayAddress
+	cfg.Admin.ListenAddr = occupiedAdmin.Addr().String()
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if _, err := startSecurityGeneration(cfgPath, "", securityedge.WatchStatus{}, logger); err == nil {
+		t.Fatal("expected occupied admin listener to fail SecurityEdge generation startup")
+	}
+
+	rebound, err := net.Listen("tcp", gatewayAddress)
+	if err != nil {
+		t.Fatalf("failed generation leaked gateway listener %q: %v", gatewayAddress, err)
+	}
+	_ = rebound.Close()
+}
 
 func TestParseLevel(t *testing.T) {
 	tests := []struct {
@@ -312,5 +356,73 @@ func TestWatchedConfigPathFollowsDotenvOnlyWhenAllowed(t *testing.T) {
 	t.Setenv("SECURITYEDGE_CONFIG", "")
 	if got := watchedConfigPath(fallback, envPath, current, true); got != fallback {
 		t.Fatalf("empty dotenv path=%q, want %q", got, fallback)
+	}
+}
+
+func TestRestoreSecurityFallbackRestoresSamePathCandidate(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "security.json")
+	healthy := config.Default()
+	healthy.EdgeProxy.ConfigPath = "edge.json"
+	healthy.Admin.AuthToken = "healthy-token"
+	if err := config.Save(path, healthy); err != nil {
+		t.Fatal(err)
+	}
+	candidate := healthy
+	candidate.Admin.AuthToken = "candidate-token"
+	if err := config.Save(path, candidate); err != nil {
+		t.Fatal(err)
+	}
+
+	fallback := securityRestartFallback{path: path, cfg: healthy}
+	if err := restoreSecurityFallback(fallback, path); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := config.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Admin.AuthToken != healthy.Admin.AuthToken {
+		t.Fatalf("restored token=%q, want %q", restored.Admin.AuthToken, healthy.Admin.AuthToken)
+	}
+}
+
+func TestRestoreSecurityFallbackLeavesPreviousPathUntouchedAfterConfigPathSwitch(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	healthyPath := filepath.Join(dir, "healthy.json")
+	candidatePath := filepath.Join(dir, "candidate.json")
+	healthy := config.Default()
+	healthy.EdgeProxy.ConfigPath = "edge.json"
+	healthy.Admin.AuthToken = "healthy-token"
+	if err := config.Save(healthyPath, healthy); err != nil {
+		t.Fatal(err)
+	}
+	candidate := healthy
+	candidate.Admin.AuthToken = "candidate-token"
+	if err := config.Save(candidatePath, candidate); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := os.ReadFile(healthyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreSecurityFallback(securityRestartFallback{path: healthyPath, cfg: healthy}, candidatePath); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(healthyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("config-path rollback rewrote the untouched healthy configuration")
 	}
 }

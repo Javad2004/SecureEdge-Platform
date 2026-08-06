@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -17,6 +18,8 @@ import (
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/envfile"
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/proxy"
 )
+
+const maxWatchedFileBytes int64 = 4 << 20
 
 type ApplyResult struct {
 	Applied         bool     `json:"applied"`
@@ -51,6 +54,8 @@ type Manager struct {
 	handler       *proxy.Handler
 	current       config.Config
 	persisted     config.Config
+	healthyPath   string
+	healthyConfig config.Config
 	status        WatchStatus
 	lastDigest    [32]byte
 	lastEnvDigest [32]byte
@@ -81,6 +86,7 @@ func New(path, envPath string, logger *slog.Logger, allowEnvironmentPath ...bool
 	allowPath := len(allowEnvironmentPath) > 0 && allowEnvironmentPath[0]
 	return &Manager{
 		path: path, defaultPath: path, envPath: envPath, allowEnvPath: allowPath, logger: logger, current: runtimeCfg, persisted: persisted,
+		healthyPath: path, healthyConfig: clone(persisted),
 		status:     WatchStatus{Enabled: true, ConfigPath: path, EnvironmentPath: envPath, Revision: 1, AppliedRevision: 1, LastAppliedAt: now(), LastSource: "startup"},
 		lastDigest: digest, lastEnvDigest: envDigest, restartCh: make(chan config.Config, 1),
 	}, nil
@@ -90,11 +96,61 @@ func (m *Manager) Attach(handler *proxy.Handler, current config.Config) {
 	m.mu.Lock()
 	m.handler = handler
 	m.current = current
+	m.healthyPath = m.path
+	m.healthyConfig = clone(m.persisted)
 	m.status.RestartScheduled = false
 	m.status.RestartFields = nil
 	m.status.AppliedRevision = m.status.Revision
 	m.status.LastAppliedAt = now()
 	m.mu.Unlock()
+}
+
+// RecoverFailedRestart restores the last generation that successfully bound
+// all of its listeners. Restart preflight closes the normal configuration
+// error window, but a different process can still claim a probed socket before
+// the replacement generation binds it. This rollback keeps that rare TOCTOU
+// race from terminating an otherwise healthy managed proxy.
+func (m *Manager) RecoverFailedRestart(cause error) (config.Config, error) {
+	m.transactionMu.Lock()
+	defer m.transactionMu.Unlock()
+
+	m.mu.RLock()
+	healthyPath := m.healthyPath
+	healthyConfig := clone(m.healthyConfig)
+	healthyRuntime := clone(m.current)
+	m.mu.RUnlock()
+	if strings.TrimSpace(healthyPath) == "" {
+		return config.Config{}, errors.New("no last-known-good EdgeProxy generation is available")
+	}
+
+	if err := config.Save(healthyPath, healthyConfig); err != nil {
+		return config.Config{}, fmt.Errorf("restore last-known-good EdgeProxy configuration %q: %w", healthyPath, err)
+	}
+	digest, err := fileDigest(healthyPath)
+	if err != nil {
+		return config.Config{}, fmt.Errorf("digest restored EdgeProxy configuration %q: %w", healthyPath, err)
+	}
+
+	m.mu.Lock()
+	m.path = healthyPath
+	m.persisted = clone(healthyConfig)
+	m.lastDigest = digest
+	m.status.ConfigPath = healthyPath
+	m.status.RestartScheduled = false
+	m.status.RestartFields = nil
+	m.status.LastChangeAt = now()
+	m.status.LastSource = "restart_rollback"
+	m.status.LastError = fmt.Sprintf("replacement generation failed; restored last healthy configuration: %v", cause)
+	m.mu.Unlock()
+
+	for {
+		select {
+		case <-m.restartCh:
+		default:
+			m.logger.Error("replacement generation failed; restored last healthy EdgeProxy configuration", "config", healthyPath, "error", cause)
+			return healthyRuntime, nil
+		}
+	}
 }
 
 func (m *Manager) RestartRequests() <-chan config.Config { return m.restartCh }
@@ -209,6 +265,10 @@ func (m *Manager) apply(persisted, next config.Config, source string) (ApplyResu
 	m.mu.Unlock()
 
 	if len(fields) > 0 {
+		if err := validateRestartCandidate(current, next); err != nil {
+			m.recordError(source, err)
+			return ApplyResult{}, err
+		}
 		m.mu.Lock()
 		m.persisted = persisted
 		m.status.RestartScheduled = true
@@ -370,6 +430,10 @@ func (m *Manager) environmentConfigPath() string {
 
 func (m *Manager) recordError(source string, err error) {
 	m.mu.Lock()
+	if m.status.LastError == err.Error() && m.status.LastSource == source {
+		m.mu.Unlock()
+		return
+	}
 	m.status.LastError = err.Error()
 	m.status.LastSource = source
 	m.status.LastChangeAt = now()
@@ -395,11 +459,32 @@ func restartRequiredChanges(current, next config.Config) []string {
 }
 
 func fileDigest(path string) ([32]byte, error) {
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return [32]byte{}, fmt.Errorf("read watched file %q: %w", path, err)
 	}
-	return sha256.Sum256(data), nil
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("stat watched file %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return [32]byte{}, fmt.Errorf("watched path %q is not a regular file", path)
+	}
+	if info.Size() > maxWatchedFileBytes {
+		return [32]byte{}, fmt.Errorf("watched file %q exceeds the %d-byte safety limit", path, maxWatchedFileBytes)
+	}
+	hash := sha256.New()
+	written, err := io.Copy(hash, io.LimitReader(file, maxWatchedFileBytes+1))
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("hash watched file %q: %w", path, err)
+	}
+	if written > maxWatchedFileBytes {
+		return [32]byte{}, fmt.Errorf("watched file %q exceeds the %d-byte safety limit", path, maxWatchedFileBytes)
+	}
+	var digest [32]byte
+	copy(digest[:], hash.Sum(nil))
+	return digest, nil
 }
 
 func clone(cfg config.Config) config.Config {

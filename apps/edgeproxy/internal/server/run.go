@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -52,12 +54,24 @@ func runLoop(configPath, envPath string, cfg config.Config, logger *slog.Logger,
 		}
 	}
 	watchStarted := false
+	restartFallbackAvailable := false
 
 	for {
 		gen, err := startGeneration(cfg, logger, manager)
 		if err != nil {
+			if manager != nil && restartFallbackAvailable {
+				recovered, rollbackErr := manager.RecoverFailedRestart(err)
+				if rollbackErr != nil {
+					return errors.Join(err, rollbackErr)
+				}
+				logger.Error("replacement generation failed after restart preflight; retrying the last healthy EdgeProxy generation", "error", err)
+				cfg = recovered
+				restartFallbackAvailable = false
+				continue
+			}
 			return err
 		}
+		restartFallbackAvailable = false
 		if manager != nil {
 			manager.Attach(gen.handler, cfg)
 			if !watchStarted {
@@ -96,6 +110,7 @@ func runLoop(configPath, envPath string, cfg config.Config, logger *slog.Logger,
 		// generation, avoiding an unnecessary intermediate restart.
 		next = latestRestart(next, manager)
 		cfg = next
+		restartFallbackAvailable = true
 	}
 }
 
@@ -139,24 +154,50 @@ func startGeneration(cfg config.Config, logger *slog.Logger, manager *control.Ma
 		IdleTimeout:       cfg.Server.IdleTimeout.Duration,
 		MaxHeaderBytes:    cfg.Server.MaxHeaderBytes,
 	}
+	var tlsConfig *tls.Config
+	if cfg.Server.TLS.Enabled {
+		certificate, err := tls.LoadX509KeyPair(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile)
+		if err != nil {
+			handler.Close()
+			return nil, fmt.Errorf("load proxy TLS certificate: %w", err)
+		}
+		tlsConfig = &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12}
+		gen.mainServer.TLSConfig = tlsConfig
+	}
+	mainListener, err := net.Listen("tcp", cfg.Server.ListenAddr)
+	if err != nil {
+		handler.Close()
+		return nil, fmt.Errorf("listen proxy server %q: %w", cfg.Server.ListenAddr, err)
+	}
+
+	var adminListener net.Listener
+	if cfg.Admin.Enabled {
+		gen.adminServer = admin.New(cfg.Admin, logger, registry, handler, logStore, manager).HTTPServer()
+		adminListener, err = net.Listen("tcp", cfg.Admin.ListenAddr)
+		if err != nil {
+			_ = mainListener.Close()
+			handler.Close()
+			return nil, fmt.Errorf("listen admin server %q: %w", cfg.Admin.ListenAddr, err)
+		}
+	}
+
 	go func() {
 		logger.Info("proxy server starting", "address", cfg.Server.ListenAddr, "tls", cfg.Server.TLS.Enabled)
 		var serveErr error
 		if cfg.Server.TLS.Enabled {
-			serveErr = gen.mainServer.ListenAndServeTLS(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile)
+			serveErr = gen.mainServer.ServeTLS(mainListener, "", "")
 		} else {
-			serveErr = gen.mainServer.ListenAndServe()
+			serveErr = gen.mainServer.Serve(mainListener)
 		}
 		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			gen.errCh <- fmt.Errorf("proxy server: %w", serveErr)
 		}
 	}()
 
-	if cfg.Admin.Enabled {
-		gen.adminServer = admin.New(cfg.Admin, logger, registry, handler, logStore, manager).HTTPServer()
+	if gen.adminServer != nil {
 		go func() {
 			logger.Info("admin server starting", "address", cfg.Admin.ListenAddr)
-			if serveErr := gen.adminServer.ListenAndServe(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			if serveErr := gen.adminServer.Serve(adminListener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 				gen.errCh <- fmt.Errorf("admin server: %w", serveErr)
 			}
 		}()

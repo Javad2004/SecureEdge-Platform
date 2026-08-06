@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -43,6 +44,43 @@ func TestDashboardUsesOperationalAndPassiveTrafficLabels(t *testing.T) {
 	} {
 		if strings.Contains(lower, strings.ToLower(forbidden)) {
 			t.Fatalf("dashboard contains deployment-specific or unnecessary label %q", forbidden)
+		}
+	}
+}
+
+func TestDashboardAdvancedControlPlaneContract(t *testing.T) {
+	index, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(index)
+	javascript := string(app)
+	for _, required := range []string{
+		"route-strip-prefix", "route-request-timeout", "route-cache-enabled", "route-health-enabled",
+		"cache-config-form", "cache-route-select", "telemetry-dialog", "telemetry-status-bars",
+		"/cache/purge", "load_balancing", "health_check", "/telemetry",
+	} {
+		if !strings.Contains(html+javascript, required) {
+			t.Fatalf("advanced dashboard contract is missing %q", required)
+		}
+	}
+
+	idPattern := regexp.MustCompile(`\bid="([^"]+)"`)
+	seen := map[string]bool{}
+	for _, match := range idPattern.FindAllStringSubmatch(html, -1) {
+		if seen[match[1]] {
+			t.Fatalf("duplicate DOM id %q", match[1])
+		}
+		seen[match[1]] = true
+	}
+	lookupPattern := regexp.MustCompile(`\$\('([^']+)'\)`)
+	for _, match := range lookupPattern.FindAllStringSubmatch(javascript, -1) {
+		if !seen[match[1]] {
+			t.Fatalf("JavaScript references missing DOM id %q", match[1])
 		}
 	}
 }

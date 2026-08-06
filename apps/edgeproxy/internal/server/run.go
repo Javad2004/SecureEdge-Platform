@@ -31,21 +31,22 @@ type generation struct {
 // by the executable because it also enables the authenticated control plane and
 // automatic config-file reload/restart supervision.
 func Run(cfg config.Config, logger *slog.Logger) error {
-	return runLoop("", "", cfg, logger, false)
+	return runLoop("", "", cfg, logger, false, false)
 }
 
-func RunManaged(configPath, envPath string, cfg config.Config, logger *slog.Logger) error {
-	return runLoop(configPath, envPath, cfg, logger, true)
+func RunManaged(configPath, envPath string, cfg config.Config, logger *slog.Logger, allowEnvironmentConfigPath ...bool) error {
+	allowPath := len(allowEnvironmentConfigPath) > 0 && allowEnvironmentConfigPath[0]
+	return runLoop(configPath, envPath, cfg, logger, true, allowPath)
 }
 
-func runLoop(configPath, envPath string, cfg config.Config, logger *slog.Logger, managed bool) error {
+func runLoop(configPath, envPath string, cfg config.Config, logger *slog.Logger, managed, allowEnvironmentConfigPath bool) error {
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	var manager *control.Manager
 	var err error
 	if managed {
-		manager, err = control.New(configPath, envPath, logger)
+		manager, err = control.New(configPath, envPath, logger, allowEnvironmentConfigPath)
 		if err != nil {
 			return err
 		}

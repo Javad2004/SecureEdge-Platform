@@ -276,6 +276,9 @@ Authenticated observability endpoints:
 ```text
 GET     /api/v1/status
 GET     /api/v1/metrics
+GET     /api/v1/telemetry
+GET     /api/v1/routes/{route}/telemetry
+GET     /api/v1/routes/{route}/origins/{origin}/telemetry
 GET     /api/v1/logs
 DELETE  /api/v1/logs
 POST    /api/v1/cache/purge
@@ -288,11 +291,24 @@ GET     /api/v1/config
 PUT     /api/v1/config
 POST    /api/v1/config/reload
 GET     /api/v1/config/watch
+GET     /api/v1/server
+PUT     /api/v1/server
+GET     /api/v1/admin
+PUT     /api/v1/admin
 GET     /api/v1/routes
 POST    /api/v1/routes
 GET     /api/v1/routes/{route}
 PUT     /api/v1/routes/{route}
 DELETE  /api/v1/routes/{route}
+GET     /api/v1/routes/{route}/load-balancing
+PUT     /api/v1/routes/{route}/load-balancing
+GET     /api/v1/routes/{route}/proxy
+PUT     /api/v1/routes/{route}/proxy
+GET     /api/v1/routes/{route}/cache
+PUT     /api/v1/routes/{route}/cache
+POST    /api/v1/routes/{route}/cache/purge
+GET     /api/v1/routes/{route}/health-check
+PUT     /api/v1/routes/{route}/health-check
 GET     /api/v1/routes/{route}/origins
 POST    /api/v1/routes/{route}/origins
 GET     /api/v1/routes/{route}/origins/{origin}
@@ -302,7 +318,7 @@ DELETE  /api/v1/routes/{route}/origins/{origin}
 
 Control Plane writes use strict JSON decoding, reject unknown fields and bodies larger than 4 MiB, validate the complete candidate, preserve a supplied `[REDACTED]` Admin token, create timestamped backups, and atomically replace the configuration file. Route and Origin lookup is case-insensitive; route names are immutable after creation so SecurityEdge policy identities cannot silently drift. A route must retain at least one Origin.
 
-Hot-applicable routing, cache, health, and scheduler changes return `200 OK` and are installed without dropping traffic. Listener, TLS, Admin listener/auth/log-store, and process-timeout changes are persisted and return `202 Accepted`; the managed process coalesces pending work and performs an automatic graceful generation restart. Invalid JSON or `.env` revisions never replace the last healthy runtime. `GET /api/v1/config/watch` reports watched files, digests, revisions, the last apply mode/error, and pending restart state.
+Hot-applicable routing, cache, health, and scheduler changes return `200 OK` and are installed without dropping traffic. Listener, TLS, Admin listener/auth/log-store, and process-timeout changes are persisted and return `202 Accepted`; the managed process coalesces pending work and performs an automatic graceful generation restart. Invalid JSON or `.env` revisions never replace the last healthy runtime. Dotenv reload is transactional across parsing, environment overrides, an optional `EDGEPROXY_CONFIG` target switch, complete configuration validation, and runtime application; a rejected revision restores the previous managed environment exactly. `GET /api/v1/config/watch` reports watched files, revisions, the last apply mode/error, and pending restart state.
 
 Local-development credentials:
 
@@ -416,7 +432,7 @@ The management client works directly against EdgeProxy and prints structured JSO
 .\scripts\manage-config.ps1 -Action Telemetry
 ```
 
-The script reads `EDGEPROXY_ADMIN_TOKEN` from the process environment or `.env`, bypasses ambient system proxies for local/LAN control traffic, rejects invalid JSON before sending it, and fails on non-success HTTP responses.
+The script reads `EDGEPROXY_ADMIN_TOKEN` from the process environment or `.env`, bypasses ambient system proxies for local/LAN control traffic, rejects invalid JSON before sending it, and fails on non-success HTTP responses. High-level actions cover Server/Admin sections, complete Route and Origin CRUD, cache enable/disable/TTL/purge, scheduler tuning, proxy/retry settings, health checks, and route/origin telemetry; `-BodyFile` and `-BodyJson` remain available for full structured updates.
 
 ## Docker
 

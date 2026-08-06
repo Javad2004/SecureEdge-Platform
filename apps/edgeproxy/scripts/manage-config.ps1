@@ -1,6 +1,13 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Status','Metrics','Telemetry','Watch','GetConfig','SetConfig','Reload','ListRoutes','GetRoute','CreateRoute','UpdateRoute','DeleteRoute','ListOrigins','GetOrigin','CreateOrigin','UpdateOrigin','DeleteOrigin')]
+    [ValidateSet(
+        'Status','Metrics','Telemetry','Watch','GetConfig','SetConfig','Reload',
+        'GetServer','SetServer','GetAdmin','SetAdmin',
+        'ListRoutes','GetRoute','CreateRoute','UpdateRoute','DeleteRoute','GetRouteSettings','RouteTelemetry',
+        'ListOrigins','GetOrigin','CreateOrigin','UpdateOrigin','DeleteOrigin','OriginTelemetry',
+        'GetRouteCache','SetRouteCache','EnableCache','DisableCache','SetCacheTTL','PurgeRouteCache',
+        'GetLoadBalancing','SetLoadBalancing','GetRouteProxy','SetRouteProxy','GetHealthCheck','SetHealthCheck'
+    )]
     [string]$Action = 'Status',
     [string]$BaseUrl = '',
     [string]$Token = '',
@@ -8,7 +15,14 @@ param(
     [string]$Route = '',
     [string]$Origin = '',
     [string]$BodyFile = '',
-    [string]$BodyJson = ''
+    [string]$BodyJson = '',
+    [string]$Algorithm = '',
+    [Nullable[double]]$LatencySensitivity = $null,
+    [Nullable[double]]$EWMAAlpha = $null,
+    [string]$DefaultTTL = '',
+    [string]$StaleIfError = '',
+    [string]$Host = '',
+    [string]$PathPrefix = ''
 )
 
 Set-StrictMode -Version Latest
@@ -31,8 +45,22 @@ function Get-RequestBody {
     return $json
 }
 
+function Has-RequestBody {
+    return -not [string]::IsNullOrWhiteSpace($BodyJson) -or -not [string]::IsNullOrWhiteSpace($BodyFile)
+}
+
 function Require-Value([string]$Value, [string]$Name) {
     if ([string]::IsNullOrWhiteSpace($Value)) { throw "$Name is required for action $Action." }
+}
+
+function ConvertTo-ControlJson([object]$Value) {
+    return $Value | ConvertTo-Json -Depth 100 -Compress
+}
+
+function Add-QueryValue([System.Collections.Generic.List[string]]$Parts, [string]$Name, [string]$Value) {
+    if (-not [string]::IsNullOrWhiteSpace($Value)) {
+        $Parts.Add(([Uri]::EscapeDataString($Name) + '=' + [Uri]::EscapeDataString($Value)))
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($Token)) { $Token = Get-NonEmptyEnvironmentValue -Name 'EDGEPROXY_ADMIN_TOKEN' }
@@ -80,23 +108,87 @@ try {
     $routePath = if ($Route) { '/routes/' + [Uri]::EscapeDataString($Route) } else { '' }
     $originPath = if ($Origin) { $routePath + '/origins/' + [Uri]::EscapeDataString($Origin) } else { '' }
     switch ($Action) {
-        'Status'        { $result = Invoke-ControlRequest GET '/status' }
-        'Metrics'       { $result = Invoke-ControlRequest GET '/metrics' }
-        'Telemetry'     { $result = [pscustomobject]@{ status = (Invoke-ControlRequest GET '/status'); metrics = (Invoke-ControlRequest GET '/metrics') } }
-        'Watch'         { $result = Invoke-ControlRequest GET '/config/watch' }
-        'GetConfig'     { $result = Invoke-ControlRequest GET '/config' }
-        'SetConfig'     { $result = Invoke-ControlRequest PUT '/config' (Get-RequestBody) }
-        'Reload'        { $result = Invoke-ControlRequest POST '/config/reload' }
-        'ListRoutes'    { $result = Invoke-ControlRequest GET '/routes' }
-        'GetRoute'      { Require-Value $Route 'Route'; $result = Invoke-ControlRequest GET $routePath }
-        'CreateRoute'   { $result = Invoke-ControlRequest POST '/routes' (Get-RequestBody) }
-        'UpdateRoute'   { Require-Value $Route 'Route'; $result = Invoke-ControlRequest PUT $routePath (Get-RequestBody) }
-        'DeleteRoute'   { Require-Value $Route 'Route'; $result = Invoke-ControlRequest DELETE $routePath }
-        'ListOrigins'   { Require-Value $Route 'Route'; $result = Invoke-ControlRequest GET ($routePath + '/origins') }
-        'GetOrigin'     { Require-Value $Route 'Route'; Require-Value $Origin 'Origin'; $result = Invoke-ControlRequest GET $originPath }
-        'CreateOrigin'  { Require-Value $Route 'Route'; $result = Invoke-ControlRequest POST ($routePath + '/origins') (Get-RequestBody) }
-        'UpdateOrigin'  { Require-Value $Route 'Route'; Require-Value $Origin 'Origin'; $result = Invoke-ControlRequest PUT $originPath (Get-RequestBody) }
-        'DeleteOrigin'  { Require-Value $Route 'Route'; Require-Value $Origin 'Origin'; $result = Invoke-ControlRequest DELETE $originPath }
+        'Status'             { $result = Invoke-ControlRequest GET '/status' }
+        'Metrics'            { $result = Invoke-ControlRequest GET '/metrics' }
+        'Telemetry'          { $result = Invoke-ControlRequest GET '/telemetry' }
+        'Watch'              { $result = Invoke-ControlRequest GET '/config/watch' }
+        'GetConfig'          { $result = Invoke-ControlRequest GET '/config' }
+        'SetConfig'          { $result = Invoke-ControlRequest PUT '/config' (Get-RequestBody) }
+        'Reload'             { $result = Invoke-ControlRequest POST '/config/reload' }
+        'GetServer'          { $result = Invoke-ControlRequest GET '/server' }
+        'SetServer'          { $result = Invoke-ControlRequest PUT '/server' (Get-RequestBody) }
+        'GetAdmin'           { $result = Invoke-ControlRequest GET '/admin' }
+        'SetAdmin'           { $result = Invoke-ControlRequest PUT '/admin' (Get-RequestBody) }
+        'ListRoutes'         { $result = Invoke-ControlRequest GET '/routes' }
+        'GetRoute'           { Require-Value $Route 'Route'; $result = Invoke-ControlRequest GET $routePath }
+        'CreateRoute'        { $result = Invoke-ControlRequest POST '/routes' (Get-RequestBody) }
+        'UpdateRoute'        { Require-Value $Route 'Route'; $result = Invoke-ControlRequest PUT $routePath (Get-RequestBody) }
+        'DeleteRoute'        { Require-Value $Route 'Route'; $result = Invoke-ControlRequest DELETE $routePath }
+        'GetRouteSettings'   {
+            Require-Value $Route 'Route'
+            $result = [pscustomobject]@{
+                route = Invoke-ControlRequest GET $routePath
+                load_balancing = Invoke-ControlRequest GET ($routePath + '/load-balancing')
+                proxy = Invoke-ControlRequest GET ($routePath + '/proxy')
+                cache = Invoke-ControlRequest GET ($routePath + '/cache')
+                health_check = Invoke-ControlRequest GET ($routePath + '/health-check')
+            }
+        }
+        'RouteTelemetry'     { Require-Value $Route 'Route'; $result = Invoke-ControlRequest GET ($routePath + '/telemetry') }
+        'ListOrigins'        { Require-Value $Route 'Route'; $result = Invoke-ControlRequest GET ($routePath + '/origins') }
+        'GetOrigin'          { Require-Value $Route 'Route'; Require-Value $Origin 'Origin'; $result = Invoke-ControlRequest GET $originPath }
+        'CreateOrigin'       { Require-Value $Route 'Route'; $result = Invoke-ControlRequest POST ($routePath + '/origins') (Get-RequestBody) }
+        'UpdateOrigin'       { Require-Value $Route 'Route'; Require-Value $Origin 'Origin'; $result = Invoke-ControlRequest PUT $originPath (Get-RequestBody) }
+        'DeleteOrigin'       { Require-Value $Route 'Route'; Require-Value $Origin 'Origin'; $result = Invoke-ControlRequest DELETE $originPath }
+        'OriginTelemetry'    { Require-Value $Route 'Route'; Require-Value $Origin 'Origin'; $result = Invoke-ControlRequest GET ($originPath + '/telemetry') }
+        'GetRouteCache'      { Require-Value $Route 'Route'; $result = Invoke-ControlRequest GET ($routePath + '/cache') }
+        'SetRouteCache'      { Require-Value $Route 'Route'; $result = Invoke-ControlRequest PUT ($routePath + '/cache') (Get-RequestBody) }
+        'EnableCache'        {
+            Require-Value $Route 'Route'
+            $cache = Invoke-ControlRequest GET ($routePath + '/cache')
+            $cache.enabled = $true
+            $result = Invoke-ControlRequest PUT ($routePath + '/cache') (ConvertTo-ControlJson $cache)
+        }
+        'DisableCache'       {
+            Require-Value $Route 'Route'
+            $cache = Invoke-ControlRequest GET ($routePath + '/cache')
+            $cache.enabled = $false
+            $result = Invoke-ControlRequest PUT ($routePath + '/cache') (ConvertTo-ControlJson $cache)
+        }
+        'SetCacheTTL'        {
+            Require-Value $Route 'Route'; Require-Value $DefaultTTL 'DefaultTTL'
+            $cache = Invoke-ControlRequest GET ($routePath + '/cache')
+            $cache.default_ttl = $DefaultTTL
+            if (-not [string]::IsNullOrWhiteSpace($StaleIfError)) { $cache.stale_if_error = $StaleIfError }
+            $result = Invoke-ControlRequest PUT ($routePath + '/cache') (ConvertTo-ControlJson $cache)
+        }
+        'PurgeRouteCache'    {
+            Require-Value $Route 'Route'
+            $parts = [System.Collections.Generic.List[string]]::new()
+            Add-QueryValue $parts 'host' $Host
+            Add-QueryValue $parts 'path_prefix' $PathPrefix
+            $query = if ($parts.Count -gt 0) { '?' + ($parts -join '&') } else { '' }
+            $result = Invoke-ControlRequest POST ($routePath + '/cache/purge' + $query)
+        }
+        'GetLoadBalancing'   { Require-Value $Route 'Route'; $result = Invoke-ControlRequest GET ($routePath + '/load-balancing') }
+        'SetLoadBalancing'   {
+            Require-Value $Route 'Route'
+            if (Has-RequestBody) {
+                $body = Get-RequestBody
+            } else {
+                Require-Value $Algorithm 'Algorithm'
+                $settings = Invoke-ControlRequest GET ($routePath + '/load-balancing')
+                $settings.algorithm = $Algorithm
+                if ($null -ne $LatencySensitivity) { $settings.latency_sensitivity = [double]$LatencySensitivity }
+                if ($null -ne $EWMAAlpha) { $settings.ewma_alpha = [double]$EWMAAlpha }
+                $body = ConvertTo-ControlJson $settings
+            }
+            $result = Invoke-ControlRequest PUT ($routePath + '/load-balancing') $body
+        }
+        'GetRouteProxy'      { Require-Value $Route 'Route'; $result = Invoke-ControlRequest GET ($routePath + '/proxy') }
+        'SetRouteProxy'      { Require-Value $Route 'Route'; $result = Invoke-ControlRequest PUT ($routePath + '/proxy') (Get-RequestBody) }
+        'GetHealthCheck'     { Require-Value $Route 'Route'; $result = Invoke-ControlRequest GET ($routePath + '/health-check') }
+        'SetHealthCheck'     { Require-Value $Route 'Route'; $result = Invoke-ControlRequest PUT ($routePath + '/health-check') (Get-RequestBody) }
     }
     $result | ConvertTo-Json -Depth 100
 }

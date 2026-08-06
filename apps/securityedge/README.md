@@ -66,6 +66,7 @@ SecurityEdge provides application-layer HTTP protection. SYN floods, UDP floods,
 - SecurityEdge metrics and Prometheus exposition;
 - WAF and admission-control event browsing;
 - recent privacy-safe client traffic telemetry;
+- bounded, atomically persisted request-rate and Route/Origin telemetry history;
 - dependency monitoring for DNS, SecurityEdge ingress, EdgeProxy data plane, EdgeProxy Admin API, route readiness, and Origin health;
 - EdgeProxy metrics, logs, cache purge, transactional configuration, Route/Origin CRUD, and watcher status through an authenticated backend-for-frontend;
 - policy editing with validation and atomic persistence;
@@ -120,6 +121,7 @@ Important variables:
 | `SECURITYEDGE_DNS_NAMES` | Comma-separated names checked by the DNS probe |
 | `SECURITYEDGE_DNS_EXPECTED_ADDRESSES` | Comma-separated expected resolved IP addresses |
 | `SECURITYEDGE_LOG_FILE_PATH` | Persistent NDJSON security-log path |
+| `SECURITYEDGE_TELEMETRY_HISTORY_FILE` | Optional bounded telemetry-history JSON path |
 
 Empty or missing variables preserve the JSON values. Environment-derived values are runtime-only: dashboard policy updates continue to persist the file-backed configuration without writing secrets or machine-specific endpoint overrides into JSON.
 
@@ -258,9 +260,10 @@ SecurityEdge connects to the configured EdgeProxy data plane directly and does n
 The authenticated dashboard is also the platform Control Center. In addition to dependency health and security events, operators can:
 
 - create, edit, and delete EdgeProxy routes and Origins;
-- select a load-balancing algorithm per route and tune Origin weights, priorities, `latency_sensitivity`, and `ewma_alpha`;
-- inspect per-route request volume, success/error counts, cache hit ratio, latency, retries, upstream calls, and bytes;
-- inspect per-Origin health, active requests, EWMA latency, scheduler selections, response counts, and health transitions;
+- edit every Route field through validated forms: host/path matching, prefix handling, scheduler, retry/transport limits, cache privacy/capacity/TTL rules, and health-check policy;
+- use a focused per-route cache editor and segment-aware purge controls without editing raw JSON;
+- inspect per-route request volume, success/error counts, status distributions, cache hit ratio, min/average/max and P50/P95/P99 latency, retries, upstream calls, timeouts, and bytes;
+- inspect per-Origin health, active requests, EWMA latency, scheduler selections, response/status counts, failures, retries, timeouts, and health transitions;
 - edit and validate raw EdgeProxy and SecurityEdge JSON configurations;
 - inspect both file watchers, revision counters, last errors, apply modes, and pending automatic restarts.
 
@@ -276,7 +279,7 @@ The health topology contains only dependencies that SecurityEdge can actively in
 DNS Resolution → SecurityEdge → EdgeProxy → Routes → Origins
 ```
 
-The dashboard reports component status, probe latency, HTTP status, last success or failure, consecutive failures, route readiness, Origin health, and transition history.
+The dashboard reports component status, probe latency, HTTP status, last success or failure, consecutive failures, route readiness, Origin health, and transition history. It also samples a bounded operational timeline containing SecurityEdge rejection rates, EdgeProxy request/cache/latency signals, and condensed per-Route/per-Origin counters. When `admin.telemetry_history.file_path` is configured, samples are replaced atomically and restored after restart; a corrupt history file is reported as degraded but never prevents service startup.
 
 ### Recent Client Traffic
 
@@ -350,6 +353,7 @@ GET     /api/v1/bans
 DELETE  /api/v1/bans/{client}
 DELETE  /api/v1/bans
 GET     /api/v1/dashboard/overview
+GET     /api/v1/dashboard/history?limit=120
 GET     /api/v1/traffic/recent
 GET     /api/v1/connectivity
 POST    /api/v1/connectivity/check
@@ -367,10 +371,10 @@ SecurityEdge watches three inputs independently: its own JSON configuration, the
 
 - a shared EdgeProxy file change reloads only SecurityEdge's Route metadata and policy lookup table;
 - a hot-applicable SecurityEdge change updates policies, WAF rules, trusted proxies, route metadata, and EdgeProxy Admin connectivity without interrupting traffic;
-- a listener, transport, Admin listener/auth/log-store, process-wide limiter/ban-store, or environment change schedules an automatic graceful generation restart;
-- invalid JSON or `.env` revisions keep the last healthy runtime and are reported through `/api/v1/config/watch`.
+- hot-applicable `.env` overrides are validated and applied in place; listener, transport, Admin listener/auth/log-store, process-wide limiter/ban-store, or configuration-path changes schedule an automatic graceful generation restart;
+- invalid JSON, referenced Route-table, or `.env` revisions restore the previous managed environment, keep the last healthy runtime, and are reported through `/api/v1/config/watch`.
 
-`POST /api/v1/reload` remains available for an explicit re-read. `PUT /api/v1/config` validates and atomically persists a complete candidate. Hot changes return `200 OK`; restart-required revisions return `202 Accepted` and are applied automatically by the managed process. Multiple rapid restart requests are coalesced so the newest valid revision wins. The service process remains the same while listeners and long-lived resources move to the new generation.
+`POST /api/v1/reload` remains available for an explicit re-read. `PUT /api/v1/config` validates and atomically persists a complete candidate. Hot changes return `200 OK`; restart-required revisions from either endpoint return `202 Accepted` and are applied automatically by the managed process. Multiple rapid restart requests are coalesced so the newest valid revision wins. The service process remains the same while listeners and long-lived resources move to the new generation.
 
 The restart-required comparison uses the file-backed SecurityEdge configuration independently of runtime/environment endpoint overrides. A change made to EdgeProxy routes from the Dashboard therefore cannot be misclassified as a SecurityEdge process change or cause an unnecessary listener restart.
 
@@ -385,6 +389,9 @@ Authenticated EdgeProxy backend-for-frontend endpoints:
 ```text
 GET     /api/v1/edgeproxy/status
 GET     /api/v1/edgeproxy/metrics
+GET     /api/v1/edgeproxy/telemetry
+GET     /api/v1/edgeproxy/routes/{route}/telemetry
+GET     /api/v1/edgeproxy/routes/{route}/origins/{origin}/telemetry
 GET     /api/v1/edgeproxy/logs
 DELETE  /api/v1/edgeproxy/logs
 POST    /api/v1/edgeproxy/cache/purge
@@ -392,11 +399,24 @@ GET     /api/v1/edgeproxy/config
 PUT     /api/v1/edgeproxy/config
 POST    /api/v1/edgeproxy/config/reload
 GET     /api/v1/edgeproxy/config/watch
+GET     /api/v1/edgeproxy/server
+PUT     /api/v1/edgeproxy/server
+GET     /api/v1/edgeproxy/admin
+PUT     /api/v1/edgeproxy/admin
 GET     /api/v1/edgeproxy/routes
 POST    /api/v1/edgeproxy/routes
 GET     /api/v1/edgeproxy/routes/{route}
 PUT     /api/v1/edgeproxy/routes/{route}
 DELETE  /api/v1/edgeproxy/routes/{route}
+GET     /api/v1/edgeproxy/routes/{route}/load-balancing
+PUT     /api/v1/edgeproxy/routes/{route}/load-balancing
+GET     /api/v1/edgeproxy/routes/{route}/proxy
+PUT     /api/v1/edgeproxy/routes/{route}/proxy
+GET     /api/v1/edgeproxy/routes/{route}/cache
+PUT     /api/v1/edgeproxy/routes/{route}/cache
+POST    /api/v1/edgeproxy/routes/{route}/cache/purge
+GET     /api/v1/edgeproxy/routes/{route}/health-check
+PUT     /api/v1/edgeproxy/routes/{route}/health-check
 GET     /api/v1/edgeproxy/routes/{route}/origins
 POST    /api/v1/edgeproxy/routes/{route}/origins
 GET     /api/v1/edgeproxy/routes/{route}/origins/{origin}
@@ -499,6 +519,8 @@ go test ./...
 go test -race ./...
 
 node --check ./internal/admin/web/app.js
+node --check ../../scripts/test-dashboard-browser.mjs
+node ../../scripts/test-dashboard-browser.mjs --fixture-root ../..
 
 go build -trimpath -o ./bin/securityedge ./cmd/securityedge
 ```
@@ -595,7 +617,7 @@ See [../../deployments/docker/README.md](../../deployments/docker/README.md) for
 
 ## Privacy and log handling
 
-SecurityEdge avoids retaining raw sensitive attack payloads in recent-traffic telemetry. Security events use bounded in-memory storage and optional NDJSON persistence with rotation.
+SecurityEdge avoids retaining raw sensitive attack payloads in recent-traffic telemetry. Security events use bounded in-memory storage and optional NDJSON persistence with rotation. Historical telemetry stores only aggregate counters, rates, latency summaries, health outcomes, and Route/Origin names; it never stores request bodies, headers, credentials, or client payloads.
 
 Generated files under `logs/` are runtime artifacts and must not be committed. Keep only `logs/.gitkeep` in source control.
 

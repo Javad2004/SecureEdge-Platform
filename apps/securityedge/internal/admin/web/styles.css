@@ -1124,3 +1124,105 @@ canvas {
   .scheduler-banner { grid-template-columns:1fr }
   .origin-state { justify-content:flex-start }
 }
+
+/* Advanced control-plane forms and telemetry detail views. */
+.wide-dialog {
+  width:min(1120px,calc(100vw - 28px));
+  max-width:1120px
+}
+.wide-dialog .editor-form {
+  max-height:min(90vh,980px);
+  overflow:auto;
+  padding-bottom:0
+}
+.wide-dialog .dialog-head {
+  position:sticky;
+  top:0;
+  z-index:4;
+  background:linear-gradient(180deg,#121a2d 82%,rgba(18,26,45,.94));
+  padding-bottom:14px
+}
+.sticky-actions {
+  position:sticky;
+  bottom:0;
+  z-index:4;
+  margin:18px -2px 0;
+  padding:14px 2px 18px;
+  background:linear-gradient(0deg,#121a2d 78%,rgba(18,26,45,.9));
+  border-top:1px solid var(--border)
+}
+.switch-grid {
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:10px;
+  margin:10px 0 14px
+}
+.inline-editor {
+  gap:14px
+}
+.route-facts {
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:8px;
+  margin:12px 0;
+  color:var(--muted);
+  font-size:12px
+}
+.route-facts span {
+  padding:9px 10px;
+  border:1px solid var(--border);
+  border-radius:9px;
+  background:rgba(7,12,24,.24)
+}
+.route-facts strong {
+  color:var(--text)
+}
+.telemetry-detail-grid {
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:10px;
+  margin-bottom:18px
+}
+.telemetry-detail-grid .metric-row {
+  display:block;
+  min-height:82px;
+  padding:13px;
+  border:1px solid var(--border);
+  border-radius:11px;
+  background:rgba(7,12,24,.28)
+}
+.telemetry-detail-grid .metric-row span,
+.telemetry-detail-grid .metric-row strong {
+  display:block
+}
+.telemetry-detail-grid .metric-row strong {
+  margin-top:8px;
+  overflow-wrap:anywhere
+}
+.raw-details {
+  margin-top:16px;
+  border:1px solid var(--border);
+  border-radius:11px;
+  overflow:hidden
+}
+.raw-details summary {
+  padding:12px 14px;
+  cursor:pointer;
+  color:var(--accent)
+}
+.telemetry-raw {
+  max-height:360px;
+  overflow:auto;
+  margin:0;
+  padding:14px;
+  background:#080d19;
+  color:#cbd7ea;
+  font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere
+}
+@media (max-width:900px) {
+  .switch-grid,.route-facts,.telemetry-detail-grid {
+    grid-template-columns:1fr
+  }
+}

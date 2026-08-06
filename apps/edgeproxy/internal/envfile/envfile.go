@@ -53,7 +53,7 @@ func currentModulePath() string {
 func Load(explicit string, candidates ...string) (string, error) {
 	explicit = strings.TrimSpace(explicit)
 	if explicit != "" {
-		if err := loadFile(explicit, false); err != nil {
+		if err := loadFile(explicit, false, nil); err != nil {
 			return "", fmt.Errorf("load environment file %q: %w", explicit, err)
 		}
 		return explicit, nil
@@ -73,7 +73,7 @@ func Load(explicit string, candidates ...string) (string, error) {
 		if !info.Mode().IsRegular() {
 			return "", fmt.Errorf("environment path %q is not a regular file", candidate)
 		}
-		if err := loadFile(candidate, false); err != nil {
+		if err := loadFile(candidate, false, nil); err != nil {
 			return "", fmt.Errorf("load environment file %q: %w", candidate, err)
 		}
 		return candidate, nil
@@ -87,13 +87,30 @@ func Reload(path string) error {
 	if strings.TrimSpace(path) == "" {
 		return nil
 	}
-	if err := loadFile(path, true); err != nil {
+	if err := loadFile(path, true, nil); err != nil {
 		return fmt.Errorf("reload environment file %q: %w", path, err)
 	}
 	return nil
 }
 
-func loadFile(path string, reload bool) error {
+// ReloadValidated applies a dotenv revision and runs validation while the
+// previous managed environment is still available for rollback. This makes
+// runtime file watching transactional across parsing, environment overrides,
+// referenced configuration files, and hot-apply preparation.
+func ReloadValidated(path string, validate func() error) error {
+	if strings.TrimSpace(path) == "" {
+		if validate != nil {
+			return validate()
+		}
+		return nil
+	}
+	if err := loadFile(path, true, validate); err != nil {
+		return fmt.Errorf("reload environment file %q: %w", path, err)
+	}
+	return nil
+}
+
+func loadFile(path string, reload bool, validate func() error) error {
 	values, err := readValues(path)
 	if err != nil {
 		return err
@@ -154,6 +171,12 @@ func loadFile(path string, reload bool) error {
 			return fmt.Errorf("set %s: %w", key, err)
 		}
 		managedValues[key] = value
+	}
+	if validate != nil {
+		if err := validate(); err != nil {
+			rollback()
+			return fmt.Errorf("validation failed: %w", err)
+		}
 	}
 	return nil
 }

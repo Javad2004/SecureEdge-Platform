@@ -60,14 +60,17 @@ The platform can be administered without manually stopping either executable:
 
 - EdgeProxy watches its JSON profile and `.env`, hot-applies data-plane changes, and gracefully restarts listener generations for process-owned changes.
 - SecurityEdge independently watches its own JSON, the shared EdgeProxy Route table, and `.env`; Route changes never trigger an unnecessary SecurityEdge listener restart.
-- Authenticated APIs and PowerShell tools provide full configuration replacement plus Route, Origin, and security-policy CRUD.
-- The Dashboard exposes the same Control Plane and shows per-route cache/latency/request telemetry, per-Origin health/weight/priority/EWMA/active work, and watcher/revision state.
+- Authenticated APIs and PowerShell tools provide full configuration replacement, Server/Admin sections, Route and Origin CRUD, dedicated cache/load-balancing/proxy/health-check operations, and security-policy CRUD.
+- The Dashboard exposes the same Control Plane with complete form-based Route, scheduler, retry, cache, health-check, and Origin management; raw JSON remains available only as an advanced escape hatch.
+- Complete per-route and per-Origin telemetry includes traffic, cache efficiency, status distributions, failures, retries, latency percentiles, scheduler selections, EWMA, active work, and watcher/revision state.
+- SecurityEdge retains a bounded, atomically persisted telemetry timeline for request/rejection rates and condensed Route/Origin history, so dashboard trends survive refreshes and service restarts.
 - Atomic persistence, timestamped backups, strict JSON validation, redacted secrets, and last-known-good runtime behavior protect management operations.
 
 ## Requirements
 
 - Go **1.26.5** or later
 - Windows PowerShell for the supplied `.ps1` operational scripts
+- Bash and GNU `find` for the optional Linux development watcher
 - `curl` or `curl.exe` for HTTP verification
 - Docker only for the optional container workflows
 - A DNS record or static host mapping for named LAN testing
@@ -175,6 +178,22 @@ Local-development dashboard token:
 ```text
 dev-security-token
 ```
+
+### Automatic rebuild and restart during development
+
+For a single development command that supervises both applications, run from the repository root:
+
+```powershell
+.\scripts\dev-watch.ps1 -PrettyLogs
+```
+
+On Linux:
+
+```bash
+./scripts/dev-watch.sh
+```
+
+The watcher fingerprints the repository, debounces save bursts, builds an isolated candidate generation before stopping a healthy process, and restores the previous generation if startup fails. Go source, embedded Dashboard assets, workspace files, deployment files, and integration contracts restart only the affected applications. The active JSON and `.env` files remain owned by each application's transactional runtime watcher, so hot-applicable revisions do not cause a development-process restart. Build products are written under ignored `.dev/`.
 
 ## Reference LAN deployment
 

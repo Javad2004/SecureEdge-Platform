@@ -1,6 +1,7 @@
 package envfile
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -163,5 +164,32 @@ func TestApplicationCandidatesKeepDotenvApplicationScoped(t *testing.T) {
 	got := ApplicationCandidates("apps/application/.env")
 	if len(got) != 2 || got[0] != "apps/application/.env" || got[1] != ".env" {
 		t.Fatalf("application directory must discover local .env: %#v", got)
+	}
+}
+
+func TestReloadValidatedRollsBackEnvironmentOnValidationFailure(t *testing.T) {
+	key := "SECURITYEDGE_ENVFILE_TRANSACTION_TEST"
+	_ = os.Unsetenv(key)
+	path := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(path, []byte(key+"=healthy\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.WriteFile(path, nil, 0o600)
+		_ = Reload(path)
+		_ = os.Unsetenv(key)
+	})
+	if err := os.WriteFile(path, []byte(key+"=rejected\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	validationErr := errors.New("referenced config is invalid")
+	if err := ReloadValidated(path, func() error { return validationErr }); !errors.Is(err, validationErr) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+	if got := os.Getenv(key); got != "healthy" {
+		t.Fatalf("expected previous environment value after rollback, got %q", got)
 	}
 }

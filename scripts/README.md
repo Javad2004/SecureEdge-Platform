@@ -1,10 +1,54 @@
 # Platform Scripts
 
-This directory is reserved for scripts that coordinate the complete platform, such as starting all host processes, validating the end-to-end request path, or collecting combined diagnostics.
+This directory contains repository-wide development and operational helpers. Component-specific verification and Control Plane clients remain under `apps/edgeproxy/scripts/` and `apps/securityedge/scripts/`.
 
-Component-specific scripts remain with their owning application:
+## Automatic development supervisor
 
-- `apps/edgeproxy/scripts/`
-- `apps/securityedge/scripts/`
+Run from the repository root on Windows:
 
-The full container stack is currently managed through `deployments/docker/compose.yml` rather than a wrapper script.
+```powershell
+.\scripts\dev-watch.ps1 -PrettyLogs
+```
+
+Run on Linux:
+
+```bash
+./scripts/dev-watch.sh
+```
+
+The supervisor watches source code, embedded Dashboard HTML/CSS/JavaScript, workspace files, integration JSON, deployment assets, and platform scripts. Changes are debounced and classified so only the affected service is rebuilt. A uniquely named candidate binary is built before the healthy generation is stopped; a failed build leaves the running service untouched, and a candidate startup failure restores the preceding binary. Unexpected process exits are rebuilt and restarted automatically.
+
+The active application JSON and `.env` files are intentionally not handled as source changes. EdgeProxy and SecurityEdge watch those files internally, validate them transactionally, hot-apply safe changes, coalesce restart-required revisions, and preserve the last healthy runtime when a revision is invalid. This avoids duplicate restarts and scheduler resets.
+
+Generated development binaries are stored under ignored `.dev/bin/` and removed when the supervisor exits. The PowerShell watcher requires Windows PowerShell or PowerShell 7. The Linux watcher requires Bash and GNU `find`.
+
+Optional PowerShell parameters select external profiles, dotenv files, polling/debounce intervals, and pretty logs:
+
+```powershell
+.\scripts\dev-watch.ps1 `
+  -EdgeProxyConfig integration/edgeproxy-local-behind-waf.json `
+  -SecurityEdgeConfig apps/securityedge/configs/local-dev.json `
+  -PollMilliseconds 500 `
+  -DebounceMilliseconds 750 `
+  -PrettyLogs
+```
+
+The full container stack is managed through `deployments/docker/compose.yml`.
+
+## Dashboard browser smoke test
+
+The browser smoke test uses an installed Chrome, Edge, or Chromium through the DevTools protocol and has no npm dependency. Against a running SecurityEdge stack:
+
+```powershell
+node .\scripts\test-dashboard-browser.mjs `
+  --url http://127.0.0.1:9191 `
+  --token $env:SECURITYEDGE_ADMIN_TOKEN
+```
+
+For CI, restricted sandboxes, or workstations whose browser policy blocks local HTTP navigation, fixture mode loads the real embedded Dashboard HTML and JavaScript into a real browser, supplies deterministic API responses from the checked-in local profiles, and verifies login, initial rendering, complete Route forms, per-route cache management, navigation, and browser runtime errors:
+
+```powershell
+node .\scripts\test-dashboard-browser.mjs --fixture-root .
+```
+
+Use `--browser <path>` when the browser is not in a standard installation location. Fixture mode complements rather than replaces API and end-to-end tests; live mode remains the final browser-to-service verification for deployment environments.

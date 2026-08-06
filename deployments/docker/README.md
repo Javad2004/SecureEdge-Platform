@@ -69,7 +69,7 @@ Three named volumes are used:
 ```text
 edgeproxy-config      mutable shared EdgeProxy routes, Origins, and scheduler configuration
 securityedge-config   mutable SecurityEdge policy and gateway configuration
-securityedge-logs     rotated SecurityEdge NDJSON event logs
+securityedge-logs     rotated SecurityEdge NDJSON logs and bounded telemetry history
 ```
 
 The EdgeProxy image initializes `/app/config/config.json` on first creation and mounts the directory read-write so atomic rename and timestamped backups remain valid. SecurityEdge mounts the same volume read-only at `/edgeproxy-config` and receives `SECURITYEDGE_EDGEPROXY_CONFIG_PATH=/edgeproxy-config/config.json`; both watchers therefore observe one authoritative Route table. The SecurityEdge image initializes its own configuration volume separately.

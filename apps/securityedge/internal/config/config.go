@@ -66,15 +66,23 @@ type TransportConfig struct {
 }
 
 type AdminConfig struct {
-	Enabled               bool               `json:"enabled"`
-	ListenAddr            string             `json:"listen_addr"`
-	AuthToken             string             `json:"auth_token"`
-	LogStore              LogStoreConfig     `json:"log_store"`
-	Connectivity          ConnectivityConfig `json:"connectivity"`
-	PollTimeout           Duration           `json:"poll_timeout"`
-	MaxRequestBodyBytes   int64              `json:"max_request_body_bytes"`
-	AuthFailuresPerMinute int                `json:"auth_failures_per_minute"`
-	AuthLockoutDuration   Duration           `json:"auth_lockout_duration"`
+	Enabled               bool                   `json:"enabled"`
+	ListenAddr            string                 `json:"listen_addr"`
+	AuthToken             string                 `json:"auth_token"`
+	LogStore              LogStoreConfig         `json:"log_store"`
+	Connectivity          ConnectivityConfig     `json:"connectivity"`
+	TelemetryHistory      TelemetryHistoryConfig `json:"telemetry_history"`
+	PollTimeout           Duration               `json:"poll_timeout"`
+	MaxRequestBodyBytes   int64                  `json:"max_request_body_bytes"`
+	AuthFailuresPerMinute int                    `json:"auth_failures_per_minute"`
+	AuthLockoutDuration   Duration               `json:"auth_lockout_duration"`
+}
+
+type TelemetryHistoryConfig struct {
+	Enabled        bool     `json:"enabled"`
+	Capacity       int      `json:"capacity"`
+	SampleInterval Duration `json:"sample_interval"`
+	FilePath       string   `json:"file_path"`
 }
 
 type ConnectivityConfig struct {
@@ -192,8 +200,9 @@ func Default() Config {
 		Admin: AdminConfig{
 			Enabled: true, ListenAddr: "127.0.0.1:9191", PollTimeout: Duration{5 * time.Second},
 			MaxRequestBodyBytes: 1 << 20, AuthFailuresPerMinute: 10, AuthLockoutDuration: Duration{5 * time.Minute},
-			LogStore:     LogStoreConfig{Capacity: 10000, DefaultPageSize: 100, MaxPageSize: 500, MaxFileBytes: 20 << 20, MaxBackups: 3},
-			Connectivity: ConnectivityConfig{Enabled: true, CheckInterval: Duration{5 * time.Second}, Timeout: Duration{3 * time.Second}, StaleAfter: Duration{15 * time.Second}, HistoryCapacity: 50},
+			LogStore:         LogStoreConfig{Capacity: 10000, DefaultPageSize: 100, MaxPageSize: 500, MaxFileBytes: 20 << 20, MaxBackups: 3},
+			Connectivity:     ConnectivityConfig{Enabled: true, CheckInterval: Duration{5 * time.Second}, Timeout: Duration{3 * time.Second}, StaleAfter: Duration{15 * time.Second}, HistoryCapacity: 50},
+			TelemetryHistory: TelemetryHistoryConfig{Enabled: true, Capacity: 720, SampleInterval: Duration{5 * time.Second}},
 		},
 		EdgeProxy: EdgeProxyConfig{AdminURL: "http://127.0.0.1:9090", Timeout: Duration{5 * time.Second}},
 		WAF:       WAFConfig{MaximumMatchesPerRequest: 32},
@@ -242,6 +251,7 @@ func ApplyEnvironmentOverrides(cfg *Config) error {
 	applyStringEnv("SECURITYEDGE_ADMIN_LISTEN_ADDR", &cfg.Admin.ListenAddr)
 	applyStringEnv("SECURITYEDGE_ADMIN_TOKEN", &cfg.Admin.AuthToken)
 	applyStringEnv("SECURITYEDGE_LOG_FILE_PATH", &cfg.Admin.LogStore.FilePath)
+	applyStringEnv("SECURITYEDGE_TELEMETRY_HISTORY_FILE", &cfg.Admin.TelemetryHistory.FilePath)
 	applyStringEnv("SECURITYEDGE_DNS_SERVER", &cfg.Admin.Connectivity.DNS.Server)
 	applyStringEnv("SECURITYEDGE_EDGEPROXY_CONFIG_PATH", &cfg.EdgeProxy.ConfigPath)
 	applyStringEnv("SECURITYEDGE_EDGEPROXY_ADMIN_URL", &cfg.EdgeProxy.AdminURL)
@@ -385,6 +395,7 @@ func (c *Config) Validate() error {
 	c.Admin.ListenAddr = strings.TrimSpace(c.Admin.ListenAddr)
 	c.Admin.AuthToken = strings.TrimSpace(c.Admin.AuthToken)
 	c.Admin.LogStore.FilePath = strings.TrimSpace(c.Admin.LogStore.FilePath)
+	c.Admin.TelemetryHistory.FilePath = strings.TrimSpace(c.Admin.TelemetryHistory.FilePath)
 	c.Admin.Connectivity.DNS.Server = strings.TrimSpace(c.Admin.Connectivity.DNS.Server)
 	c.EdgeProxy.ConfigPath = strings.TrimSpace(c.EdgeProxy.ConfigPath)
 	c.EdgeProxy.AdminURL = strings.TrimSpace(c.EdgeProxy.AdminURL)
@@ -467,6 +478,14 @@ func (c *Config) Validate() error {
 		}
 		if c.Admin.LogStore.FilePath != "" && (c.Admin.LogStore.MaxFileBytes <= 0 || c.Admin.LogStore.MaxBackups < 0) {
 			errs = append(errs, errors.New("file logging requires positive max_file_bytes and non-negative max_backups"))
+		}
+		if c.Admin.TelemetryHistory.Enabled {
+			if c.Admin.TelemetryHistory.Capacity < 2 || c.Admin.TelemetryHistory.Capacity > 10000 {
+				errs = append(errs, errors.New("admin.telemetry_history.capacity must be between 2 and 10000"))
+			}
+			if c.Admin.TelemetryHistory.SampleInterval.Duration < time.Second || c.Admin.TelemetryHistory.SampleInterval.Duration > time.Hour {
+				errs = append(errs, errors.New("admin.telemetry_history.sample_interval must be between 1s and 1h"))
+			}
 		}
 		if c.Admin.Connectivity.Enabled {
 			if c.Admin.Connectivity.CheckInterval.Duration < time.Second || c.Admin.Connectivity.CheckInterval.Duration > time.Hour {

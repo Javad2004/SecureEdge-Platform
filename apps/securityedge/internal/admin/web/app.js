@@ -28,6 +28,9 @@ const pct = n => `${(Number(n || 0) * 100).toFixed(1)}%`;
 const ms = n => `${Number(n || 0).toFixed(2)} ms`;
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 const csv = value => String(value || '').split(',').map(x => x.trim()).filter(Boolean);
+const csvNumbers = value => csv(value).map(item => Number(item));
+const bytesToMiB = value => Number(value || 0) / 1048576;
+const mibToBytes = value => Math.round(Number(value || 0) * 1048576);
 
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
@@ -272,9 +275,15 @@ function renderOverview() {
   const healthy = origins.filter(origin => origin.healthy).length;
   $('kpi-origins').textContent = `${healthy}/${origins.length}`;
   $('kpi-routes').textContent = `${routes.filter(route => route.ready).length}/${routes.length} routes ready`;
-  if (overview.edgeproxy_metrics) {
-    state.trend.push({requests: edgeTotal.requests || 0, blocked: rejectedCount(total), time: Date.now()});
-    if (state.trend.length > 30) state.trend.shift();
+  const history = overview.telemetry_history?.samples || [];
+  if (history.length) {
+    state.trend = history.map(point => ({
+      requests: Number(point.edgeproxy?.requests_per_second || 0),
+      blocked: Number(point.security?.rejected_per_second || 0),
+      time: Date.parse(point.generated_at) || Date.now()
+    }));
+  } else if (overview.edgeproxy_metrics) {
+    state.trend = [{requests: Number(edgeMetrics.requests_per_second || 0), blocked: Number(security.requests_per_second || 0) * Number(total.block_rate || 0), time: Date.now()}];
   }
   drawTrend();
   renderBars($('rule-bars'), total.rules || {});
@@ -445,7 +454,7 @@ function watchSummary(status) {
 function routeStatus(name) {
   return (state.overview?.edgeproxy_status?.routes || []).find(route => String(route.name).toLowerCase() === String(name).toLowerCase()) || null;
 }
-function routeMetrics(name) { return state.overview?.edgeproxy_metrics?.routes?.[name] || {}; }
+function routeMetrics(name) { const routes = state.overview?.edgeproxy_metrics?.routes || {}; const key = Object.keys(routes).find(item => item.toLowerCase() === String(name).toLowerCase()); return key ? routes[key] : {}; }
 function statusOrigin(status, origin) {
   return (status?.upstreams || []).find(item => String(item.name || '').toLowerCase() === String(origin.name || '').toLowerCase()) ||
     (status?.upstreams || []).find(item => (item.url || item.upstream) === origin.url) || {};
@@ -468,57 +477,79 @@ function renderRoutes() {
   if (!state.edgeEditorDirty && state.edgeConfig && document.activeElement !== $('edge-config-editor')) $('edge-config-editor').value = JSON.stringify(state.edgeConfig, null, 2);
   if (!state.securityEditorDirty && state.securityConfig && document.activeElement !== $('security-config-editor')) $('security-config-editor').value = JSON.stringify(state.securityConfig, null, 2);
 
-  if (!routes.length) {
-    $('route-cards').innerHTML = '<article class="panel"><div class="empty-state">EdgeProxy configuration is unavailable or contains no routes.</div></article>';
-    $('route-telemetry-table').innerHTML = '<tr><td colspan="10" class="muted">No route telemetry available.</td></tr>';
-    $('origin-telemetry-table').innerHTML = '<tr><td colspan="10" class="muted">No origin telemetry available.</td></tr>';
-    return;
-  }
-  $('route-cards').innerHTML = routes.map(route => {
-    const status = routeStatus(route.name);
-    const telemetry = routeMetrics(route.name);
-    const algorithm = route.load_balancing?.algorithm || 'round_robin';
-    const origins = (route.upstreams || []).map(origin => {
-      const live = statusOrigin(status, origin);
-      return `<div class="origin managed-origin"><div><strong>${esc(origin.name)}</strong><small>${esc(origin.url)}</small></div><div class="origin-state"><span class="badge ${live.healthy ? 'ready' : 'error'}">${live.healthy ? 'healthy' : 'unhealthy'}</span><span>W ${fmt(origin.weight)} · P ${fmt(origin.priority)}</span><button class="ghost compact-button" data-origin-edit="${esc(route.name)}" data-origin="${esc(origin.name)}">Edit</button></div></div>`;
-    }).join('');
-    return `<article class="route-card managed-route"><div class="route-head"><div><h2>${esc(route.name)}</h2><p>${esc((route.hosts || []).join(', '))} · ${esc(route.path_prefix || '/')}</p></div><span class="badge ${status?.ready ? 'ready' : 'error'}">${status?.ready ? 'READY' : 'NOT READY'}</span></div><div class="scheduler-banner"><span>Scheduler</span><strong>${esc(algorithm)}</strong><small>${fmt(telemetry.requests)} requests · ${pct(telemetry.cache_hit_ratio)}</small></div><div class="route-actions"><button class="ghost" data-route-edit="${esc(route.name)}">Edit route</button><button class="ghost" data-origin-add="${esc(route.name)}">Add origin</button><button class="danger ghost" data-route-delete="${esc(route.name)}">Delete</button></div><h3>Origins</h3>${origins || '<p class="muted">No origins configured.</p>'}</article>`;
-  }).join('');
+  const preserveSelect = (id, values) => {
+    const select = $(id); if (!select) return;
+    const selected = select.value;
+    select.innerHTML = values.map(route => `<option value="${esc(route.name)}">${esc(route.name)}</option>`).join('');
+    if (values.some(route => route.name === selected)) select.value = selected;
+  };
+  preserveSelect('purge-route', routes);
+  preserveSelect('cache-route-select', routes);
+  if (routes.length && !$('cache-route-select').dataset.loaded) loadCacheEditor(routes[0].name);
 
-  $('route-telemetry-table').innerHTML = routes.map(route => {
+  $('route-cards').innerHTML = routes.length ? routes.map(route => {
+    const status = routeStatus(route.name), telemetry = routeMetrics(route.name);
+    const origins = (route.upstreams || []).map(origin => {
+      const live = statusOrigin(status, origin), om = telemetry.upstreams?.[origin.url] || {};
+      return `<div class="origin-row"><div><strong>${esc(origin.name || origin.url)}</strong><span>${esc(origin.url)}</span></div><div class="origin-badges"><span class="badge ${live.healthy ? 'ready':'error'}">${live.healthy ? 'healthy':'unhealthy'}</span><span class="badge">w${fmt(origin.weight)} · p${fmt(origin.priority)}</span><span class="badge">${fmt(om.calls)} calls</span><span class="badge">${ms(live.ewma_latency_ms)}</span></div><button class="ghost compact-button" data-origin-edit="${esc(route.name)}" data-origin="${esc(origin.name)}">Edit</button><button class="ghost compact-button" data-origin-telemetry="${esc(route.name)}" data-origin="${esc(origin.name)}">Telemetry</button></div>`;
+    }).join('');
+    const algorithm = route.load_balancing?.algorithm || 'round_robin';
+    const cache = route.cache || {}, health = route.health_check || {};
+    return `<article class="route-card managed-route"><div class="route-head"><div><h2>${esc(route.name)}</h2><p>${esc((route.hosts || []).join(', '))} · ${esc(route.path_prefix || '/')}</p></div><span class="badge ${status?.ready ? 'ready' : 'error'}">${status?.ready ? 'READY' : 'NOT READY'}</span></div><div class="scheduler-banner"><span>Scheduler</span><strong>${esc(algorithm)}</strong><small>${fmt(telemetry.requests)} requests · ${pct(telemetry.cache_hit_ratio)}</small></div><div class="route-facts"><span>Cache <strong>${cache.enabled ? 'enabled':'disabled'}</strong> · ${esc(cache.default_ttl || '—')}</span><span>Health checks <strong>${health.enabled ? 'enabled':'disabled'}</strong> · ${esc(health.interval || '—')}</span><span>Retries <strong>${fmt(route.proxy?.retry_count)}</strong> · ${esc(route.proxy?.request_timeout || '—')} timeout</span></div><div class="route-actions"><button class="ghost" data-route-edit="${esc(route.name)}">Edit all settings</button><button class="ghost" data-origin-add="${esc(route.name)}">Add origin</button><button class="ghost" data-route-telemetry="${esc(route.name)}">Telemetry</button><button class="danger ghost" data-route-delete="${esc(route.name)}">Delete</button></div><h3>Origins</h3>${origins || '<p class="muted">No origins configured.</p>'}</article>`;
+  }).join('') : '<article class="panel empty-state">No routes are configured. Create the first route with the validated form.</article>';
+
+  $('route-telemetry-table').innerHTML = routes.length ? routes.map(route => {
     const m = routeMetrics(route.name), latency = m.response_latency_ms || {}, upstream = m.upstream || {};
-    return `<tr><td><strong>${esc(route.name)}</strong></td><td>${esc(route.load_balancing?.algorithm || 'round_robin')}</td><td>${fmt(m.requests)}</td><td>${pct(m.success_rate)}</td><td>${pct(m.cache_hit_ratio)}</td><td>${ms(m.average_response_time_ms)} / ${ms(latency.p95)}</td><td>${fmt(m.upstream_calls)}</td><td>${fmt(m.retries)}</td><td>${fmt(Number(m.proxy_errors||0)+Number(m.server_errors||0)+Number(upstream.failures||0))}</td><td>${bytes(m.bytes_in)} / ${bytes(m.bytes_out)}</td></tr>`;
-  }).join('');
+    const errors = Number(m.client_errors||0)+Number(m.server_errors||0)+Number(m.proxy_errors||0);
+    return `<tr><td><strong>${esc(route.name)}</strong><small class="table-subline">${esc(route.load_balancing?.algorithm || 'round_robin')}</small></td><td>${esc(route.load_balancing?.algorithm || 'round_robin')}</td><td>${fmt(m.requests)}</td><td>${pct(m.success_rate)} / ${pct(m.error_rate)}<small class="table-subline">${fmt(errors)} client-facing errors</small></td><td>${pct(m.cache_hit_ratio)}<small class="table-subline">${fmt(m.cache_hits)} hit · ${fmt(m.cache_misses)} miss · ${fmt(m.cache_stale)} stale</small></td><td>${ms(latency.minimum)} / ${ms(latency.average)} / ${ms(latency.maximum)}</td><td>${ms(latency.p50)} / ${ms(latency.p95)} / ${ms(latency.p99)}</td><td>${fmt(m.upstream_calls)} calls<small class="table-subline">${fmt(upstream.failures)} fail · ${fmt(upstream.timeouts)} timeout · ${fmt(m.retries)} retry</small></td><td>${bytes(m.bytes_in)} / ${bytes(m.bytes_out)}</td><td><button class="ghost compact-button" data-route-telemetry="${esc(route.name)}">Details</button></td></tr>`;
+  }).join('') : '<tr><td colspan="10" class="muted">No routes configured.</td></tr>';
 
   const originRows = [];
   routes.forEach(route => {
     const status = routeStatus(route.name), m = routeMetrics(route.name);
     (route.upstreams || []).forEach(origin => {
-      const live = statusOrigin(status, origin), om = m.upstreams?.[origin.url] || {};
-      originRows.push(`<tr><td><strong>${esc(route.name)}</strong><small class="table-subline">${esc(origin.name)}</small></td><td>${esc(origin.url)}</td><td><span class="badge ${live.healthy ? 'ready':'error'}">${live.healthy ? 'healthy':'unhealthy'}</span></td><td>${fmt(origin.weight)} / ${fmt(origin.priority)}</td><td>${fmt(om.calls)}</td><td>${pct(om.success_rate)}</td><td>${ms(om.latency_ms?.average)} / ${ms(om.latency_ms?.p95)}</td><td>${fmt(live.active_requests)}</td><td>${ms(live.ewma_latency_ms)}</td><td><button class="ghost compact-button" data-origin-edit="${esc(route.name)}" data-origin="${esc(origin.name)}">Edit</button></td></tr>`);
+      const live = statusOrigin(status, origin), om = m.upstreams?.[origin.url] || {}, latency = om.latency_ms || {};
+      originRows.push(`<tr><td><strong>${esc(route.name)}</strong><small class="table-subline">${esc(origin.name)}</small></td><td>${esc(origin.url)}</td><td><span class="badge ${live.healthy ? 'ready':'error'}">${live.healthy ? 'healthy':'unhealthy'}</span></td><td>${fmt(origin.weight)} / ${fmt(origin.priority)}</td><td>${fmt(om.calls)}</td><td>${pct(om.success_rate)}<small class="table-subline">${fmt(om.failures)} failures</small></td><td>${fmt(om.timeouts)} / ${fmt(om.retries)}</td><td>${ms(latency.p50)} / ${ms(latency.p95)} / ${ms(latency.p99)}</td><td>${fmt(live.active_requests)} / ${ms(live.ewma_latency_ms)}</td><td>${fmt(live.scheduler_selections)}<small class="table-subline">${fmt(live.health_failures)} fail · ${fmt(live.health_recoveries)} recovery</small></td><td><button class="ghost compact-button" data-origin-edit="${esc(route.name)}" data-origin="${esc(origin.name)}">Edit</button><button class="ghost compact-button" data-origin-telemetry="${esc(route.name)}" data-origin="${esc(origin.name)}">Details</button></td></tr>`);
     });
   });
-  $('origin-telemetry-table').innerHTML = originRows.join('') || '<tr><td colspan="10" class="muted">No origins configured.</td></tr>';
+  $('origin-telemetry-table').innerHTML = originRows.join('') || '<tr><td colspan="11" class="muted">No origins configured.</td></tr>';
   bindRouteActions();
 }
 
 function findConfigRoute(name) { return (state.edgeConfig?.routes || []).find(route => String(route.name).toLowerCase() === String(name).toLowerCase()); }
 function findConfigOrigin(route, name) { return (route?.upstreams || []).find(origin => String(origin.name).toLowerCase() === String(name).toLowerCase()); }
 
+function defaultRouteTemplate() {
+  return {
+    name:'', hosts:[], path_prefix:'/', strip_prefix:false, preserve_host:false, upstreams:[],
+    load_balancing:{algorithm:'round_robin', latency_sensitivity:1, ewma_alpha:0.25},
+    proxy:{request_timeout:'20s', dial_timeout:'3s', response_header_timeout:'10s', idle_conn_timeout:'90s', retry_count:1, retry_backoff:'150ms', max_idle_conns:100, max_idle_conns_per_host:20, max_response_header_bytes:1048576},
+    cache:{enabled:true, default_ttl:'30s', stale_if_error:'2m', max_entries:1000, max_bytes:67108864, max_object_bytes:4194304, respect_origin_headers:true, cache_authorized_requests:false, cache_cookie_requests:false, cache_set_cookie_responses:false, vary_request_headers:['Accept','Accept-Encoding'], cacheable_status_codes:[200,203,204,300,301,404,410]},
+    health_check:{enabled:true, path:'/healthz', interval:'5s', timeout:'2s', healthy_statuses:[200]}
+  };
+}
+
 function openRouteDialog(name = '') {
-  const route = name ? findConfigRoute(name) : null;
+  const route = name ? findConfigRoute(name) : defaultRouteTemplate();
   if (!route && name) return toast('Route no longer exists.');
-  if (!route && !state.edgeConfig?.routes?.length) return toast('Load EdgeProxy configuration before creating a route.');
-  $('route-dialog-title').textContent = route ? `Edit ${route.name}` : 'Add route';
-  $('route-original-name').value = route?.name || '';
-  $('route-name').value = route?.name || ''; $('route-name').readOnly = Boolean(route);
-  $('route-hosts').value = (route?.hosts || []).join(', '); $('route-path').value = route?.path_prefix || '/';
-  $('route-algorithm').value = route?.load_balancing?.algorithm || 'round_robin';
-  $('route-sensitivity').value = route?.load_balancing?.latency_sensitivity ?? 1;
-  $('route-alpha').value = route?.load_balancing?.ewma_alpha ?? 0.25;
-  $('route-preserve-host').checked = Boolean(route?.preserve_host);
-  $('initial-origin-fields').classList.toggle('hidden', Boolean(route));
-  $('route-origin-name').value = 'origin-1'; $('route-origin-url').value = ''; $('route-origin-weight').value = 1; $('route-origin-priority').value = 1;
+  $('route-dialog-title').textContent = name ? `Edit ${route.name}` : 'Add route';
+  $('route-original-name').value = name ? route.name : '';
+  $('route-name').value = route.name || ''; $('route-name').readOnly = Boolean(name);
+  $('route-hosts').value = (route.hosts || []).join(', '); $('route-path').value = route.path_prefix || '/';
+  $('route-strip-prefix').checked = Boolean(route.strip_prefix); $('route-preserve-host').checked = Boolean(route.preserve_host);
+  $('route-algorithm').value = route.load_balancing?.algorithm || 'round_robin';
+  $('route-sensitivity').value = route.load_balancing?.latency_sensitivity ?? 1; $('route-alpha').value = route.load_balancing?.ewma_alpha ?? 0.25;
+  $('route-request-timeout').value = route.proxy?.request_timeout || '20s'; $('route-dial-timeout').value = route.proxy?.dial_timeout || '3s';
+  $('route-response-header-timeout').value = route.proxy?.response_header_timeout || '10s'; $('route-idle-timeout').value = route.proxy?.idle_conn_timeout || '90s';
+  $('route-retry-count').value = route.proxy?.retry_count ?? 1; $('route-retry-backoff').value = route.proxy?.retry_backoff || '150ms';
+  $('route-max-idle').value = route.proxy?.max_idle_conns ?? 100; $('route-max-idle-host').value = route.proxy?.max_idle_conns_per_host ?? 20; $('route-max-response-header').value = route.proxy?.max_response_header_bytes ?? 1048576;
+  $('route-cache-enabled').checked = Boolean(route.cache?.enabled); $('route-cache-ttl').value = route.cache?.default_ttl || '30s'; $('route-cache-stale').value = route.cache?.stale_if_error || '2m';
+  $('route-cache-entries').value = route.cache?.max_entries ?? 1000; $('route-cache-mib').value = bytesToMiB(route.cache?.max_bytes || 67108864); $('route-cache-object-mib').value = bytesToMiB(route.cache?.max_object_bytes || 4194304);
+  $('route-cache-respect-origin').checked = Boolean(route.cache?.respect_origin_headers); $('route-cache-authorized').checked = Boolean(route.cache?.cache_authorized_requests); $('route-cache-cookie').checked = Boolean(route.cache?.cache_cookie_requests); $('route-cache-set-cookie').checked = Boolean(route.cache?.cache_set_cookie_responses);
+  $('route-cache-vary').value = (route.cache?.vary_request_headers || []).join(', '); $('route-cache-statuses').value = (route.cache?.cacheable_status_codes || []).join(', ');
+  $('route-health-enabled').checked = Boolean(route.health_check?.enabled); $('route-health-path').value = route.health_check?.path || '/healthz'; $('route-health-interval').value = route.health_check?.interval || '5s'; $('route-health-timeout').value = route.health_check?.timeout || '2s'; $('route-health-statuses').value = (route.health_check?.healthy_statuses || [200]).join(', ');
+  $('initial-origin-fields').classList.toggle('hidden', Boolean(name));
+  $('route-origin-name').value = 'origin-1'; $('route-origin-url').value = ''; $('route-origin-weight').value = 1; $('route-origin-priority').value = 1; $('route-origin-insecure').checked = false;
   $('route-form-error').textContent = ''; $('route-dialog').showModal();
 }
 
@@ -536,6 +567,8 @@ function bindRouteActions() {
   document.querySelectorAll('[data-route-edit]').forEach(button => button.onclick = () => openRouteDialog(button.dataset.routeEdit));
   document.querySelectorAll('[data-origin-add]').forEach(button => button.onclick = () => openOriginDialog(button.dataset.originAdd));
   document.querySelectorAll('[data-origin-edit]').forEach(button => button.onclick = () => openOriginDialog(button.dataset.originEdit, button.dataset.origin));
+  document.querySelectorAll('[data-route-telemetry]').forEach(button => button.onclick = () => openTelemetryDialog(button.dataset.routeTelemetry));
+  document.querySelectorAll('[data-origin-telemetry]').forEach(button => button.onclick = () => openTelemetryDialog(button.dataset.originTelemetry, button.dataset.origin));
   document.querySelectorAll('[data-route-delete]').forEach(button => button.onclick = async () => {
     const name = button.dataset.routeDelete;
     if (!confirm(`Delete route ${name}, all of its origins, and any SecurityEdge policy override?`)) return;
@@ -547,17 +580,20 @@ async function saveRoute(event) {
   event.preventDefault(); $('route-form-error').textContent = '';
   try {
     const original = $('route-original-name').value;
-    const base = structuredClone(original ? findConfigRoute(original) : state.edgeConfig.routes[0]);
+    const base = structuredClone(original ? findConfigRoute(original) : defaultRouteTemplate());
     base.name = $('route-name').value.trim(); base.hosts = csv($('route-hosts').value); base.path_prefix = $('route-path').value.trim();
-    base.preserve_host = $('route-preserve-host').checked;
+    base.strip_prefix = $('route-strip-prefix').checked; base.preserve_host = $('route-preserve-host').checked;
     base.load_balancing = {algorithm:$('route-algorithm').value, latency_sensitivity:Number($('route-sensitivity').value), ewma_alpha:Number($('route-alpha').value)};
+    base.proxy = {request_timeout:$('route-request-timeout').value.trim(), dial_timeout:$('route-dial-timeout').value.trim(), response_header_timeout:$('route-response-header-timeout').value.trim(), idle_conn_timeout:$('route-idle-timeout').value.trim(), retry_count:Number($('route-retry-count').value), retry_backoff:$('route-retry-backoff').value.trim(), max_idle_conns:Number($('route-max-idle').value), max_idle_conns_per_host:Number($('route-max-idle-host').value), max_response_header_bytes:Number($('route-max-response-header').value)};
+    base.cache = {enabled:$('route-cache-enabled').checked, default_ttl:$('route-cache-ttl').value.trim(), stale_if_error:$('route-cache-stale').value.trim(), max_entries:Number($('route-cache-entries').value), max_bytes:mibToBytes($('route-cache-mib').value), max_object_bytes:mibToBytes($('route-cache-object-mib').value), respect_origin_headers:$('route-cache-respect-origin').checked, cache_authorized_requests:$('route-cache-authorized').checked, cache_cookie_requests:$('route-cache-cookie').checked, cache_set_cookie_responses:$('route-cache-set-cookie').checked, vary_request_headers:csv($('route-cache-vary').value), cacheable_status_codes:csvNumbers($('route-cache-statuses').value)};
+    base.health_check = {enabled:$('route-health-enabled').checked, path:$('route-health-path').value.trim(), interval:$('route-health-interval').value.trim(), timeout:$('route-health-timeout').value.trim(), healthy_statuses:csvNumbers($('route-health-statuses').value)};
     if (!original) {
       const originURL = $('route-origin-url').value.trim(); if (!originURL) throw new Error('Initial origin URL is required.');
-      base.upstreams = [{name:$('route-origin-name').value.trim() || 'origin-1', url:originURL, weight:Number($('route-origin-weight').value), priority:Number($('route-origin-priority').value), insecure_skip_verify:false}];
+      base.upstreams = [{name:$('route-origin-name').value.trim() || 'origin-1', url:originURL, weight:Number($('route-origin-weight').value), priority:Number($('route-origin-priority').value), insecure_skip_verify:$('route-origin-insecure').checked}];
     }
     const path = original ? `/api/v1/edgeproxy/routes/${encodeURIComponent(original)}` : '/api/v1/edgeproxy/routes';
     await api(path, {method:original ? 'PUT':'POST', body:JSON.stringify(base)});
-    $('route-dialog').close(); await refreshAll(); toast(original ? 'Route updated' : 'Route created');
+    $('route-dialog').close(); await refreshAll(); toast(original ? 'Route settings updated' : 'Route created');
   } catch(error) { $('route-form-error').textContent = error.message; }
 }
 
@@ -570,6 +606,64 @@ async function saveOrigin(event) {
     await api(original ? `${base}/${encodeURIComponent(original)}` : base, {method:original ? 'PUT':'POST', body:JSON.stringify(origin)});
     $('origin-dialog').close(); await refreshAll(); toast(original ? 'Origin updated' : 'Origin added');
   } catch(error) { $('origin-form-error').textContent = error.message; }
+}
+
+function loadCacheEditor(routeName) {
+  const route = findConfigRoute(routeName);
+  if (!route) return;
+  const cache = route.cache || defaultRouteTemplate().cache;
+  $('cache-route-select').value = route.name; $('cache-route-select').dataset.loaded = route.name;
+  $('cache-editor-enabled').checked = Boolean(cache.enabled); $('cache-editor-ttl').value = cache.default_ttl || '30s'; $('cache-editor-stale').value = cache.stale_if_error || '2m';
+  $('cache-editor-entries').value = cache.max_entries ?? 1000; $('cache-editor-max-mib').value = bytesToMiB(cache.max_bytes || 67108864); $('cache-editor-object-mib').value = bytesToMiB(cache.max_object_bytes || 4194304);
+  $('cache-editor-statuses').value = (cache.cacheable_status_codes || []).join(', '); $('cache-editor-vary').value = (cache.vary_request_headers || []).join(', ');
+  $('cache-editor-respect-origin').checked = Boolean(cache.respect_origin_headers); $('cache-editor-authorized').checked = Boolean(cache.cache_authorized_requests); $('cache-editor-cookie').checked = Boolean(cache.cache_cookie_requests); $('cache-editor-set-cookie').checked = Boolean(cache.cache_set_cookie_responses);
+  $('cache-config-result').textContent = '';
+}
+
+async function saveCacheEditor() {
+  const route = $('cache-route-select').value;
+  if (!route) return toast('Select a route first.');
+  const candidate = {
+    enabled:$('cache-editor-enabled').checked,
+    default_ttl:$('cache-editor-ttl').value.trim(), stale_if_error:$('cache-editor-stale').value.trim(),
+    max_entries:Number($('cache-editor-entries').value), max_bytes:mibToBytes($('cache-editor-max-mib').value), max_object_bytes:mibToBytes($('cache-editor-object-mib').value),
+    respect_origin_headers:$('cache-editor-respect-origin').checked, cache_authorized_requests:$('cache-editor-authorized').checked,
+    cache_cookie_requests:$('cache-editor-cookie').checked, cache_set_cookie_responses:$('cache-editor-set-cookie').checked,
+    vary_request_headers:csv($('cache-editor-vary').value), cacheable_status_codes:csvNumbers($('cache-editor-statuses').value)
+  };
+  try {
+    await api(`/api/v1/edgeproxy/routes/${encodeURIComponent(route)}/cache`, {method:'PUT', body:JSON.stringify(candidate)});
+    $('cache-config-result').textContent = 'Cache policy validated, persisted atomically, and hot-applied.';
+    await refreshAll(); loadCacheEditor(route); toast('Route cache policy updated');
+  } catch(error) { $('cache-config-result').textContent = error.message; }
+}
+
+async function openTelemetryDialog(routeName, originName = '') {
+  try {
+    const path = originName
+      ? `/api/v1/edgeproxy/routes/${encodeURIComponent(routeName)}/origins/${encodeURIComponent(originName)}/telemetry`
+      : `/api/v1/edgeproxy/routes/${encodeURIComponent(routeName)}/telemetry`;
+    const data = await api(path);
+    $('telemetry-dialog-title').textContent = originName ? `${routeName} / ${originName}` : `${routeName} route`;
+    const m = data.metrics || {}, latency = originName ? (m.latency_ms || {}) : (m.response_latency_ms || {}), runtime = data.runtime || {};
+    const items = originName ? [
+      ['Endpoint',data.origin?.url||'—'],['Health',runtime.healthy ? 'Healthy':'Unhealthy'],['Weight / priority',`${fmt(data.origin?.weight)} / ${fmt(data.origin?.priority)}`],
+      ['Calls',fmt(m.calls)],['Success / failures',`${fmt(m.success)} / ${fmt(m.failures)}`],['Success / error rate',`${pct(m.success_rate)} / ${pct(m.error_rate)}`],
+      ['Timeouts / retries',`${fmt(m.timeouts)} / ${fmt(m.retries)}`],['Min / average / max',`${ms(latency.minimum)} / ${ms(latency.average)} / ${ms(latency.maximum)}`],
+      ['P50 / P95 / P99',`${ms(latency.p50)} / ${ms(latency.p95)} / ${ms(latency.p99)}`],['Active requests',fmt(runtime.active_requests)],
+      ['EWMA latency',ms(runtime.ewma_latency_ms)],['Scheduler selections',fmt(runtime.scheduler_selections)],['Health failures / recoveries',`${fmt(runtime.health_failures)} / ${fmt(runtime.health_recoveries)}`]
+    ] : [
+      ['Algorithm',data.route?.load_balancing?.algorithm||'round_robin'],['Ready',runtime.ready ? 'Ready':'Not ready'],['Requests',fmt(m.requests)],
+      ['Success / client / server',`${fmt(m.success)} / ${fmt(m.client_errors)} / ${fmt(m.server_errors)}`],['Success / error rate',`${pct(m.success_rate)} / ${pct(m.error_rate)}`],['Proxy errors',fmt(m.proxy_errors)],
+      ['Cache hit / miss / stale / bypass',`${fmt(m.cache_hits)} / ${fmt(m.cache_misses)} / ${fmt(m.cache_stale)} / ${fmt(m.cache_bypasses)}`],['Cache hit ratio',pct(m.cache_hit_ratio)],['Cache stores',fmt(m.cache_stores)],
+      ['Min / average / max',`${ms(latency.minimum)} / ${ms(latency.average)} / ${ms(latency.maximum)}`],['P50 / P95 / P99',`${ms(latency.p50)} / ${ms(latency.p95)} / ${ms(latency.p99)}`],
+      ['Upstream calls / retries',`${fmt(m.upstream_calls)} / ${fmt(m.retries)}`],['Bytes in / out',`${bytes(m.bytes_in)} / ${bytes(m.bytes_out)}`],['Methods',Object.entries(m.methods||{}).map(([k,v])=>`${k}:${v}`).join(' · ')||'—']
+    ];
+    $('telemetry-detail-metrics').innerHTML = metricRows(items);
+    renderBars($('telemetry-status-bars'), m.status_codes || {} , 20);
+    $('telemetry-raw').textContent = JSON.stringify(data, null, 2);
+    $('telemetry-dialog').showModal();
+  } catch(error) { toast(error.message); }
 }
 
 async function saveRawConfig(kind) {
@@ -611,7 +705,6 @@ function renderPolicies() {
   setField(form,'global_burst',policy.rate_limit?.global_burst); setField(form,'max_buckets',policy.rate_limit?.max_buckets);
   setChecked(form,'auto_ban_enabled',policy.auto_ban?.enabled); setField(form,'violation_threshold',policy.auto_ban?.violation_threshold);
   setField(form,'ban_window',policy.auto_ban?.window); setField(form,'ban_duration',policy.auto_ban?.ban_duration); setField(form,'max_tracked_clients',policy.auto_ban?.max_tracked_clients);
-  $('purge-route').innerHTML = routes.map(route => `<option value="${esc(route.name)}">${esc(route.name)}</option>`).join('');
 }
 
 async function savePolicy(event) {
@@ -644,12 +737,14 @@ function renderSystem() {
   const metrics = state.overview?.security_metrics || {};
   const logs = state.overview?.security_logs || {};
   const status = state.overview?.security_status || {};
+  const history = state.overview?.telemetry_history || {};
   const build = state.overview?.build || {};
   $('security-system').innerHTML = metricRows([
     ['Version',build.version||'—'],['Build commit',build.commit||'—'],['Runtime',`${build.go_version||'—'} · ${build.os||'—'}/${build.arch||'—'}`],
     ['Metrics schema',metrics.schema_version||'—'],['Uptime',`${fmt(metrics.uptime_seconds)} s`],['In flight',fmt(metrics.inflight)],
     ['Rate-limit buckets',fmt(status.rate_limit_buckets)],['Active temporary bans',fmt(status.active_bans)],
-    ['Retained security events',fmt(logs.retained)],['Overwritten memory events',fmt(logs.dropped)],['Persistent log bytes',fmt(logs.file_bytes)],['Persistent log errors',fmt(logs.file_errors)]
+    ['Retained security events',fmt(logs.retained)],['Overwritten memory events',fmt(logs.dropped)],['Persistent log bytes',fmt(logs.file_bytes)],['Persistent log errors',fmt(logs.file_errors)],
+    ['Telemetry history',history.enabled ? `${fmt(history.samples?.length)} / ${fmt(history.capacity)} samples` : 'Disabled'],['History persistence',history.persistent ? (history.last_error ? `Degraded: ${history.last_error}` : 'Healthy') : 'Memory only']
   ]);
   const edgeStatus = state.overview?.edgeproxy_status_code;
   const routes = state.overview?.edgeproxy_status?.routes || [];
@@ -683,7 +778,7 @@ $('export-prometheus').onclick = () => download('/api/v1/metrics/prometheus','se
 $('clear-bans').onclick = async () => { if (!confirm('Clear all active temporary bans?')) return; await api('/api/v1/bans',{method:'DELETE'}); await loadBans(); toast('Temporary bans cleared'); };
 $('policy-form').onsubmit = savePolicy;
 $('delete-override').onclick = async () => { await api(`/api/v1/policies/${encodeURIComponent(state.selectedPolicy)}`,{method:'DELETE'}); await loadPolicies(); toast('Route override deleted'); };
-$('purge-form').onsubmit = async event => { event.preventDefault(); const query=new URLSearchParams({route:$('purge-route').value}); if($('purge-host').value.trim())query.set('host',$('purge-host').value.trim()); if($('purge-path').value.trim())query.set('path_prefix',$('purge-path').value.trim()); try { const data=await api(`/api/v1/edgeproxy/cache/purge?${query}`,{method:'POST'}); $('purge-result').textContent=`Purged ${data.purged_entries} entries.`; toast('Cache purged'); await refreshAll(); } catch(error) { $('purge-result').textContent=error.message; } };
+$('purge-form').onsubmit = async event => { event.preventDefault(); const route=$('purge-route').value; const query=new URLSearchParams(); if($('purge-host').value.trim())query.set('host',$('purge-host').value.trim()); if($('purge-path').value.trim())query.set('path_prefix',$('purge-path').value.trim()); try { const suffix=query.toString()?`?${query}`:''; const data=await api(`/api/v1/edgeproxy/routes/${encodeURIComponent(route)}/cache/purge${suffix}`,{method:'POST'}); $('purge-result').textContent=`Purged ${data.purged} entries from ${route}.`; toast('Cache purged'); await refreshAll(); } catch(error) { $('purge-result').textContent=error.message; } };
 $('check-connectivity').onclick = async () => {
   const button = $('check-connectivity');
   button.disabled = true;
@@ -699,6 +794,7 @@ $('check-connectivity').onclick = async () => {
 $('reload-config').onclick = async () => { await api('/api/v1/reload',{method:'POST'}); await refreshAll(); toast('Configuration reloaded'); };
 $('refresh-control').onclick = async () => { await loadControlData(); renderRoutes(); toast('Control-plane data refreshed'); };
 $('add-route').onclick = () => openRouteDialog();
+$('cache-route-select').onchange = event => loadCacheEditor(event.currentTarget.value); $('save-cache-config').onclick = saveCacheEditor;
 $('route-form').onsubmit = saveRoute; $('origin-form').onsubmit = saveOrigin;
 document.querySelectorAll('[data-close-dialog]').forEach(button => button.onclick = () => $(button.dataset.closeDialog).close());
 $('edge-config-editor').addEventListener('input', () => { state.edgeEditorDirty = true; });

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,11 +25,16 @@ import (
 )
 
 type fakeRuntime struct {
+	mu         sync.Mutex
 	cfg        config.Config
 	reloadErr  error
 	edgeRaw    json.RawMessage
 	edgeStatus int
 	edgeErr    error
+	lastMethod string
+	lastPath   string
+	lastQuery  url.Values
+	lastBody   any
 }
 
 func (f *fakeRuntime) Config() config.Config { return f.cfg }
@@ -47,11 +53,20 @@ func (f *fakeRuntime) DeleteBan(string) bool                         { return fa
 func (f *fakeRuntime) ClearBans() int                                { return 0 }
 func (f *fakeRuntime) AdmissionSnapshot() admission.Snapshot         { return admission.Snapshot{} }
 func (f *fakeRuntime) Audit(string, string, map[string]string)       {}
-func (f *fakeRuntime) EdgeJSON(context.Context, string, string, url.Values, any) (json.RawMessage, int, error) {
+func (f *fakeRuntime) EdgeJSON(_ context.Context, method, path string, query url.Values, body any) (json.RawMessage, int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastMethod, f.lastPath, f.lastQuery, f.lastBody = method, path, query, body
 	if f.edgeRaw == nil && f.edgeStatus == 0 && f.edgeErr == nil {
 		return json.RawMessage(`{"status":"ready"}`), http.StatusOK, nil
 	}
 	return f.edgeRaw, f.edgeStatus, f.edgeErr
+}
+
+func (f *fakeRuntime) lastEdgeRequest() (string, string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastMethod, f.lastPath
 }
 
 func newAdminTestServer(t *testing.T, failures int) *httptest.Server {
@@ -352,7 +367,7 @@ type fakeRestartRequiredError struct{}
 func (fakeRestartRequiredError) Error() string         { return "listener change requires restart" }
 func (fakeRestartRequiredError) RestartRequired() bool { return true }
 
-func TestReloadReturnsConflictWhenRestartIsRequired(t *testing.T) {
+func TestReloadAcceptsAutomaticRestartWhenRequired(t *testing.T) {
 	cfg := config.Default()
 	cfg.Server.Mode = "embedded"
 	cfg.EdgeProxy.ConfigPath = "edge.json"
@@ -376,15 +391,14 @@ func TestReloadReturnsConflictWhenRestartIsRequired(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("status=%d, want %d", resp.StatusCode, http.StatusConflict)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status=%d, want %d", resp.StatusCode, http.StatusAccepted)
 	}
 	var body map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	errorBody, _ := body["error"].(map[string]any)
-	if errorBody["code"] != "restart_required" {
+	if body["restart_required"] != true || body["automatic_restart"] != true {
 		t.Fatalf("body=%#v", body)
 	}
 }
@@ -504,5 +518,53 @@ func TestPolicyUpdateRejectsOversizedAdminBodyWith413(t *testing.T) {
 	}
 	if payload.Error.Code != "body_too_large" {
 		t.Fatalf("error code=%q, want body_too_large", payload.Error.Code)
+	}
+}
+
+func TestEdgeProxyAdvancedControlPlaneForwarding(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Admin.AuthToken = "secret-token"
+	inspector, err := waf.NewInspector(nil, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &fakeRuntime{cfg: cfg}
+	server, err := New(cfg.Admin, runtime, metrics.New(), securitylog.New(100), traffic.New(100, time.Minute), inspector)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		method, requestPath, forwardedPath, body string
+	}{
+		{http.MethodGet, "/api/v1/edgeproxy/telemetry", "/api/v1/telemetry", ""},
+		{http.MethodGet, "/api/v1/edgeproxy/server", "/api/v1/server", ""},
+		{http.MethodPut, "/api/v1/edgeproxy/admin", "/api/v1/admin", `{}`},
+		{http.MethodGet, "/api/v1/edgeproxy/routes/demo-app/load-balancing", "/api/v1/routes/demo-app/load-balancing", ""},
+		{http.MethodPut, "/api/v1/edgeproxy/routes/demo-app/cache", "/api/v1/routes/demo-app/cache", `{"enabled":false}`},
+		{http.MethodPost, "/api/v1/edgeproxy/routes/demo-app/cache/purge?host=project.test&path_prefix=%2Fapi", "/api/v1/routes/demo-app/cache/purge", ""},
+		{http.MethodGet, "/api/v1/edgeproxy/routes/demo-app/origins/origin-1/telemetry", "/api/v1/routes/demo-app/origins/origin-1/telemetry", ""},
+	}
+	for _, tt := range tests {
+		var body io.Reader
+		if tt.body != "" {
+			body = strings.NewReader(tt.body)
+		}
+		req := httptest.NewRequest(tt.method, tt.requestPath, body)
+		req.Header.Set("Authorization", "Bearer secret-token")
+		if tt.body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rr := httptest.NewRecorder()
+		server.HTTPServer().Handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s %s status=%d body=%s", tt.method, tt.requestPath, rr.Code, rr.Body.String())
+		}
+		lastMethod, lastPath := runtime.lastEdgeRequest()
+		if lastMethod != tt.method || lastPath != tt.forwardedPath {
+			t.Fatalf("%s %s forwarded as %s %s", tt.method, tt.requestPath, lastMethod, lastPath)
+		}
 	}
 }

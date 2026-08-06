@@ -57,6 +57,12 @@
         "names": [],
         "expected_addresses": []
       }
+    },
+    "telemetry_history": {
+      "enabled": true,
+      "capacity": 720,
+      "sample_interval": "5s",
+      "file_path": "logs/telemetry-history-embedded.json"
     }
   },
   "edgeproxy": {

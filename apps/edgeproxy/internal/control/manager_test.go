@@ -198,3 +198,24 @@ func TestWatcherDoesNotReapplyManagerRevision(t *testing.T) {
 		t.Fatalf("watcher reapplied API revision: revision changed from %d to %d", revision, got)
 	}
 }
+
+func TestEnvironmentConfigPathCanFollowDotenvRevision(t *testing.T) {
+	directory := t.TempDir()
+	fallback := filepath.Join(directory, "default.json")
+	envPath := filepath.Join(directory, ".env")
+	manager := &Manager{path: fallback, defaultPath: fallback, envPath: envPath, allowEnvPath: true}
+
+	t.Setenv("EDGEPROXY_CONFIG", "profiles/alternate.json")
+	if got, want := manager.environmentConfigPath(), filepath.Join(directory, "profiles", "alternate.json"); got != want {
+		t.Fatalf("environment config path=%q, want %q", got, want)
+	}
+	t.Setenv("EDGEPROXY_CONFIG", "")
+	if got := manager.environmentConfigPath(); got != fallback {
+		t.Fatalf("empty environment path=%q, want fallback %q", got, fallback)
+	}
+	manager.allowEnvPath = false
+	t.Setenv("EDGEPROXY_CONFIG", filepath.Join(directory, "ignored.json"))
+	if got := manager.environmentConfigPath(); got != fallback {
+		t.Fatalf("pinned path changed to %q", got)
+	}
+}

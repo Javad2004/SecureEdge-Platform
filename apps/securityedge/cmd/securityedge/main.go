@@ -87,7 +87,8 @@ func run() int {
 		fmt.Println("configuration is valid")
 		return 0
 	}
-	return runManaged(configPath, loadedEnv, logger)
+	allowEnvironmentConfigPath := strings.TrimSpace(*configFlag) == "" && !configEnvironmentPreexisting
+	return runManaged(configPath, loadedEnv, logger, allowEnvironmentConfigPath)
 
 }
 
@@ -99,18 +100,19 @@ type securityGeneration struct {
 	errCh         chan error
 }
 
-func runManaged(configPath, envPath string, logger *slog.Logger) int {
+func runManaged(configPath, envPath string, logger *slog.Logger, allowEnvironmentConfigPath bool) int {
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	var previousWatch securityedge.WatchStatus
+	defaultConfigPath := configPath
 	for {
 		gen, err := startSecurityGeneration(configPath, envPath, previousWatch, logger)
 		if err != nil {
 			logger.Error("configuration failed", "error", err)
 			return 1
 		}
-		restart, runErr := superviseSecurityGeneration(sigCtx, gen, envPath, logger)
+		restart, nextConfigPath, runErr := superviseSecurityGeneration(sigCtx, gen, envPath, defaultConfigPath, allowEnvironmentConfigPath, logger)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), gen.cfg.Server.ShutdownTimeout.Duration)
 		shutdownErr := shutdownServers(shutdownCtx,
 			namedHTTPServer{name: "gateway", server: gen.gatewayServer},
@@ -128,7 +130,8 @@ func runManaged(configPath, envPath string, logger *slog.Logger) int {
 		if !restart {
 			return 0
 		}
-		logger.Info("SecurityEdge generation restarted automatically")
+		configPath = nextConfigPath
+		logger.Info("SecurityEdge generation restarted automatically", "config", configPath)
 	}
 }
 
@@ -178,7 +181,7 @@ func startSecurityGeneration(configPath, envPath string, previousWatch securitye
 	return gen, nil
 }
 
-func superviseSecurityGeneration(ctx context.Context, gen *securityGeneration, envPath string, logger *slog.Logger) (bool, error) {
+func superviseSecurityGeneration(ctx context.Context, gen *securityGeneration, envPath, defaultConfigPath string, allowEnvironmentConfigPath bool, logger *slog.Logger) (bool, string, error) {
 	securityPath := gen.runtime.ConfigPath()
 	edgePath := gen.runtime.EdgeConfigPath()
 	securityDigest, _ := securityedge.FileDigest(securityPath)
@@ -194,21 +197,48 @@ func superviseSecurityGeneration(ctx context.Context, gen *securityGeneration, e
 		select {
 		case <-ctx.Done():
 			logger.Info("shutdown signal received")
-			return false, nil
+			return false, securityPath, nil
 		case err := <-gen.errCh:
 			logger.Error("listener failed", "error", err)
-			return false, err
+			return false, securityPath, err
 		case <-ticker.C:
 			if envPath != "" {
 				if digest, err := securityedge.FileDigest(envPath); err != nil {
 					gen.runtime.RecordWatchChange(envPath, false, false, err)
 				} else if digest != envDigest {
 					envDigest = digest
-					if err := envfile.Reload(envPath); err != nil {
+					nextPath := securityPath
+					restartRequired := false
+					hotApplied := false
+					err := envfile.ReloadValidated(envPath, func() error {
+						nextPath = watchedConfigPath(defaultConfigPath, envPath, securityPath, allowEnvironmentConfigPath)
+						if err := securityedge.Validate(nextPath); err != nil {
+							return fmt.Errorf("validate SECURITYEDGE_CONFIG target %q: %w", nextPath, err)
+						}
+						if nextPath != securityPath {
+							restartRequired = true
+							return nil
+						}
+						if err := gen.runtime.Reload(); err != nil {
+							var restart interface{ RestartRequired() bool }
+							if errors.As(err, &restart) && restart.RestartRequired() {
+								restartRequired = true
+								return nil
+							}
+							return err
+						}
+						hotApplied = true
+						return nil
+					})
+					if err != nil {
 						gen.runtime.RecordWatchChange(envPath, false, false, err)
-					} else {
+					} else if restartRequired {
 						gen.runtime.RecordWatchChange(envPath, false, true, nil)
-						return true, nil
+						return true, nextPath, nil
+					} else if hotApplied {
+						gen.runtime.RecordWatchChange(envPath, true, false, nil)
+						edgePath = gen.runtime.EdgeConfigPath()
+						edgeDigest, _ = securityedge.FileDigest(edgePath)
 					}
 				}
 			}
@@ -222,7 +252,7 @@ func superviseSecurityGeneration(ctx context.Context, gen *securityGeneration, e
 					var restart interface{ RestartRequired() bool }
 					if errors.As(err, &restart) && restart.RestartRequired() {
 						gen.runtime.RecordWatchChange(securityPath, false, true, nil)
-						return true, nil
+						return true, securityPath, nil
 					}
 					gen.runtime.RecordWatchChange(securityPath, false, false, err)
 				} else {
@@ -252,6 +282,20 @@ func superviseSecurityGeneration(ctx context.Context, gen *securityGeneration, e
 			}
 		}
 	}
+}
+
+func watchedConfigPath(defaultPath, envPath, currentPath string, allowed bool) string {
+	if !allowed {
+		return currentPath
+	}
+	value := strings.TrimSpace(os.Getenv("SECURITYEDGE_CONFIG"))
+	if value == "" {
+		return defaultPath
+	}
+	if filepath.IsAbs(value) || strings.TrimSpace(envPath) == "" {
+		return filepath.Clean(value)
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(envPath), value))
 }
 
 type namedHTTPServer struct {

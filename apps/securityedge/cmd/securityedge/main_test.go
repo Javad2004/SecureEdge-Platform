@@ -295,3 +295,22 @@ func TestGatewayPreserveHostBehavior(t *testing.T) {
 		})
 	}
 }
+
+func TestWatchedConfigPathFollowsDotenvOnlyWhenAllowed(t *testing.T) {
+	directory := t.TempDir()
+	fallback := filepath.Join(directory, "default.json")
+	current := filepath.Join(directory, "current.json")
+	envPath := filepath.Join(directory, ".env")
+
+	t.Setenv("SECURITYEDGE_CONFIG", "profiles/alternate.json")
+	if got, want := watchedConfigPath(fallback, envPath, current, true), filepath.Join(directory, "profiles", "alternate.json"); got != want {
+		t.Fatalf("watched path=%q, want %q", got, want)
+	}
+	if got := watchedConfigPath(fallback, envPath, current, false); got != current {
+		t.Fatalf("pinned path changed to %q", got)
+	}
+	t.Setenv("SECURITYEDGE_CONFIG", "")
+	if got := watchedConfigPath(fallback, envPath, current, true); got != fallback {
+		t.Fatalf("empty dotenv path=%q, want %q", got, fallback)
+	}
+}

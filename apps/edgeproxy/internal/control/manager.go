@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -43,7 +44,9 @@ type Manager struct {
 	transactionMu sync.Mutex
 	mu            sync.RWMutex
 	path          string
+	defaultPath   string
 	envPath       string
+	allowEnvPath  bool
 	logger        *slog.Logger
 	handler       *proxy.Handler
 	current       config.Config
@@ -55,7 +58,7 @@ type Manager struct {
 	watchCancel   context.CancelFunc
 }
 
-func New(path, envPath string, logger *slog.Logger) (*Manager, error) {
+func New(path, envPath string, logger *slog.Logger, allowEnvironmentPath ...bool) (*Manager, error) {
 	persisted, err := config.LoadFile(path)
 	if err != nil {
 		return nil, err
@@ -75,8 +78,9 @@ func New(path, envPath string, logger *slog.Logger) (*Manager, error) {
 			return nil, err
 		}
 	}
+	allowPath := len(allowEnvironmentPath) > 0 && allowEnvironmentPath[0]
 	return &Manager{
-		path: path, envPath: envPath, logger: logger, current: runtimeCfg, persisted: persisted,
+		path: path, defaultPath: path, envPath: envPath, allowEnvPath: allowPath, logger: logger, current: runtimeCfg, persisted: persisted,
 		status:     WatchStatus{Enabled: true, ConfigPath: path, EnvironmentPath: envPath, Revision: 1, AppliedRevision: 1, LastAppliedAt: now(), LastSource: "startup"},
 		lastDigest: digest, lastEnvDigest: envDigest, restartCh: make(chan config.Config, 1),
 	}, nil
@@ -263,10 +267,8 @@ func (m *Manager) watch(ctx context.Context) {
 					envChanged := envDigest != m.lastEnvDigest
 					m.mu.RUnlock()
 					if envChanged {
-						if err := envfile.Reload(m.envPath); err != nil {
+						if err := envfile.ReloadValidated(m.envPath, m.reloadEnvironmentRevision); err != nil {
 							m.recordError("environment_watcher", err)
-						} else {
-							_, _ = m.Reload("environment_watcher")
 						}
 						// Remember rejected revisions too. A corrected file has a new
 						// digest and will be retried, while one invalid revision cannot
@@ -304,6 +306,66 @@ func (m *Manager) watch(ctx context.Context) {
 			m.transactionMu.Unlock()
 		}
 	}
+}
+
+func (m *Manager) reloadEnvironmentRevision() error {
+	m.transactionMu.Lock()
+	defer m.transactionMu.Unlock()
+
+	desired := m.environmentConfigPath()
+	m.mu.RLock()
+	currentPath := m.path
+	currentDigest := m.lastDigest
+	m.mu.RUnlock()
+	if desired != currentPath {
+		persisted, err := config.LoadFile(desired)
+		if err != nil {
+			return fmt.Errorf("load EDGEPROXY_CONFIG target %q: %w", desired, err)
+		}
+		runtimeCfg, err := config.Load(desired)
+		if err != nil {
+			return fmt.Errorf("validate EDGEPROXY_CONFIG target %q: %w", desired, err)
+		}
+		digest, err := fileDigest(desired)
+		if err != nil {
+			return err
+		}
+		m.mu.Lock()
+		m.path = desired
+		m.status.ConfigPath = desired
+		m.lastDigest = digest
+		m.mu.Unlock()
+		result, err := m.apply(persisted, runtimeCfg, "environment_config_path")
+		if err != nil {
+			m.mu.Lock()
+			m.path = currentPath
+			m.status.ConfigPath = currentPath
+			m.lastDigest = currentDigest
+			m.mu.Unlock()
+			return err
+		}
+		m.logger.Info("configuration path changed from environment", "previous", currentPath, "current", desired, "revision", result.Revision)
+		return nil
+	}
+	_, err := m.reload("environment_watcher")
+	return err
+}
+
+func (m *Manager) environmentConfigPath() string {
+	m.mu.RLock()
+	fallback, envPath, allowed := m.defaultPath, m.envPath, m.allowEnvPath
+	m.mu.RUnlock()
+	if !allowed {
+		return fallback
+	}
+	value := strings.TrimSpace(os.Getenv("EDGEPROXY_CONFIG"))
+	if value == "" {
+		return fallback
+	}
+	if filepath.IsAbs(value) || strings.TrimSpace(envPath) == "" {
+		return filepath.Clean(value)
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(envPath), value))
 }
 
 func (m *Manager) recordError(source string, err error) {

@@ -67,7 +67,7 @@ func (s *Server) routesCreate(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusConflict, "route_create_failed", err.Error())
 		return
 	}
-	writeApplyResult(w, result)
+	writeCreateResult(w, result)
 }
 
 func (s *Server) routeGet(w http.ResponseWriter, r *http.Request) {
@@ -144,7 +144,15 @@ func (s *Server) originsCreate(w http.ResponseWriter, r *http.Request) {
 		route.Upstreams = append(route.Upstreams, origin)
 		return nil
 	}, "admin_create_origin")
-	writeMutationResult(w, result, err, "route_not_found", "origin_create_failed")
+	if errors.Is(err, errNotFound) {
+		writeAPIError(w, http.StatusNotFound, "route_not_found", "route not found")
+		return
+	}
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "origin_create_failed", err.Error())
+		return
+	}
+	writeCreateResult(w, result)
 }
 
 func (s *Server) originGet(w http.ResponseWriter, r *http.Request) {
@@ -221,6 +229,14 @@ func writeMutationResult(w http.ResponseWriter, result control.ApplyResult, err 
 		return
 	}
 	writeApplyResult(w, result)
+}
+
+func writeCreateResult(w http.ResponseWriter, result control.ApplyResult) {
+	status := http.StatusCreated
+	if result.RestartRequired {
+		status = http.StatusAccepted
+	}
+	writeJSON(w, status, result)
 }
 
 func writeApplyResult(w http.ResponseWriter, result control.ApplyResult) {

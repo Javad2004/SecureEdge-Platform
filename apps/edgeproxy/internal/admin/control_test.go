@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/accesslog"
@@ -89,7 +90,7 @@ func TestControlPlaneCRUDAndRestartAcceptance(t *testing.T) {
 		Name: "primary", URL: "http://127.0.0.1:19001", Weight: 2, Priority: 1,
 	}}
 	created := controlRequest(t, server, http.MethodPost, "/api/v1/routes", newRoute)
-	if created.Code != http.StatusOK {
+	if created.Code != http.StatusCreated {
 		t.Fatalf("create route=%d: %s", created.Code, created.Body.String())
 	}
 
@@ -104,7 +105,7 @@ func TestControlPlaneCRUDAndRestartAcceptance(t *testing.T) {
 
 	origin := config.UpstreamConfig{Name: "secondary", URL: "http://127.0.0.1:19002", Weight: 3, Priority: 2}
 	addedOrigin := controlRequest(t, server, http.MethodPost, "/api/v1/routes/API-ROUTE/origins", origin)
-	if addedOrigin.Code != http.StatusOK {
+	if addedOrigin.Code != http.StatusCreated {
 		t.Fatalf("create origin=%d: %s", addedOrigin.Code, addedOrigin.Body.String())
 	}
 	deletedOrigin := controlRequest(t, server, http.MethodDelete, "/api/v1/routes/api-route/origins/SECONDARY", nil)
@@ -145,5 +146,79 @@ func TestControlPlaneRejectsUnknownJSONFields(t *testing.T) {
 	server.HTTPServer().Handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("unknown field status=%d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestControlPlaneDedicatedRouteSectionsAndTelemetry(t *testing.T) {
+	server, manager, _ := newControlPlaneTestServer(t)
+	routeName := manager.Config().Routes[0].Name
+	base := "/api/v1/routes/" + routeName
+
+	loadBalancing := manager.Config().Routes[0].LoadBalancing
+	loadBalancing.Algorithm = "adaptive_latency"
+	loadBalancing.LatencySensitivity = 1.7
+	loadBalancing.EWMAAlpha = 0.4
+	response := controlRequest(t, server, http.MethodPut, base+"/load-balancing", loadBalancing)
+	if response.Code != http.StatusOK {
+		t.Fatalf("load-balancing update=%d: %s", response.Code, response.Body.String())
+	}
+
+	cacheConfig := manager.Config().Routes[0].Cache
+	cacheConfig.Enabled = false
+	cacheConfig.DefaultTTL = config.Duration{}
+	cacheConfig.StaleIfError = config.Duration{}
+	response = controlRequest(t, server, http.MethodPut, base+"/cache", cacheConfig)
+	if response.Code != http.StatusOK {
+		t.Fatalf("cache update=%d: %s", response.Code, response.Body.String())
+	}
+	response = controlRequest(t, server, http.MethodGet, base+"/cache", nil)
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"enabled":false`)) {
+		t.Fatalf("cache get=%d: %s", response.Code, response.Body.String())
+	}
+
+	proxyConfig := manager.Config().Routes[0].Proxy
+	proxyConfig.RetryCount = 3
+	response = controlRequest(t, server, http.MethodPut, base+"/proxy", proxyConfig)
+	if response.Code != http.StatusOK {
+		t.Fatalf("proxy update=%d: %s", response.Code, response.Body.String())
+	}
+
+	healthConfig := manager.Config().Routes[0].HealthCheck
+	healthConfig.Enabled = false
+	response = controlRequest(t, server, http.MethodPut, base+"/health-check", healthConfig)
+	if response.Code != http.StatusOK {
+		t.Fatalf("health-check update=%d: %s", response.Code, response.Body.String())
+	}
+
+	response = controlRequest(t, server, http.MethodGet, base+"/telemetry", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("route telemetry=%d: %s", response.Code, response.Body.String())
+	}
+	var telemetry map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &telemetry); err != nil {
+		t.Fatal(err)
+	}
+	if telemetry["route"] == nil || telemetry["metrics"] == nil || telemetry["runtime"] == nil {
+		t.Fatalf("route telemetry is incomplete: %#v", telemetry)
+	}
+
+	origin := manager.Config().Routes[0].Upstreams[0]
+	response = controlRequest(t, server, http.MethodGet, base+"/origins/"+origin.Name+"/telemetry", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("origin telemetry=%d: %s", response.Code, response.Body.String())
+	}
+
+	response = controlRequest(t, server, http.MethodGet, "/api/v1/telemetry", nil)
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"schema_version":"1.0"`)) {
+		t.Fatalf("telemetry=%d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestRouteScopedCachePurgeIsCaseInsensitive(t *testing.T) {
+	server, manager, _ := newControlPlaneTestServer(t)
+	name := strings.ToUpper(manager.Config().Routes[0].Name)
+	response := controlRequest(t, server, http.MethodPost, "/api/v1/routes/"+name+"/cache/purge", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("route cache purge=%d: %s", response.Code, response.Body.String())
 	}
 }

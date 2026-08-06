@@ -586,3 +586,25 @@ func TestAllowsDistinctDynamicAndEmbeddedListeners(t *testing.T) {
 		})
 	}
 }
+
+func TestTelemetryHistoryValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{name: "capacity too small", mutate: func(cfg *Config) { cfg.Admin.TelemetryHistory.Capacity = 1 }},
+		{name: "capacity too large", mutate: func(cfg *Config) { cfg.Admin.TelemetryHistory.Capacity = 10001 }},
+		{name: "interval too short", mutate: func(cfg *Config) { cfg.Admin.TelemetryHistory.SampleInterval = Duration{Duration: time.Millisecond} }},
+		{name: "interval too long", mutate: func(cfg *Config) { cfg.Admin.TelemetryHistory.SampleInterval = Duration{Duration: 2 * time.Hour} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Server.Mode = "embedded"
+			cfg.EdgeProxy.ConfigPath = "edge.json"
+			tc.mutate(&cfg)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "admin.telemetry_history") {
+				t.Fatalf("expected telemetry history validation error, got %v", err)
+			}
+		})
+	}
+}

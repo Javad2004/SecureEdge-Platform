@@ -74,6 +74,14 @@ func (h *Handler) Readiness() ReadinessStatus {
 func (h *Handler) PurgeCache(routeName, host, pathPrefix string) (int, bool, error) {
 	h.mu.RLock()
 	rt, ok := h.routes[routeName]
+	if !ok {
+		for name, candidate := range h.routes {
+			if strings.EqualFold(strings.TrimSpace(name), strings.TrimSpace(routeName)) {
+				rt, ok = candidate, true
+				break
+			}
+		}
+	}
 	h.mu.RUnlock()
 	if !ok || rt.cache == nil {
 		return 0, false, nil

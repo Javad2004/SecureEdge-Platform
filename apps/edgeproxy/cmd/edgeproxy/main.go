@@ -65,7 +65,8 @@ func main() {
 		fmt.Println("configuration is valid")
 		return
 	}
-	if err := server.RunManaged(configPath, loadedEnv, cfg, logger); err != nil {
+	allowEnvironmentConfigPath := strings.TrimSpace(*configFlag) == "" && !configEnvironmentPreexisting
+	if err := server.RunManaged(configPath, loadedEnv, cfg, logger, allowEnvironmentConfigPath); err != nil {
 		logger.Error("server stopped with error", "error", err)
 		os.Exit(1)
 	}

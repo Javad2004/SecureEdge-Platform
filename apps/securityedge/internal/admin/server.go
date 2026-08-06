@@ -71,6 +71,7 @@ type Server struct {
 	traffic      *traffic.Tracker
 	inspector    *waf.Inspector
 	connectivity *connectivity.Monitor
+	history      *telemetryHistoryStore
 	http         *http.Server
 	authMu       sync.Mutex
 	authFails    map[string]*authFailure
@@ -81,7 +82,7 @@ func New(cfg config.AdminConfig, runtime Runtime, registry *metrics.Registry, lo
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{cfg: cfg, runtime: runtime, registry: registry, logs: logs, traffic: trafficTracker, inspector: inspector, connectivity: connectivity.New(runtime), authFails: map[string]*authFailure{}}
+	s := &Server{cfg: cfg, runtime: runtime, registry: registry, logs: logs, traffic: trafficTracker, inspector: inspector, connectivity: connectivity.New(runtime), history: newTelemetryHistoryStore(cfg.TelemetryHistory), authFails: map[string]*authFailure{}}
 	mux := http.NewServeMux()
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", secureStatic(http.FileServer(http.FS(sub)))))
 	mux.HandleFunc("GET /", s.index)
@@ -108,10 +109,14 @@ func New(cfg config.AdminConfig, runtime Runtime, registry *metrics.Registry, lo
 	mux.HandleFunc("DELETE /api/v1/bans/{client}", s.auth(s.deleteBan))
 	mux.HandleFunc("DELETE /api/v1/bans", s.auth(s.clearBans))
 	mux.HandleFunc("GET /api/v1/dashboard/overview", s.auth(s.overview))
+	mux.HandleFunc("GET /api/v1/dashboard/history", s.auth(s.telemetryHistory))
 	mux.HandleFunc("GET /api/v1/traffic/recent", s.auth(s.recentTraffic))
 	mux.HandleFunc("GET /api/v1/connectivity", s.auth(s.connectivityStatus))
 	mux.HandleFunc("POST /api/v1/connectivity/check", s.auth(s.connectivityCheck))
 	mux.HandleFunc("GET /api/v1/edgeproxy/status", s.auth(s.edgeStatus))
+	mux.HandleFunc("GET /api/v1/edgeproxy/telemetry", s.auth(s.edgeTelemetry))
+	mux.HandleFunc("GET /api/v1/edgeproxy/routes/{route}/telemetry", s.auth(s.edgeRouteTelemetry))
+	mux.HandleFunc("GET /api/v1/edgeproxy/routes/{route}/origins/{origin}/telemetry", s.auth(s.edgeOriginTelemetry))
 	mux.HandleFunc("GET /api/v1/edgeproxy/metrics", s.auth(s.edgeMetrics))
 	mux.HandleFunc("GET /api/v1/edgeproxy/logs", s.auth(s.edgeLogs))
 	mux.HandleFunc("DELETE /api/v1/edgeproxy/logs", s.auth(s.edgeClearLogs))
@@ -120,11 +125,24 @@ func New(cfg config.AdminConfig, runtime Runtime, registry *metrics.Registry, lo
 	mux.HandleFunc("PUT /api/v1/edgeproxy/config", s.auth(s.edgeConfigReplace))
 	mux.HandleFunc("POST /api/v1/edgeproxy/config/reload", s.auth(s.edgeConfigReload))
 	mux.HandleFunc("GET /api/v1/edgeproxy/config/watch", s.auth(s.edgeConfigWatch))
+	mux.HandleFunc("GET /api/v1/edgeproxy/server", s.auth(s.edgeServerGet))
+	mux.HandleFunc("PUT /api/v1/edgeproxy/server", s.auth(s.edgeServerUpdate))
+	mux.HandleFunc("GET /api/v1/edgeproxy/admin", s.auth(s.edgeAdminGet))
+	mux.HandleFunc("PUT /api/v1/edgeproxy/admin", s.auth(s.edgeAdminUpdate))
 	mux.HandleFunc("GET /api/v1/edgeproxy/routes", s.auth(s.edgeRoutesList))
 	mux.HandleFunc("POST /api/v1/edgeproxy/routes", s.auth(s.edgeRoutesCreate))
 	mux.HandleFunc("GET /api/v1/edgeproxy/routes/{route}", s.auth(s.edgeRouteGet))
 	mux.HandleFunc("PUT /api/v1/edgeproxy/routes/{route}", s.auth(s.edgeRouteUpdate))
 	mux.HandleFunc("DELETE /api/v1/edgeproxy/routes/{route}", s.auth(s.edgeRouteDelete))
+	mux.HandleFunc("GET /api/v1/edgeproxy/routes/{route}/load-balancing", s.auth(s.edgeLoadBalancingGet))
+	mux.HandleFunc("PUT /api/v1/edgeproxy/routes/{route}/load-balancing", s.auth(s.edgeLoadBalancingUpdate))
+	mux.HandleFunc("GET /api/v1/edgeproxy/routes/{route}/proxy", s.auth(s.edgeProxySettingsGet))
+	mux.HandleFunc("PUT /api/v1/edgeproxy/routes/{route}/proxy", s.auth(s.edgeProxySettingsUpdate))
+	mux.HandleFunc("GET /api/v1/edgeproxy/routes/{route}/cache", s.auth(s.edgeRouteCacheGet))
+	mux.HandleFunc("PUT /api/v1/edgeproxy/routes/{route}/cache", s.auth(s.edgeRouteCacheUpdate))
+	mux.HandleFunc("POST /api/v1/edgeproxy/routes/{route}/cache/purge", s.auth(s.edgeRouteCachePurge))
+	mux.HandleFunc("GET /api/v1/edgeproxy/routes/{route}/health-check", s.auth(s.edgeHealthCheckGet))
+	mux.HandleFunc("PUT /api/v1/edgeproxy/routes/{route}/health-check", s.auth(s.edgeHealthCheckUpdate))
 	mux.HandleFunc("GET /api/v1/edgeproxy/routes/{route}/origins", s.auth(s.edgeOriginsList))
 	mux.HandleFunc("POST /api/v1/edgeproxy/routes/{route}/origins", s.auth(s.edgeOriginsCreate))
 	mux.HandleFunc("GET /api/v1/edgeproxy/routes/{route}/origins/{origin}", s.auth(s.edgeOriginGet))
@@ -362,7 +380,13 @@ func (s *Server) reload(w http.ResponseWriter, _ *http.Request) {
 	if err := s.runtime.Reload(); err != nil {
 		var restartRequired interface{ RestartRequired() bool }
 		if errors.As(err, &restartRequired) && restartRequired.RestartRequired() {
-			writeError(w, http.StatusConflict, "restart_required", err.Error())
+			response := map[string]any{
+				"accepted": true, "restart_required": true, "automatic_restart": true, "message": err.Error(),
+			}
+			if runtime, ok := s.runtime.(configRuntime); ok {
+				response["watch"] = runtime.WatchStatusMap()
+			}
+			writeJSON(w, http.StatusAccepted, response)
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "reload_failed", err.Error())
@@ -412,7 +436,13 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	connection := <-connectionCh
 	edgeStatus, ss, se := statusResult.raw, statusResult.status, statusResult.err
 	edgeMetrics, ms, me := metricsResult.raw, metricsResult.status, metricsResult.err
-	out := map[string]any{"generated_at": now(), "build": version.Info(), "connectivity": connection, "recent_client_traffic": s.trafficSnapshot(), "security_metrics": s.registry.Snapshot(), "security_logs": s.logs.Query(securitylog.Filter{Limit: 10}), "security_status": map[string]any{"rate_limit_buckets": s.runtime.LimiterSize(), "active_bans": s.runtime.ActiveBanCount(), "admission": s.runtime.AdmissionSnapshot()}, "edgeproxy_status_code": ss, "edgeproxy_metrics_status_code": ms}
+	securityMetrics := s.registry.Snapshot()
+	if me == nil {
+		s.history.observe(securityMetrics, edgeMetrics)
+	} else {
+		s.history.observe(securityMetrics, nil)
+	}
+	out := map[string]any{"generated_at": now(), "build": version.Info(), "connectivity": connection, "recent_client_traffic": s.trafficSnapshot(), "security_metrics": securityMetrics, "telemetry_history": s.history.snapshot(120), "security_logs": s.logs.Query(securitylog.Filter{Limit: 10}), "security_status": map[string]any{"rate_limit_buckets": s.runtime.LimiterSize(), "active_bans": s.runtime.ActiveBanCount(), "admission": s.runtime.AdmissionSnapshot()}, "edgeproxy_status_code": ss, "edgeproxy_metrics_status_code": ms}
 	if se != nil {
 		out["edgeproxy_status_error"] = se.Error()
 	} else {
@@ -424,6 +454,19 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		out["edgeproxy_metrics"] = json.RawMessage(edgeMetrics)
 	}
 	writeJSON(w, 200, out)
+}
+
+func (s *Server) telemetryHistory(w http.ResponseWriter, r *http.Request) {
+	limit := 120
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 {
+			writeError(w, http.StatusBadRequest, "invalid_query", "limit must be a positive integer")
+			return
+		}
+		limit = parsed
+	}
+	writeJSON(w, http.StatusOK, s.history.snapshot(limit))
 }
 
 func (s *Server) trafficSnapshot() traffic.Snapshot {

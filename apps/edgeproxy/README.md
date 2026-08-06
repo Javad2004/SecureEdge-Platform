@@ -436,11 +436,11 @@ The management client works directly against EdgeProxy and prints structured JSO
 .\scripts\manage-config.ps1 -Action Telemetry
 ```
 
-The script reads `EDGEPROXY_ADMIN_TOKEN` from the process environment or `.env`, bypasses ambient system proxies for local/LAN control traffic, rejects invalid JSON before sending it, and fails on non-success HTTP responses. High-level actions cover Server/Admin sections, complete Route and Origin CRUD, cache enable/disable/TTL/purge, scheduler tuning, proxy/retry settings, health checks, and route/origin telemetry; `-BodyFile` and `-BodyJson` remain available for full structured updates.
+The script reads `EDGEPROXY_ADMIN_TOKEN` from the process environment or `.env`, bypasses ambient system proxies for local/LAN control traffic, rejects invalid JSON before sending it, and fails on non-success HTTP responses. High-level actions cover Server/Admin sections, complete Route and Origin CRUD, cache enable/disable/TTL/purge, scheduler tuning, proxy/retry settings, health checks, and route/origin telemetry; `-BodyFile` and `-BodyJson` remain available for full structured updates. A field pinned by a non-empty `EDGEPROXY_*` runtime override returns a clear validation error and must be changed in the deployment environment instead.
 
 ## Linux systemd deployment
 
-The supplied unit runs EdgeProxy as an unprivileged, capability-limited service while preserving writable transactional configuration. Commands below assume a release binary has already been built. Run them as `root` from `apps/edgeproxy` or adapt the source paths to your release directory.
+The supplied unit runs EdgeProxy as an unprivileged service without ambient Linux capabilities while preserving writable transactional configuration. Its integrated profile binds only loopback ports above `1024`; SecurityEdge owns public port `80`. Commands below assume a release binary has already been built. Run them as `root` from `apps/edgeproxy` or adapt the source paths to your release directory.
 
 Create the service account and install the binary, unit, secret environment, and initial active profile:
 
@@ -458,7 +458,7 @@ install -o root -g edgeproxy -m 0640 ./deploy/systemd/edgeproxy.env.example \
   /etc/edgeproxy/edgeproxy.env
 install -d -o edgeproxy -g edgeproxy -m 0750 /var/lib/edgeproxy
 install -o edgeproxy -g edgeproxy -m 0640 \
-  ../../integration/edgeproxy-local-behind-waf.json \
+  ./deploy/systemd/edgeproxy.json \
   /var/lib/edgeproxy/config.json
 ```
 
@@ -473,7 +473,9 @@ journalctl -u edgeproxy.service -f
 
 The active profile must remain in `/var/lib/edgeproxy`, not `/etc/edgeproxy`: Route and Origin CRUD, Dashboard changes, automatic reload, atomic rename, and timestamped backups all require write access to the containing directory. Secrets remain read-only in `/etc/edgeproxy/edgeproxy.env`.
 
-For the complete platform, SecurityEdge reads `/var/lib/edgeproxy/config.json` through membership in the `edgeproxy` supplementary group; keep the directory at `0750` and the active profile at `0640`. EdgeProxy remains the only writer.
+The supplied systemd environment template intentionally contains only `EDGEPROXY_ADMIN_TOKEN`. Listener, TLS, trusted-proxy, Admin, Route, cache, health-check, retry, and scheduler settings remain in `/var/lib/edgeproxy/config.json`, so a successful Control Plane update remains authoritative after reload and restart. Adding the corresponding `EDGEPROXY_*` environment variables is supported for an intentional deployment lock. The Control Plane rejects changes to fields currently managed by an environment override instead of reporting a successful but ineffective update. Rotate `EDGEPROXY_ADMIN_TOKEN` in `/etc/edgeproxy/edgeproxy.env`, then restart EdgeProxy.
+
+For the complete platform, SecurityEdge reads `/var/lib/edgeproxy/config.json` through membership in the `edgeproxy` supplementary group; keep the directory at `0750` and the active profile at `0640`. EdgeProxy remains the only writer. A standalone deployment that intentionally binds EdgeProxy below port `1024` must add `CAP_NET_BIND_SERVICE` to a local systemd override rather than granting it to the integrated deployment by default.
 
 ## Docker
 

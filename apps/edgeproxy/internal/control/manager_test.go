@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -476,5 +477,33 @@ func TestRecordErrorDeduplicatesUnchangedWatcherFailure(t *testing.T) {
 	second := manager.WatchStatus()
 	if second.LastChangeAt != first.LastChangeAt {
 		t.Fatalf("duplicate error changed watcher timestamp: first=%q second=%q", first.LastChangeAt, second.LastChangeAt)
+	}
+}
+
+func TestManagerRejectsEnvironmentManagedUpdateWithoutPersisting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "edgeproxy.json")
+	cfg := testConfig(t)
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EDGEPROXY_ADMIN_TOKEN", "runtime-token")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager, err := New(path, "", logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := manager.Update(func(next *config.Config) error {
+		next.Admin.AuthToken = "persisted-rotation"
+		return nil
+	}, "managed_secret_test"); err == nil || !strings.Contains(err.Error(), "EDGEPROXY_ADMIN_TOKEN") {
+		t.Fatalf("expected environment-managed token update rejection, got %v", err)
+	}
+	persisted, err := config.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Admin.AuthToken != cfg.Admin.AuthToken {
+		t.Fatalf("rejected managed token update was persisted: got %q", persisted.Admin.AuthToken)
 	}
 }

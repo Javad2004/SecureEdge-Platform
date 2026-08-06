@@ -192,6 +192,13 @@ func (m *Manager) reload(source string) (ApplyResult, error) {
 		m.recordError(source, err)
 		return ApplyResult{}, err
 	}
+	m.mu.RLock()
+	previousPersisted := clone(m.persisted)
+	m.mu.RUnlock()
+	if err := config.ValidateEnvironmentManagedChanges(previousPersisted, persisted); err != nil {
+		m.recordError(source, err)
+		return ApplyResult{}, err
+	}
 	runtimeCfg, err := config.Load(m.path)
 	if err != nil {
 		m.recordError(source, err)
@@ -219,6 +226,9 @@ func (m *Manager) Update(mutator func(*config.Config) error, source string) (App
 	}
 	if candidate.Admin.AuthToken == "[REDACTED]" {
 		candidate.Admin.AuthToken = base.Admin.AuthToken
+	}
+	if err := config.ValidateEnvironmentManagedChanges(base, candidate); err != nil {
+		return ApplyResult{}, err
 	}
 	if err := candidate.Validate(); err != nil {
 		return ApplyResult{}, err

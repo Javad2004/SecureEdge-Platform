@@ -591,7 +591,8 @@ install -o root -g securityedge -m 0640 \
   /etc/securityedge/securityedge.env
 install -d -o securityedge -g securityedge -m 0750 /var/lib/securityedge
 install -d -o securityedge -g securityedge -m 0750 /var/log/securityedge
-install -o securityedge -g securityedge -m 0640 ./configs/local-dev.json \
+install -o securityedge -g securityedge -m 0640 \
+  ./deploy/systemd/securityedge.json \
   /var/lib/securityedge/securityedge.json
 ```
 
@@ -609,7 +610,9 @@ systemctl status securityedge.service
 journalctl -u securityedge.service -f
 ```
 
-The default unit exposes public ingress on port `80` and keeps the Dashboard/Admin API loopback-only at `127.0.0.1:9191`. Change those values in `/etc/securityedge/securityedge.env` before startup when a different network boundary is required. Dashboard/API policy changes persist atomically to `/var/lib/securityedge/securityedge.json`; security events and bounded telemetry history survive restarts under `/var/log/securityedge` and `/var/lib/securityedge`.
+The supplied systemd profile exposes public ingress on port `80` and keeps the Dashboard/Admin API loopback-only at `127.0.0.1:9191`. Change those values through the Dashboard/API or edit `/var/lib/securityedge/securityedge.json` before startup when a different network boundary is required. Dashboard/API changes persist atomically to that file; security events and bounded telemetry history survive restarts under `/var/log/securityedge` and `/var/lib/securityedge`.
+
+The systemd environment template deliberately contains only `SECURITYEDGE_ADMIN_TOKEN` and the shared `EDGEPROXY_ADMIN_TOKEN`. Gateway, listener, Admin, WAF, DNS, logging, history, and EdgeProxy dependency settings remain file-backed so successful Control Plane updates remain authoritative after reload and restart. Defining their optional `SECURITYEDGE_*` environment overrides intentionally pins those fields. Dashboard/API and direct file reloads reject changes to environment-managed fields with a clear validation error; rotate the two systemd credentials in `/etc/securityedge/securityedge.env` and restart SecurityEdge instead of using the Dashboard token fields.
 
 ## Docker
 

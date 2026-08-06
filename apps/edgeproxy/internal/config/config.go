@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -210,6 +211,71 @@ func ApplyEnvironmentOverrides(cfg *Config) error {
 		}
 	}
 	return nil
+}
+
+// ValidateEnvironmentManagedChanges rejects file-backed updates that would be
+// immediately masked by a non-empty process/dotenv override. Without this
+// guard, a Control Plane request could report success and persist a value that
+// never becomes effective at runtime.
+func ValidateEnvironmentManagedChanges(current, next Config) error {
+	var locked []string
+	add := func(key, field string, changed bool) {
+		if _, managed := nonEmptyEnvironment(key); managed && changed {
+			locked = append(locked, field+" ("+key+")")
+		}
+	}
+	add("EDGEPROXY_SERVER_LISTEN_ADDR", "server.listen_addr", current.Server.ListenAddr != next.Server.ListenAddr)
+	add("EDGEPROXY_ADMIN_LISTEN_ADDR", "admin.listen_addr", current.Admin.ListenAddr != next.Admin.ListenAddr)
+	add("EDGEPROXY_ADMIN_TOKEN", "admin.auth_token", current.Admin.AuthToken != next.Admin.AuthToken)
+	add("EDGEPROXY_FORWARDED_FOR_HEADER", "server.forwarded_for_header", current.Server.ForwardedForHeader != next.Server.ForwardedForHeader)
+	add("EDGEPROXY_TRUSTED_PROXY_CIDRS", "server.trusted_proxy_cidrs", !reflect.DeepEqual(current.Server.TrustedProxyCIDRs, next.Server.TrustedProxyCIDRs))
+	add("EDGEPROXY_TLS_ENABLED", "server.tls.enabled", current.Server.TLS.Enabled != next.Server.TLS.Enabled)
+	add("EDGEPROXY_TLS_CERT_FILE", "server.tls.cert_file", current.Server.TLS.CertFile != next.Server.TLS.CertFile)
+	add("EDGEPROXY_TLS_KEY_FILE", "server.tls.key_file", current.Server.TLS.KeyFile != next.Server.TLS.KeyFile)
+
+	seen := make(map[string]struct{}, len(current.Routes)+len(next.Routes))
+	for _, route := range append(append([]RouteConfig(nil), current.Routes...), next.Routes...) {
+		name := strings.TrimSpace(route.Name)
+		key := "EDGEPROXY_ROUTE_" + environmentRouteSuffix(name) + "_UPSTREAM_URLS"
+		if _, managed := nonEmptyEnvironment(key); !managed {
+			continue
+		}
+		canonical := strings.ToLower(name)
+		if _, exists := seen[canonical]; exists {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		before, beforeOK := routeByName(current.Routes, name)
+		after, afterOK := routeByName(next.Routes, name)
+		changed := beforeOK != afterOK
+		if beforeOK && afterOK {
+			changed = !reflect.DeepEqual(upstreamURLs(before.Upstreams), upstreamURLs(after.Upstreams))
+		}
+		if changed {
+			locked = append(locked, "routes["+name+"].upstream URLs ("+key+")")
+		}
+	}
+	if len(locked) > 0 {
+		return fmt.Errorf("configuration fields are managed by environment overrides and cannot be changed through the file/API: %s", strings.Join(locked, ", "))
+	}
+	return nil
+}
+
+func routeByName(routes []RouteConfig, name string) (RouteConfig, bool) {
+	for _, route := range routes {
+		if strings.EqualFold(strings.TrimSpace(route.Name), strings.TrimSpace(name)) {
+			return route, true
+		}
+	}
+	return RouteConfig{}, false
+}
+
+func upstreamURLs(upstreams []UpstreamConfig) []string {
+	urls := make([]string, len(upstreams))
+	for index := range upstreams {
+		urls[index] = strings.TrimSpace(upstreams[index].URL)
+	}
+	return urls
 }
 
 func applyStringEnv(key string, target *string) {

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -304,6 +305,39 @@ func ApplyEnvironmentOverrides(cfg *Config) error {
 			return fmt.Errorf("SECURITYEDGE_DNS_CRITICAL must be a boolean: %w", err)
 		}
 		cfg.Admin.Connectivity.DNS.Critical = critical
+	}
+	return nil
+}
+
+// ValidateEnvironmentManagedChanges rejects file-backed updates that would be
+// masked by a non-empty deployment override. This prevents Dashboard/API
+// operations from claiming success when the effective runtime value is pinned
+// by the process environment.
+func ValidateEnvironmentManagedChanges(current, next Config) error {
+	var locked []string
+	add := func(key, field string, changed bool) {
+		if _, managed := nonEmptyEnvironment(key); managed && changed {
+			locked = append(locked, field+" ("+key+")")
+		}
+	}
+	add("SECURITYEDGE_SERVER_LISTEN_ADDR", "server.listen_addr", current.Server.ListenAddr != next.Server.ListenAddr)
+	add("SECURITYEDGE_UPSTREAM_PROXY_URL", "server.upstream_proxy_url", current.Server.UpstreamProxyURL != next.Server.UpstreamProxyURL)
+	add("SECURITYEDGE_FORWARDED_FOR_HEADER", "server.forwarded_for_header", current.Server.ForwardedForHeader != next.Server.ForwardedForHeader)
+	add("SECURITYEDGE_TRUSTED_PROXY_CIDRS", "server.trusted_proxy_cidrs", !reflect.DeepEqual(current.Server.TrustedProxyCIDRs, next.Server.TrustedProxyCIDRs))
+	add("SECURITYEDGE_ADMIN_LISTEN_ADDR", "admin.listen_addr", current.Admin.ListenAddr != next.Admin.ListenAddr)
+	add("SECURITYEDGE_ADMIN_TOKEN", "admin.auth_token", current.Admin.AuthToken != next.Admin.AuthToken)
+	add("SECURITYEDGE_LOG_FILE_PATH", "admin.log_store.file_path", current.Admin.LogStore.FilePath != next.Admin.LogStore.FilePath)
+	add("SECURITYEDGE_TELEMETRY_HISTORY_FILE", "admin.telemetry_history.file_path", current.Admin.TelemetryHistory.FilePath != next.Admin.TelemetryHistory.FilePath)
+	add("SECURITYEDGE_DNS_SERVER", "admin.connectivity.dns.server", current.Admin.Connectivity.DNS.Server != next.Admin.Connectivity.DNS.Server)
+	add("SECURITYEDGE_DNS_NAMES", "admin.connectivity.dns.names", !reflect.DeepEqual(current.Admin.Connectivity.DNS.Names, next.Admin.Connectivity.DNS.Names))
+	add("SECURITYEDGE_DNS_EXPECTED_ADDRESSES", "admin.connectivity.dns.expected_addresses", !reflect.DeepEqual(current.Admin.Connectivity.DNS.ExpectedAddresses, next.Admin.Connectivity.DNS.ExpectedAddresses))
+	add("SECURITYEDGE_DNS_ENABLED", "admin.connectivity.dns.enabled", current.Admin.Connectivity.DNS.Enabled != next.Admin.Connectivity.DNS.Enabled)
+	add("SECURITYEDGE_DNS_CRITICAL", "admin.connectivity.dns.critical", current.Admin.Connectivity.DNS.Critical != next.Admin.Connectivity.DNS.Critical)
+	add("SECURITYEDGE_EDGEPROXY_CONFIG_PATH", "edgeproxy.config_path", current.EdgeProxy.ConfigPath != next.EdgeProxy.ConfigPath)
+	add("SECURITYEDGE_EDGEPROXY_ADMIN_URL", "edgeproxy.admin_url", current.EdgeProxy.AdminURL != next.EdgeProxy.AdminURL)
+	add("EDGEPROXY_ADMIN_TOKEN", "edgeproxy.admin_token", current.EdgeProxy.AdminToken != next.EdgeProxy.AdminToken)
+	if len(locked) > 0 {
+		return fmt.Errorf("configuration fields are managed by environment overrides and cannot be changed through the file/API: %s", strings.Join(locked, ", "))
 	}
 	return nil
 }

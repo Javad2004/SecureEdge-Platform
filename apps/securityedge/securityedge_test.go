@@ -822,3 +822,39 @@ func TestRoutePolicyOperationsAreCaseInsensitive(t *testing.T) {
 		t.Fatalf("case-insensitive delete left %d policy entries", got)
 	}
 }
+
+func TestReplaceConfigRejectsEnvironmentManagedSecretWithoutPersisting(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.Admin.AuthToken = "file-security-token"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.EdgeProxy.AdminToken = "file-edge-token"
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("SECURITYEDGE_ADMIN_TOKEN", "runtime-security-token")
+	appRuntime, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer appRuntime.Close()
+	candidate := appRuntime.RedactedConfig()
+	candidate.Admin.AuthToken = "persisted-rotation"
+	if err := appRuntime.ReplaceConfig(candidate); err == nil || !strings.Contains(err.Error(), "SECURITYEDGE_ADMIN_TOKEN") {
+		t.Fatalf("expected environment-managed token update rejection, got %v", err)
+	}
+	persisted, err := config.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Admin.AuthToken != cfg.Admin.AuthToken {
+		t.Fatalf("rejected managed token update was persisted: got %q", persisted.Admin.AuthToken)
+	}
+}

@@ -259,6 +259,9 @@ func (r *Runtime) ReplaceConfig(candidate config.Config) error {
 	if candidate.EdgeProxy.AdminToken == "[REDACTED]" {
 		candidate.EdgeProxy.AdminToken = fileCfg.EdgeProxy.AdminToken
 	}
+	if err := config.ValidateEnvironmentManagedChanges(fileCfg, candidate); err != nil {
+		return err
+	}
 	if err := candidate.Validate(); err != nil {
 		return err
 	}
@@ -417,6 +420,12 @@ func (r *Runtime) Reload() error {
 
 	fileCfg, err := config.LoadFile(r.configPath)
 	if err != nil {
+		return err
+	}
+	r.mu.RLock()
+	previousFileCfg := cloneConfig(r.healthyFileCfg)
+	r.mu.RUnlock()
+	if err := config.ValidateEnvironmentManagedChanges(previousFileCfg, fileCfg); err != nil {
 		return err
 	}
 	cfg := cloneConfig(fileCfg)

@@ -319,7 +319,9 @@ The units deliberately separate immutable secrets from mutable Control Plane sta
 /var/log/securityedge/                       writable rotated security events
 ```
 
-This layout is required because Dashboard and Admin API changes use atomic replacement and timestamped backups. Keeping an active JSON profile under a read-only `/etc` directory would make otherwise valid Route, Origin, WAF, and policy updates fail.
+Initial production profiles are supplied at `apps/edgeproxy/deploy/systemd/edgeproxy.json` and `apps/securityedge/deploy/systemd/securityedge.json`. The matching environment templates contain credentials only. Mutable listener, TLS, dependency, WAF, Route, cache, telemetry, and logging settings stay in the writable JSON profiles so successful Dashboard/API changes remain effective after reload and restart.
+
+This layout is required because Dashboard and Admin API changes use atomic replacement and timestamped backups. Keeping an active JSON profile under a read-only `/etc` directory would make otherwise valid Route, Origin, WAF, and policy updates fail. Defining optional configuration environment overrides is still supported as an intentional deployment lock. The Control Plane rejects attempts to change an environment-managed field with an explicit error instead of persisting a value that cannot become effective; rotate environment-provided credentials in the service environment file and restart the affected service.
 
 Install EdgeProxy first, then SecurityEdge. Use the application READMEs for the complete user/group, permission, environment, validation, and `systemctl` commands.
 

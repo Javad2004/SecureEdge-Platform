@@ -11,8 +11,8 @@ User=securityedge
 Group=securityedge
 SupplementaryGroups=edgeproxy
 
-# Secrets and path overrides stay read-only in /etc. The active SecurityEdge
-# configuration, telemetry history, and security logs use systemd-managed state
+# Credentials stay read-only in /etc. The active SecurityEdge configuration,
+# telemetry history, and security logs use systemd-managed state
 # and log directories so Dashboard/API writes remain atomic under ProtectSystem.
 EnvironmentFile=/etc/securityedge/securityedge.env
 StateDirectory=securityedge

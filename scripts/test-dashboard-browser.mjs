@@ -229,11 +229,18 @@ try {
     const mockScript = `(() => {
       const payloads = ${JSON.stringify(fixture.responses)};
       window.__fixtureRequests = [];
+      window.__fixtureFetchCounts = {};
+      window.__fixtureActiveFetches = 0;
+      window.__fixtureMaxActiveFetches = 0;
       window.fetch = async (input, init = {}) => {
         const raw = typeof input === 'string' ? input : input.url;
         const parsed = new URL(raw, 'http://fixture.local');
         const key = parsed.pathname;
         const method = String(init.method || 'GET').toUpperCase();
+        window.__fixtureFetchCounts[key] = (window.__fixtureFetchCounts[key] || 0) + 1;
+        window.__fixtureActiveFetches++;
+        window.__fixtureMaxActiveFetches = Math.max(window.__fixtureMaxActiveFetches, window.__fixtureActiveFetches);
+        if (key === '/api/v1/dashboard/overview') await new Promise(resolve => setTimeout(resolve, 75));
         let body;
         if (method === 'PUT' || method === 'POST' || method === 'DELETE') {
           let requestBody = null;
@@ -242,6 +249,7 @@ try {
           body = {applied:true, restart_required:false, watch:{revision:2, applied_revision:2}};
         } else if (key === '/api/v1/edgeproxy/logs' || key === '/api/v1/logs') body = {entries:[],returned:0,retained:0,dropped:0,has_more:false};
         else body = payloads[key];
+        window.__fixtureActiveFetches--;
         if (body === undefined) return new Response(JSON.stringify({error:{message:'fixture endpoint not found: ' + key}}), {status:404,headers:{'Content-Type':'application/json'}});
         return new Response(JSON.stringify(body), {status:200,headers:{'Content-Type':'application/json'}});
       };
@@ -257,6 +265,19 @@ try {
 
   await cdp.evaluate(`login(${JSON.stringify(token)})`, true);
   await eventually(async () => await cdp.evaluate(`!document.getElementById('login').classList.contains('visible') && !!state.edgeConfig`), 'Authenticated Dashboard data');
+
+  let refreshCoalescing = null;
+  if (fixtureRoot) {
+    refreshCoalescing = await cdp.evaluate(`(async () => {
+      const before = window.__fixtureFetchCounts['/api/v1/dashboard/overview'] || 0;
+      await Promise.all([refreshAll(), refreshAll(), refreshAll()]);
+      const after = window.__fixtureFetchCounts['/api/v1/dashboard/overview'] || 0;
+      return {overviewRequests: after - before, refreshPending: !!state.refreshPromise};
+    })()`, true);
+    if (refreshCoalescing.overviewRequests !== 2 || refreshCoalescing.refreshPending) {
+      throw new Error(`Dashboard refresh coalescing failed: ${JSON.stringify(refreshCoalescing)}`);
+    }
+  }
 
   const contract = await cdp.evaluate(`(() => {
     const required = [
@@ -318,7 +339,8 @@ try {
   console.log(JSON.stringify({
     ok:true, mode, browser, url:fixtureRoot ? 'fixture://dashboard' : url,
     title:contract.title, route:routeEditor.name, algorithm:routeEditor.algorithm,
-    cache_route_options:cacheOptions, system_forms_populated:true, system_form_submission:true
+    cache_route_options:cacheOptions, system_forms_populated:true, system_form_submission:true,
+    refresh_coalescing:refreshCoalescing
   }, null, 2));
 } catch (error) {
   console.error(error.stack || error.message);

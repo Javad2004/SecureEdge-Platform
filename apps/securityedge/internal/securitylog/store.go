@@ -157,32 +157,65 @@ func (s *Store) restorePersistentEntries() {
 			}
 			continue
 		}
-		scanner := bufio.NewScanner(file)
-		scanner.Buffer(make([]byte, 64<<10), maxPersistentLogLineBytes)
-		for scanner.Scan() {
-			line := bytes.TrimSpace(scanner.Bytes())
-			if len(line) == 0 {
-				continue
-			}
-			var entry Entry
-			if err := json.Unmarshal(line, &entry); err != nil {
+		reader := bufio.NewReaderSize(file, 64<<10)
+		for {
+			line, oversized, readErr := readPersistentLogLine(reader)
+			if oversized {
 				s.fileErrors++
-				continue
+			} else if trimmed := bytes.TrimSpace(line); len(trimmed) > 0 {
+				var entry Entry
+				if err := json.Unmarshal(trimmed, &entry); err != nil {
+					s.fileErrors++
+				} else {
+					entry = normalizeEntry(entry)
+					if entry.Sequence == 0 || entry.Sequence <= highestSequence {
+						entry.Sequence = highestSequence + 1
+					}
+					highestSequence = entry.Sequence
+					s.appendRestored(entry)
+				}
 			}
-			entry = normalizeEntry(entry)
-			if entry.Sequence == 0 || entry.Sequence <= highestSequence {
-				entry.Sequence = highestSequence + 1
+			if readErr != nil {
+				if !errors.Is(readErr, io.EOF) {
+					s.fileErrors++
+				}
+				break
 			}
-			highestSequence = entry.Sequence
-			s.appendRestored(entry)
-		}
-		if err := scanner.Err(); err != nil {
-			s.fileErrors++
 		}
 		_ = file.Close()
 	}
 	if highestSequence >= s.nextSeq {
 		s.nextSeq = highestSequence + 1
+	}
+}
+
+// readPersistentLogLine returns one logical NDJSON line without retaining more
+// than the configured per-line limit. Unlike bufio.Scanner, it discards only
+// the offending line and continues after its newline, so one damaged record
+// cannot hide every valid event that follows it in the same active or rotated
+// file. The returned io.EOF may accompany a final unterminated line.
+func readPersistentLogLine(reader *bufio.Reader) (line []byte, oversized bool, err error) {
+	for {
+		fragment, readErr := reader.ReadSlice('\n')
+		if !oversized {
+			if len(line)+len(fragment) > maxPersistentLogLineBytes {
+				line = nil
+				oversized = true
+			} else {
+				line = append(line, fragment...)
+			}
+		}
+
+		switch {
+		case readErr == nil:
+			return line, oversized, nil
+		case errors.Is(readErr, bufio.ErrBufferFull):
+			continue
+		case errors.Is(readErr, io.EOF):
+			return line, oversized, io.EOF
+		default:
+			return line, oversized, readErr
+		}
 	}
 }
 

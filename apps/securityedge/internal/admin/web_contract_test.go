@@ -112,3 +112,29 @@ func TestDashboardResourceInputsMatchBackendSafetyLimits(t *testing.T) {
 		}
 	}
 }
+
+func TestDashboardCoalescesRefreshesAndTimesOutRequests(t *testing.T) {
+	app, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	javascript := string(app)
+	for _, required := range []string{
+		"refreshPromise: null",
+		"refreshQueued: false",
+		"if (state.refreshPromise)",
+		"state.refreshQueued = true",
+		"while (state.refreshQueued && state.token)",
+		"const requestTimeoutMS = 15000",
+		"new AbortController()",
+		"Request timed out after",
+		"await loadEdgeLogs()",
+	} {
+		if !strings.Contains(javascript, required) {
+			t.Fatalf("dashboard refresh-safety contract is missing %q", required)
+		}
+	}
+	if strings.Contains(javascript, "URL.createObjectURL(new Blob([blob]") {
+		t.Fatal("dashboard download creates a redundant second Blob")
+	}
+}

@@ -20,7 +20,9 @@ const state = {
   securityWatch: null,
   edgeEditorDirty: false,
   securityEditorDirty: false,
-  systemDirty: {}
+  systemDirty: {},
+  refreshPromise: null,
+  refreshQueued: false
 };
 
 const $ = id => document.getElementById(id);
@@ -32,12 +34,23 @@ const csv = value => String(value || '').split(',').map(x => x.trim()).filter(Bo
 const csvNumbers = value => csv(value).map(item => Number(item));
 const bytesToMiB = value => Number(value || 0) / 1048576;
 const mibToBytes = value => Math.round(Number(value || 0) * 1048576);
+const requestTimeoutMS = 15000;
+
+async function fetchWithTimeout(path, options = {}, timeout = requestTimeoutMS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try { return await fetch(path, {...options, signal:controller.signal}); }
+  catch (error) {
+    if (error?.name === 'AbortError') throw new Error(`Request timed out after ${Math.round(timeout / 1000)} seconds.`);
+    throw error;
+  } finally { clearTimeout(timer); }
+}
 
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
   headers.set('Authorization', `Bearer ${state.token}`);
   if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
-  const response = await fetch(path, {...options, headers});
+  const response = await fetchWithTimeout(path, {...options, headers});
   let data = null;
   try { data = await response.json(); } catch {}
   if (response.status === 401) {
@@ -49,12 +62,12 @@ async function api(path, options = {}) {
   return data;
 }
 
-async function download(path, filename, contentType) {
-  const response = await fetch(path, {headers: {Authorization: `Bearer ${state.token}`}});
+async function download(path, filename) {
+  const response = await fetchWithTimeout(path, {headers: {Authorization: `Bearer ${state.token}`}}, 30000);
   if (!response.ok) throw new Error(`Export failed: HTTP ${response.status}`);
   const blob = await response.blob();
   const link = document.createElement('a');
-  link.href = URL.createObjectURL(new Blob([blob], {type: contentType}));
+  link.href = URL.createObjectURL(blob);
   link.download = filename;
   link.click();
   setTimeout(() => URL.revokeObjectURL(link.href), 1000);
@@ -96,27 +109,39 @@ function setView(name) {
 }
 
 async function refreshAll() {
-  try {
-    const [overview, policies, rules, bans] = await Promise.all([
-      api('/api/v1/dashboard/overview'),
-      api('/api/v1/policies'),
-      api('/api/v1/rules'),
-      api('/api/v1/bans')
-    ]);
-    state.overview = overview;
-    state.policies = policies;
-    state.rules = rules.rules || [];
-    state.bans = bans.bans || [];
-    await loadControlData();
-    renderAll();
-    $('last-updated').textContent = `Updated ${new Date().toLocaleTimeString()}`;
-    $('live-dot').classList.add('live');
-  } catch (error) {
-    toast(error.message);
-    $('live-dot').classList.remove('live','degraded');
-    $('live-dot').classList.add('down');
-    $('connection-label').textContent = 'Operations API unavailable';
+  if (state.refreshPromise) {
+    state.refreshQueued = true;
+    return state.refreshPromise;
   }
+  state.refreshPromise = (async () => {
+    do {
+      state.refreshQueued = false;
+      try {
+        const [overview, policies, rules, bans] = await Promise.all([
+          api('/api/v1/dashboard/overview'),
+          api('/api/v1/policies'),
+          api('/api/v1/rules'),
+          api('/api/v1/bans')
+        ]);
+        state.overview = overview;
+        state.policies = policies;
+        state.rules = rules.rules || [];
+        state.bans = bans.bans || [];
+        await loadControlData();
+        renderAll();
+        await loadEdgeLogs();
+        $('last-updated').textContent = `Updated ${new Date().toLocaleTimeString()}`;
+        $('live-dot').classList.add('live');
+      } catch (error) {
+        toast(error.message);
+        $('live-dot').classList.remove('live','degraded');
+        $('live-dot').classList.add('down');
+        $('connection-label').textContent = 'Operations API unavailable';
+      }
+    } while (state.refreshQueued && state.token);
+  })();
+  try { return await state.refreshPromise; }
+  finally { state.refreshPromise = null; }
 }
 
 function renderAll() {
@@ -128,7 +153,6 @@ function renderAll() {
   renderSystem();
   renderRules();
   renderBans();
-  loadEdgeLogs();
 }
 
 function rejectedCount(total) {
@@ -873,9 +897,9 @@ document.querySelectorAll('[data-go]').forEach(button => button.onclick = () => 
 $('security-filters').onsubmit = event => { event.preventDefault(); loadSecurity(true); };
 $('older-security').onclick = () => loadSecurity(false);
 $('clear-security').onclick = async () => { if (!confirm('Clear all retained SecurityEdge events, the active NDJSON log, and rotated backups?')) return; await api('/api/v1/logs',{method:'DELETE'}); await loadSecurity(true); toast('Security events and persistent log files cleared'); };
-$('export-ndjson').onclick = () => download('/api/v1/logs/export?format=ndjson','security-events.ndjson','application/x-ndjson').catch(error=>toast(error.message));
-$('export-csv').onclick = () => download('/api/v1/logs/export?format=csv','security-events.csv','text/csv').catch(error=>toast(error.message));
-$('export-prometheus').onclick = () => download('/api/v1/metrics/prometheus','securityedge.prom','text/plain').catch(error=>toast(error.message));
+$('export-ndjson').onclick = () => download('/api/v1/logs/export?format=ndjson','security-events.ndjson').catch(error=>toast(error.message));
+$('export-csv').onclick = () => download('/api/v1/logs/export?format=csv','security-events.csv').catch(error=>toast(error.message));
+$('export-prometheus').onclick = () => download('/api/v1/metrics/prometheus','securityedge.prom').catch(error=>toast(error.message));
 $('clear-bans').onclick = async () => { if (!confirm('Clear all active temporary bans?')) return; await api('/api/v1/bans',{method:'DELETE'}); await loadBans(); toast('Temporary bans cleared'); };
 $('policy-form').onsubmit = savePolicy;
 $('delete-override').onclick = async () => { await api(`/api/v1/policies/${encodeURIComponent(state.selectedPolicy)}`,{method:'DELETE'}); await loadPolicies(); toast('Route override deleted'); };

@@ -414,7 +414,7 @@ func TestPersistentLogBoundsRestoredEntryData(t *testing.T) {
 func TestPersistentLogRejectsOversizedLine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "events.ndjson")
 	oversized := append([]byte(`{"event":"`), bytes.Repeat([]byte{'x'}, maxPersistentLogLineBytes)...)
-	oversized = append(oversized, []byte(`"}\n`)...)
+	oversized = append(oversized, []byte("\"}\n")...)
 	if err := os.WriteFile(path, oversized, 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -425,5 +425,38 @@ func TestPersistentLogRejectsOversizedLine(t *testing.T) {
 	defer s.Close()
 	if stats := s.Stats(); stats.FileErrors == 0 || stats.Retained != 0 {
 		t.Fatalf("oversized persistent line was not rejected: %#v", stats)
+	}
+}
+
+func TestPersistentLogSkipsOversizedLineAndContinues(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.ndjson")
+	valid, err := json.Marshal(Entry{Sequence: 7, Event: "valid-after-oversized"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oversized := append([]byte(`{"event":"`), bytes.Repeat([]byte{'x'}, maxPersistentLogLineBytes)...)
+	oversized = append(oversized, []byte("\"}\n")...)
+	data := append(oversized, append(valid, '\n')...)
+	if err := os.WriteFile(path, data, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := NewWithConfig(config.LogStoreConfig{Capacity: 10, FilePath: path, MaxFileBytes: 2 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	stats := s.Stats()
+	if stats.FileErrors != 1 || stats.Retained != 1 {
+		t.Fatalf("expected one rejected line and one restored event, got %#v", stats)
+	}
+	result := s.Query(Filter{Limit: 10})
+	if result.Returned != 1 || result.Entries[0].Event != "valid-after-oversized" || result.Entries[0].Sequence != 7 {
+		t.Fatalf("valid event after oversized line was not restored: %#v", result)
+	}
+	appended := s.Append(Entry{Event: "new-event"})
+	if appended.Sequence != 8 {
+		t.Fatalf("sequence did not continue after recovered line: %d", appended.Sequence)
 	}
 }

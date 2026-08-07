@@ -19,6 +19,8 @@ import (
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
 )
 
+const maxConcurrentHealthChecks = 16
+
 type upstream struct {
 	name             string
 	url              *url.URL
@@ -303,34 +305,60 @@ func (p *upstreamPool) runHealthChecks(ctx context.Context, cfg config.HealthChe
 	for _, status := range cfg.HealthyStatuses {
 		statuses[status] = true
 	}
-	check := func() {
-		for _, node := range p.nodes {
-			target := *node.url
-			target.Path = joinPath(node.url.Path, cfg.Path)
-			started := time.Now()
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
-			if err != nil {
-				setNodeHealth(node, false, healthChange{Upstream: node.url.String(), Healthy: false, Duration: time.Since(started), Error: err.Error()}, onChange)
-				continue
-			}
-			if p.healthHost != "" {
-				req.Host = p.healthHost
-			}
-			client := &http.Client{Transport: node.transport, Timeout: cfg.Timeout.Duration, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
-			resp, err := client.Do(req)
-			elapsed := time.Since(started)
-			if err != nil {
-				setNodeHealth(node, false, healthChange{Upstream: node.url.String(), Healthy: false, Duration: elapsed, Error: err.Error()}, onChange)
-				continue
-			}
-			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
-			resp.Body.Close()
-			healthy := resp.StatusCode >= 200 && resp.StatusCode < 400
-			if len(statuses) > 0 {
-				healthy = statuses[resp.StatusCode]
-			}
-			setNodeHealth(node, healthy, healthChange{Upstream: node.url.String(), Healthy: healthy, Status: resp.StatusCode, Duration: elapsed}, onChange)
+	checkNode := func(node *upstream) {
+		target := *node.url
+		target.Path = joinPath(node.url.Path, cfg.Path)
+		started := time.Now()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+		if err != nil {
+			setNodeHealth(node, false, healthChange{Upstream: node.url.String(), Healthy: false, Duration: time.Since(started), Error: err.Error()}, onChange)
+			return
 		}
+		if p.healthHost != "" {
+			req.Host = p.healthHost
+		}
+		client := &http.Client{Transport: node.transport, Timeout: cfg.Timeout.Duration, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+		resp, err := client.Do(req)
+		elapsed := time.Since(started)
+		if err != nil {
+			setNodeHealth(node, false, healthChange{Upstream: node.url.String(), Healthy: false, Duration: elapsed, Error: err.Error()}, onChange)
+			return
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+		_ = resp.Body.Close()
+		healthy := resp.StatusCode >= 200 && resp.StatusCode < 400
+		if len(statuses) > 0 {
+			healthy = statuses[resp.StatusCode]
+		}
+		setNodeHealth(node, healthy, healthChange{Upstream: node.url.String(), Healthy: healthy, Status: resp.StatusCode, Duration: elapsed}, onChange)
+	}
+	check := func() {
+		workerCount := min(maxConcurrentHealthChecks, len(p.nodes))
+		if workerCount == 0 {
+			return
+		}
+		jobs := make(chan *upstream)
+		var workers sync.WaitGroup
+		workers.Add(workerCount)
+		for range workerCount {
+			go func() {
+				defer workers.Done()
+				for node := range jobs {
+					checkNode(node)
+				}
+			}()
+		}
+		for _, node := range p.nodes {
+			select {
+			case jobs <- node:
+			case <-ctx.Done():
+				close(jobs)
+				workers.Wait()
+				return
+			}
+		}
+		close(jobs)
+		workers.Wait()
 	}
 	check()
 	ticker := time.NewTicker(cfg.Interval.Duration)

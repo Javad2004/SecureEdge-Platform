@@ -652,6 +652,13 @@ func (w *decisionWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	// A net/http Server can leave its read/write deadlines attached after
+	// Hijack. Clear them so gateway handshake timeouts do not become the
+	// lifetime limit of a long-lived upgraded protocol connection.
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		_ = conn.Close()
+		return nil, nil, fmt.Errorf("clear hijacked connection deadline: %w", err)
+	}
 	if w.trackHijack != nil {
 		tracked, ok := w.trackHijack(conn)
 		if !ok {

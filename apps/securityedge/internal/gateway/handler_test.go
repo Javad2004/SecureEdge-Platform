@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -329,6 +330,18 @@ func (w *informationalResponseWriter) WriteHeader(status int) {
 }
 func (w *informationalResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
 
+type deadlineTrackingConn struct {
+	net.Conn
+	cleared atomic.Bool
+}
+
+func (c *deadlineTrackingConn) SetDeadline(deadline time.Time) error {
+	if deadline.IsZero() {
+		c.cleared.Store(true)
+	}
+	return c.Conn.SetDeadline(deadline)
+}
+
 type hijackResponseWriter struct {
 	header http.Header
 	conn   net.Conn
@@ -349,8 +362,9 @@ func (w *hijackResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 func TestDecisionWriterTracksHijackAndHandlerCloseTerminatesTunnel(t *testing.T) {
 	serverConn, peerConn := net.Pipe()
 	defer peerConn.Close()
+	trackedConn := &deadlineTrackingConn{Conn: serverConn}
 	h := &Handler{tunnels: make(map[*trackedHijackedConn]struct{})}
-	underlying := &hijackResponseWriter{conn: serverConn}
+	underlying := &hijackResponseWriter{conn: trackedConn}
 	writer := &decisionWriter{
 		ResponseWriter: underlying, requestID: "request-1", action: "ALLOW",
 		trackHijack: h.trackHijackedConn,
@@ -361,6 +375,9 @@ func TestDecisionWriterTracksHijackAndHandlerCloseTerminatesTunnel(t *testing.T)
 	}
 	if writer.Status() != http.StatusSwitchingProtocols {
 		t.Fatalf("status=%d, want 101", writer.Status())
+	}
+	if !trackedConn.cleared.Load() {
+		t.Fatal("hijacked gateway connection retained net/http server deadline")
 	}
 
 	closed := make(chan struct{})

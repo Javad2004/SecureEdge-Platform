@@ -660,6 +660,14 @@ func (h *Handler) proxyProtocolUpgrade(w http.ResponseWriter, req *http.Request,
 	if err != nil {
 		return protocolTunnelResult{}, fmt.Errorf("hijack client connection: %w", err)
 	}
+	// net/http may leave the Server ReadTimeout/WriteTimeout deadlines on a
+	// hijacked connection. Those limits protect the HTTP handshake, but must not
+	// become the lifetime limit of the switched protocol (for example WebSocket).
+	if err := client.SetDeadline(time.Time{}); err != nil {
+		_ = client.Close()
+		_ = backend.Close()
+		return protocolTunnelResult{hijacked: true}, fmt.Errorf("clear hijacked client deadline: %w", err)
+	}
 	result := protocolTunnelResult{hijacked: true}
 	tunnel, ok := h.registerProtocolTunnel(client, backend)
 	if !ok {

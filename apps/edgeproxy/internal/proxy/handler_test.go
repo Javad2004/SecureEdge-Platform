@@ -1,11 +1,13 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -21,6 +23,35 @@ import (
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/metrics"
 )
+
+type deadlineTrackingConn struct {
+	net.Conn
+	cleared atomic.Bool
+}
+
+func (c *deadlineTrackingConn) SetDeadline(deadline time.Time) error {
+	if deadline.IsZero() {
+		c.cleared.Store(true)
+	}
+	return c.Conn.SetDeadline(deadline)
+}
+
+type protocolHijackWriter struct {
+	header http.Header
+	conn   net.Conn
+}
+
+func (w *protocolHijackWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+func (w *protocolHijackWriter) WriteHeader(int)             {}
+func (w *protocolHijackWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (w *protocolHijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.conn, bufio.NewReadWriter(bufio.NewReader(w.conn), bufio.NewWriter(w.conn)), nil
+}
 
 func testConfig(origin string) config.Config {
 	return config.Config{Routes: []config.RouteConfig{{
@@ -60,6 +91,54 @@ func TestProxyCacheMissThenHit(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("expected one origin call, got %d", calls.Load())
+	}
+}
+
+func TestProtocolUpgradeClearsHijackedServerDeadline(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	tracked := &deadlineTrackingConn{Conn: serverConn}
+	backendConn, originPeer := net.Pipe()
+	h := &Handler{tunnels: make(map[*activeProtocolTunnel]struct{})}
+	writer := &protocolHijackWriter{conn: tracked}
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/socket", nil)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "echo-test")
+	resp := &http.Response{
+		StatusCode: http.StatusSwitchingProtocols,
+		Status:     "101 Switching Protocols",
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1, ProtoMinor: 1,
+		Header: http.Header{"Connection": {"Upgrade"}, "Upgrade": {"echo-test"}},
+		Body:   backendConn,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.proxyProtocolUpgrade(writer, req, resp, "request-1", time.Now())
+		done <- err
+	}()
+
+	clientReader := bufio.NewReader(clientConn)
+	response, err := http.ReadResponse(clientReader, req)
+	if err != nil {
+		t.Fatalf("read upgrade response: %v", err)
+	}
+	if response.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("upgrade status=%d, want 101", response.StatusCode)
+	}
+	if !tracked.cleared.Load() {
+		t.Fatal("hijacked client connection retained net/http server deadline")
+	}
+
+	_ = clientConn.Close()
+	_ = originPeer.Close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("upgrade tunnel: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("upgrade tunnel did not terminate after peers closed")
 	}
 }
 

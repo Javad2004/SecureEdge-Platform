@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -10,6 +11,77 @@ import (
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
 )
+
+func TestHealthChecksUseBoundedConcurrency(t *testing.T) {
+	var active atomic.Int32
+	var maximum atomic.Int32
+	var completed atomic.Int32
+	release := make(chan struct{})
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		current := active.Add(1)
+		for {
+			previous := maximum.Load()
+			if current <= previous || maximum.CompareAndSwap(previous, current) {
+				break
+			}
+		}
+		<-release
+		active.Add(-1)
+		completed.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer origin.Close()
+
+	upstreamCount := maxConcurrentHealthChecks + 4
+	upstreams := make([]config.UpstreamConfig, 0, upstreamCount)
+	for i := 0; i < upstreamCount; i++ {
+		upstreams = append(upstreams, config.UpstreamConfig{URL: origin.URL, Name: fmt.Sprintf("origin-%d", i+1), Weight: 1, Priority: i + 1})
+	}
+	route := config.RouteConfig{
+		Name: "many-origins", Upstreams: upstreams,
+		Proxy: config.ProxyConfig{DialTimeout: config.Duration{Duration: time.Second}, ResponseHeaderTimeout: config.Duration{Duration: time.Second}, MaxIdleConns: upstreamCount, MaxIdleConnsPerHost: upstreamCount},
+	}
+	pool, err := newUpstreamPool(route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.closeIdleConnections()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		pool.runHealthChecks(ctx, config.HealthCheckConfig{Enabled: true, Path: "/healthz", Interval: config.Duration{Duration: 10 * time.Second}, Timeout: config.Duration{Duration: time.Second}, HealthyStatuses: []int{http.StatusOK}}, nil)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for maximum.Load() < maxConcurrentHealthChecks && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := maximum.Load(); got != maxConcurrentHealthChecks {
+		close(release)
+		cancel()
+		<-done
+		t.Fatalf("maximum concurrent health checks=%d, want %d", got, maxConcurrentHealthChecks)
+	}
+	close(release)
+
+	deadline = time.Now().Add(2 * time.Second)
+	for completed.Load() < int32(upstreamCount) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := completed.Load(); got != int32(upstreamCount) {
+		cancel()
+		<-done
+		t.Fatalf("completed health checks=%d, want %d", got, upstreamCount)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("health-check loop did not stop after context cancellation")
+	}
+}
 
 func TestHealthCheckDoesNotFollowRedirects(t *testing.T) {
 	var redirectTargetHits atomic.Int32

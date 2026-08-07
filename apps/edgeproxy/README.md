@@ -286,6 +286,8 @@ DELETE  /api/v1/logs
 POST    /api/v1/cache/purge
 ```
 
+Log-filter values are bounded before the in-memory ring is scanned: named filters accept at most 512 bytes and the free-text `q` search accepts at most 2,048 bytes. Search normalization is performed once per request rather than once per retained event, preventing an oversized authenticated query from amplifying CPU and allocation work across a large log store.
+
 Authenticated configuration Control Plane:
 
 ```text

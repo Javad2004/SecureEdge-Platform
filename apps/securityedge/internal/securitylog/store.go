@@ -20,6 +20,14 @@ import (
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/waf"
 )
 
+const (
+	maxPersistentLogLineBytes = 512 << 10
+	maxEntryRuleIDs           = 256
+	maxEntryTags              = 32
+	maxEntryMatches           = 256
+	exportBatchSize           = 256
+)
+
 type Entry struct {
 	Sequence             uint64      `json:"sequence"`
 	Timestamp            string      `json:"timestamp"`
@@ -150,7 +158,7 @@ func (s *Store) restorePersistentEntries() {
 			continue
 		}
 		scanner := bufio.NewScanner(file)
-		scanner.Buffer(make([]byte, 64<<10), 4<<20)
+		scanner.Buffer(make([]byte, 64<<10), maxPersistentLogLineBytes)
 		for scanner.Scan() {
 			line := bytes.TrimSpace(scanner.Bytes())
 			if len(line) == 0 {
@@ -241,13 +249,15 @@ func (s *Store) Append(e Entry) Entry {
 }
 
 func normalizeEntry(e Entry) Entry {
-	if e.Timestamp == "" {
+	e.Timestamp = trim(e.Timestamp, 64)
+	if _, err := time.Parse(time.RFC3339Nano, e.Timestamp); err != nil {
 		e.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 	e.Level = strings.ToUpper(strings.TrimSpace(e.Level))
 	if e.Level == "" {
 		e.Level = "INFO"
 	}
+	e.Level = trim(e.Level, 16)
 	e.Event = trim(e.Event, 128)
 	e.Message = trim(e.Message, 2048)
 	e.RequestID = trim(e.RequestID, 256)
@@ -261,9 +271,28 @@ func normalizeEntry(e Entry) Entry {
 	e.Reason = strings.ToLower(trim(e.Reason, 128))
 	e.UserAgentFingerprint = trim(e.UserAgentFingerprint, 128)
 	e.Error = trim(e.Error, 2048)
-	e.RuleIDs = uniqueUpper(e.RuleIDs)
-	e.Tags = uniqueLower(e.Tags)
+	e.RuleIDs = uniqueUpper(e.RuleIDs, maxEntryRuleIDs, 128)
+	eTags := uniqueLower(e.Tags, maxEntryTags, 64)
+	e.Tags = eTags
+	e.Matches = normalizeMatches(e.Matches)
 	return e
+}
+
+func normalizeMatches(matches []waf.Match) []waf.Match {
+	if len(matches) > maxEntryMatches {
+		matches = matches[:maxEntryMatches]
+	}
+	out := make([]waf.Match, 0, len(matches))
+	for _, match := range matches {
+		match.RuleID = strings.ToUpper(trim(match.RuleID, 128))
+		match.RuleName = trim(match.RuleName, 256)
+		match.Category = strings.ToLower(trim(match.Category, 128))
+		match.Target = trim(match.Target, 128)
+		match.Location = trim(match.Location, 512)
+		match.Fingerprint = trim(match.Fingerprint, 128)
+		out = append(out, match)
+	}
+	return out
 }
 
 func (s *Store) writeFileLocked(e Entry) {
@@ -374,6 +403,7 @@ func (s *Store) Query(f Filter) QueryResult {
 	if f.Limit <= 0 {
 		f.Limit = 100
 	}
+	searchLower := strings.ToLower(strings.TrimSpace(f.Search))
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	r := QueryResult{GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano), Capacity: s.capacity, Retained: s.count, Dropped: s.dropped, Entries: make([]Entry, 0, min(f.Limit, s.count)), AppliedFilters: filters(f)}
@@ -387,7 +417,7 @@ func (s *Store) Query(f Filter) QueryResult {
 		if f.BeforeSequence > 0 && e.Sequence >= f.BeforeSequence {
 			continue
 		}
-		if !matches(e, f) {
+		if !matches(e, f, searchLower) {
 			continue
 		}
 		if len(r.Entries) < f.Limit {
@@ -408,36 +438,93 @@ func (s *Store) Export(w io.Writer, f Filter, format string) error {
 	if f.Limit <= 0 || f.Limit > s.capacity {
 		f.Limit = s.capacity
 	}
-	entries := s.Query(f).Entries
-	switch strings.ToLower(format) {
+	format = strings.ToLower(format)
+	if format != "csv" && format != "ndjson" && format != "jsonl" {
+		return fmt.Errorf("unsupported export format %q", format)
+	}
+
+	searchLower := strings.ToLower(strings.TrimSpace(f.Search))
+	s.mu.RLock()
+	var maxSequence uint64
+	if s.count > 0 {
+		maxSequence = s.entries[(s.head+s.count-1)%s.capacity].Sequence
+	}
+	s.mu.RUnlock()
+
+	var writeEntry func(Entry) error
+	var finish func() error
+	switch format {
 	case "csv":
 		cw := csv.NewWriter(w)
 		if err := cw.Write([]string{"sequence", "timestamp", "level", "event", "request_id", "client_ip", "method", "host", "path", "path_fingerprint", "route", "status", "action", "reason", "score", "rule_ids", "duration_ms", "auto_banned"}); err != nil {
 			return err
 		}
-		for _, e := range entries {
+		writeEntry = func(e Entry) error {
 			row := []string{strconv.FormatUint(e.Sequence, 10), e.Timestamp, e.Level, e.Event, e.RequestID, e.ClientIP, e.Method, e.Host, e.Path, e.PathFingerprint, e.Route, strconv.Itoa(e.Status), e.Action, e.Reason, strconv.Itoa(e.Score), strings.Join(e.RuleIDs, "|"), strconv.FormatFloat(e.DurationMS, 'f', 3, 64), strconv.FormatBool(e.AutoBanned)}
 			for i := range row {
 				row[i] = safeCSVCell(row[i])
 			}
-			if err := cw.Write(row); err != nil {
-				return err
-			}
+			return cw.Write(row)
 		}
-		cw.Flush()
-		return cw.Error()
-	case "ndjson", "jsonl":
+		finish = func() error {
+			cw.Flush()
+			return cw.Error()
+		}
+	default:
 		bw := bufio.NewWriter(w)
 		enc := json.NewEncoder(bw)
-		for _, e := range entries {
-			if err := enc.Encode(e); err != nil {
+		writeEntry = func(entry Entry) error { return enc.Encode(entry) }
+		finish = bw.Flush
+	}
+
+	remaining := f.Limit
+	before := f.BeforeSequence
+	for remaining > 0 && maxSequence > 0 {
+		batchLimit := min(exportBatchSize, remaining)
+		batch := s.exportBatch(f, searchLower, maxSequence, before, batchLimit)
+		if len(batch) == 0 {
+			break
+		}
+		for _, entry := range batch {
+			if err := writeEntry(entry); err != nil {
 				return err
 			}
 		}
-		return bw.Flush()
-	default:
-		return fmt.Errorf("unsupported export format %q", format)
+		remaining -= len(batch)
+		before = batch[len(batch)-1].Sequence
+		if len(batch) < batchLimit {
+			break
+		}
 	}
+	return finish()
+}
+
+// exportBatch copies only a bounded page while holding the store read lock.
+// The writer runs after the lock is released, so a slow or disconnected export
+// client cannot block request logging. maxSequence freezes the newest event
+// visible at export start; concurrent appends are intentionally excluded.
+func (s *Store) exportBatch(f Filter, searchLower string, maxSequence, before uint64, limit int) []Entry {
+	if limit <= 0 {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	entries := make([]Entry, 0, min(limit, s.count))
+	for logical := s.count - 1; logical >= 0; logical-- {
+		idx := (s.head + logical) % s.capacity
+		e := s.entries[idx]
+		if e.Sequence > maxSequence || (before > 0 && e.Sequence >= before) {
+			continue
+		}
+		if !matches(e, f, searchLower) {
+			continue
+		}
+		entries = append(entries, clone(e))
+		if len(entries) == limit {
+			break
+		}
+	}
+	return entries
 }
 
 func (s *Store) Clear() (int, error) {
@@ -484,7 +571,7 @@ func (s *Store) Stats() Stats {
 	return r
 }
 
-func matches(e Entry, f Filter) bool {
+func matches(e Entry, f Filter, searchLower string) bool {
 	if f.Route != "" && !strings.EqualFold(e.Route, f.Route) {
 		return false
 	}
@@ -524,9 +611,9 @@ func matches(e Entry, f Filter) bool {
 			return false
 		}
 	}
-	if f.Search != "" {
+	if searchLower != "" {
 		h := strings.ToLower(strings.Join([]string{e.Event, e.Message, e.RequestID, e.ClientIP, e.Method, e.Host, e.Path, e.Route, e.Action, e.Reason, strings.Join(e.RuleIDs, " "), e.PathFingerprint, e.UserAgentFingerprint, e.Error}, " "))
-		if !strings.Contains(h, strings.ToLower(f.Search)) {
+		if !strings.Contains(h, searchLower) {
 			return false
 		}
 	}
@@ -586,28 +673,30 @@ func clone(e Entry) Entry {
 	e.Matches = append([]waf.Match(nil), e.Matches...)
 	return e
 }
-func uniqueUpper(v []string) []string {
-	set := map[string]bool{}
-	out := []string{}
-	for _, x := range v {
-		x = strings.ToUpper(strings.TrimSpace(x))
-		if x != "" && !set[x] {
-			set[x] = true
-			out = append(out, x)
-		}
-	}
-	sort.Strings(out)
-	return out
+func uniqueUpper(v []string, maxCount, maxLength int) []string {
+	return uniqueStrings(v, maxCount, maxLength, strings.ToUpper)
 }
-func uniqueLower(v []string) []string {
-	set := map[string]bool{}
-	out := []string{}
-	for _, x := range v {
-		x = strings.ToLower(strings.TrimSpace(x))
-		if x != "" && !set[x] {
-			set[x] = true
-			out = append(out, x)
+
+func uniqueLower(v []string, maxCount, maxLength int) []string {
+	return uniqueStrings(v, maxCount, maxLength, strings.ToLower)
+}
+
+func uniqueStrings(v []string, maxCount, maxLength int, normalize func(string) string) []string {
+	if len(v) > maxCount {
+		v = v[:maxCount]
+	}
+	set := make(map[string]struct{}, len(v))
+	out := make([]string, 0, len(v))
+	for _, raw := range v {
+		value := normalize(trim(raw, maxLength))
+		if value == "" {
+			continue
 		}
+		if _, exists := set[value]; exists {
+			continue
+		}
+		set[value] = struct{}{}
+		out = append(out, value)
 	}
 	sort.Strings(out)
 	return out

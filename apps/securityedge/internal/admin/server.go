@@ -56,6 +56,11 @@ type Runtime interface {
 
 const maxTrackedAuthClients = 4096
 
+const (
+	maxLogFilterValueBytes = 512
+	maxLogSearchBytes      = 2048
+)
+
 var errAdminRequestBodyTooLarge = errors.New("admin request body too large")
 
 type authFailure struct {
@@ -602,6 +607,17 @@ func (s *Server) parseLogFilter(r *http.Request) (securitylog.Filter, error) {
 		return securitylog.Filter{}, fmt.Errorf("limit cannot exceed %d", s.cfg.LogStore.MaxPageSize)
 	}
 	f := securitylog.Filter{Route: strings.TrimSpace(q.Get("route")), ClientIP: strings.TrimSpace(q.Get("client_ip")), Reason: strings.TrimSpace(q.Get("reason")), RequestID: strings.TrimSpace(q.Get("request_id")), Method: strings.TrimSpace(q.Get("method")), Event: strings.TrimSpace(q.Get("event")), Level: strings.TrimSpace(q.Get("level")), Action: strings.TrimSpace(q.Get("action")), RuleID: strings.TrimSpace(q.Get("rule_id")), Search: strings.TrimSpace(q.Get("q")), Limit: limit}
+	for name, value := range map[string]string{
+		"route": f.Route, "client_ip": f.ClientIP, "reason": f.Reason, "request_id": f.RequestID,
+		"method": f.Method, "event": f.Event, "level": f.Level, "action": f.Action, "rule_id": f.RuleID,
+	} {
+		if len(value) > maxLogFilterValueBytes {
+			return securitylog.Filter{}, fmt.Errorf("%s cannot exceed %d bytes", name, maxLogFilterValueBytes)
+		}
+	}
+	if len(f.Search) > maxLogSearchBytes {
+		return securitylog.Filter{}, fmt.Errorf("q cannot exceed %d bytes", maxLogSearchBytes)
+	}
 	if raw := strings.TrimSpace(q.Get("status")); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 100 || n > 599 {

@@ -780,3 +780,28 @@ func TestSecurityConfigSectionEndpointReturns202ForRestart(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestSecurityLogsRejectOversizedTextFilters(t *testing.T) {
+	ts := newAdminTestServer(t, 10)
+	defer ts.Close()
+	tests := []string{
+		"/api/v1/logs?route=" + strings.Repeat("r", maxLogFilterValueBytes+1),
+		"/api/v1/logs?q=" + strings.Repeat("q", maxLogSearchBytes+1),
+		"/api/v1/logs/export?format=csv&q=" + strings.Repeat("q", maxLogSearchBytes+1),
+	}
+	for _, path := range tests {
+		req, err := http.NewRequest(http.MethodGet, ts.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer secret-token")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("path %q: expected 400, got %d", path, resp.StatusCode)
+		}
+	}
+}

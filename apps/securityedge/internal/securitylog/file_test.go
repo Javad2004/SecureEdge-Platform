@@ -10,8 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/waf"
 )
 
 func TestPersistentLogRotates(t *testing.T) {
@@ -356,4 +358,72 @@ func equalUint64s(a, b []uint64) bool {
 		}
 	}
 	return true
+}
+
+func TestPersistentLogBoundsRestoredEntryData(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.ndjson")
+	ruleIDs := make([]string, maxEntryRuleIDs+1)
+	tags := make([]string, maxEntryTags+1)
+	matches := make([]waf.Match, maxEntryMatches+1)
+	for i := range ruleIDs {
+		ruleIDs[i] = strings.Repeat("r", 140) + strconv.Itoa(i)
+	}
+	for i := range tags {
+		tags[i] = strings.Repeat("t", 70) + strconv.Itoa(i)
+	}
+	for i := range matches {
+		matches[i] = waf.Match{
+			RuleID: strings.Repeat("i", 140), RuleName: strings.Repeat("n", 300),
+			Category: strings.Repeat("c", 140), Target: strings.Repeat("x", 140),
+			Location: strings.Repeat("l", 600), Fingerprint: strings.Repeat("f", 140),
+		}
+	}
+	entry := Entry{
+		Sequence: 1, Timestamp: strings.Repeat("invalid", 100), Level: strings.Repeat("warn", 20),
+		Event: "restored", RuleIDs: ruleIDs, Tags: tags, Matches: matches,
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := NewWithConfig(config.LogStoreConfig{Capacity: 10, FilePath: path, MaxFileBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	result := s.Query(Filter{Limit: 10})
+	if result.Returned != 1 {
+		t.Fatalf("expected one restored entry, got %#v", result)
+	}
+	got := result.Entries[0]
+	if _, err := time.Parse(time.RFC3339Nano, got.Timestamp); err != nil {
+		t.Fatalf("timestamp was not repaired: %q", got.Timestamp)
+	}
+	if len(got.Level) > 16 || len(got.RuleIDs) > maxEntryRuleIDs || len(got.Tags) > maxEntryTags || len(got.Matches) > maxEntryMatches {
+		t.Fatalf("restored entry was not bounded: level=%d rules=%d tags=%d matches=%d", len(got.Level), len(got.RuleIDs), len(got.Tags), len(got.Matches))
+	}
+	if len(got.RuleIDs[0]) > 128 || len(got.Tags[0]) > 64 || len(got.Matches[0].RuleName) > 256 || len(got.Matches[0].Location) > 512 {
+		t.Fatalf("restored nested values were not bounded: %#v", got.Matches[0])
+	}
+}
+
+func TestPersistentLogRejectsOversizedLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.ndjson")
+	oversized := append([]byte(`{"event":"`), bytes.Repeat([]byte{'x'}, maxPersistentLogLineBytes)...)
+	oversized = append(oversized, []byte(`"}\n`)...)
+	if err := os.WriteFile(path, oversized, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewWithConfig(config.LogStoreConfig{Capacity: 10, FilePath: path, MaxFileBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if stats := s.Stats(); stats.FileErrors == 0 || stats.Retained != 0 {
+		t.Fatalf("oversized persistent line was not rejected: %#v", stats)
+	}
 }

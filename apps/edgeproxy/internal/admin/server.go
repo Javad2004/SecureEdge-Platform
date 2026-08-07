@@ -20,6 +20,11 @@ import (
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/proxy"
 )
 
+const (
+	maxLogFilterValueBytes = 512
+	maxLogSearchBytes      = 2048
+)
+
 type Server struct {
 	cfg        config.AdminConfig
 	logger     *slog.Logger
@@ -251,6 +256,17 @@ func (s *Server) parseLogFilter(r *http.Request) (accesslog.Filter, error) {
 		CacheStatus: strings.TrimSpace(query.Get("cache")),
 		Search:      strings.TrimSpace(query.Get("q")),
 		Limit:       limit,
+	}
+	for name, value := range map[string]string{
+		"route": filter.Route, "upstream": filter.Upstream, "request_id": filter.RequestID,
+		"method": filter.Method, "event": filter.Event, "level": filter.Level, "cache": filter.CacheStatus,
+	} {
+		if len(value) > maxLogFilterValueBytes {
+			return accesslog.Filter{}, fmt.Errorf("%s cannot exceed %d bytes", name, maxLogFilterValueBytes)
+		}
+	}
+	if len(filter.Search) > maxLogSearchBytes {
+		return accesslog.Filter{}, fmt.Errorf("q cannot exceed %d bytes", maxLogSearchBytes)
 	}
 
 	if raw := strings.TrimSpace(query.Get("before_sequence")); raw != "" {

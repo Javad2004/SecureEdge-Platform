@@ -161,13 +161,15 @@ func (s *Store) Query(filter Filter) QueryResult {
 		result.NewestSequence = s.entries[newestIndex].Sequence
 	}
 
+	searchLower := strings.ToLower(strings.TrimSpace(filter.Search))
+	statusClassLower := strings.ToLower(strings.TrimSpace(filter.StatusClass))
 	for logical := s.count - 1; logical >= 0; logical-- {
 		index := (s.head + logical) % s.capacity
 		entry := s.entries[index]
 		if filter.BeforeSequence > 0 && entry.Sequence >= filter.BeforeSequence {
 			continue
 		}
-		if !matches(entry, filter) {
+		if !matches(entry, filter, searchLower, statusClassLower) {
 			continue
 		}
 		if len(result.Entries) < filter.Limit {
@@ -265,7 +267,7 @@ func normalize(entry Entry) Entry {
 	return entry
 }
 
-func matches(entry Entry, filter Filter) bool {
+func matches(entry Entry, filter Filter, searchLower, statusClassLower string) bool {
 	if filter.Route != "" && !strings.EqualFold(entry.Route, filter.Route) {
 		return false
 	}
@@ -290,7 +292,7 @@ func matches(entry Entry, filter Filter) bool {
 	if filter.Status > 0 && entry.Status != filter.Status && entry.UpstreamStatus != filter.Status {
 		return false
 	}
-	if filter.StatusClass != "" && entry.StatusClass != strings.ToLower(filter.StatusClass) && statusClass(entry.UpstreamStatus) != strings.ToLower(filter.StatusClass) {
+	if statusClassLower != "" && entry.StatusClass != statusClassLower && statusClass(entry.UpstreamStatus) != statusClassLower {
 		return false
 	}
 	if filter.MinDurationMS > 0 && entry.DurationMS < filter.MinDurationMS && entry.UpstreamDurationMS < filter.MinDurationMS {
@@ -305,13 +307,13 @@ func matches(entry Entry, filter Filter) bool {
 			return false
 		}
 	}
-	if filter.Search != "" {
+	if searchLower != "" {
 		haystack := strings.ToLower(strings.Join([]string{
 			entry.Event, entry.Message, entry.RequestID, entry.ClientIP, entry.Method,
 			entry.Host, entry.Path, entry.Query, entry.Route, entry.CacheStatus,
 			entry.Upstream, entry.Error, entry.UserAgent,
 		}, " "))
-		if !strings.Contains(haystack, strings.ToLower(filter.Search)) {
+		if !strings.Contains(haystack, searchLower) {
 			return false
 		}
 	}

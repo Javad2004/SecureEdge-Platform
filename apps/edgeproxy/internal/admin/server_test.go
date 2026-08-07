@@ -207,3 +207,20 @@ func TestReadinessEndpointDoesNotExposeRouteDetails(t *testing.T) {
 		t.Fatalf("authenticated status omitted route diagnostics: %s", status.Body.String())
 	}
 }
+
+func TestLogsEndpointRejectsOversizedTextFilters(t *testing.T) {
+	server := testAdminServer(accesslog.New(10))
+	tests := []string{
+		"/api/v1/logs?route=" + strings.Repeat("r", maxLogFilterValueBytes+1),
+		"/api/v1/logs?q=" + strings.Repeat("q", maxLogSearchBytes+1),
+	}
+	for _, target := range tests {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Header.Set("Authorization", "Bearer test-token")
+		rr := httptest.NewRecorder()
+		server.HTTPServer().Handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("target %q: expected 400, got %d: %s", target, rr.Code, rr.Body.String())
+		}
+	}
+}

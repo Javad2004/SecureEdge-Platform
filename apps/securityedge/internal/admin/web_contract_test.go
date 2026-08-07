@@ -113,6 +113,24 @@ func TestDashboardResourceInputsMatchBackendSafetyLimits(t *testing.T) {
 	}
 }
 
+func TestDashboardAvoidsInlineStylesUnderStrictCSP(t *testing.T) {
+	index, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := strings.ToLower(string(index) + "\n" + string(app))
+	if strings.Contains(content, "style=\"") || strings.Contains(content, "style='") {
+		t.Fatal("dashboard contains inline style attributes that are blocked by style-src 'self'")
+	}
+	if !strings.Contains(string(app), `class="bar-progress"`) {
+		t.Fatal("dashboard bar visualization must use the CSP-safe progress element")
+	}
+}
+
 func TestDashboardCoalescesRefreshesAndTimesOutRequests(t *testing.T) {
 	app, err := webAssets.ReadFile("web/app.js")
 	if err != nil {

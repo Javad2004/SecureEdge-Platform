@@ -289,8 +289,9 @@ func TestAdminRequiresBearerTokenAndServesBuildInfo(t *testing.T) {
 	if !ok || build["name"] != "SecurityEdge" {
 		t.Fatalf("body=%#v", body)
 	}
-	if resp.Header.Get("Content-Security-Policy") == "" || resp.Header.Get("X-Frame-Options") != "DENY" {
-		t.Fatalf("security headers missing: %#v", resp.Header)
+	csp := resp.Header.Get("Content-Security-Policy")
+	if csp == "" || !strings.Contains(csp, "form-action 'none'") || resp.Header.Get("X-Frame-Options") != "DENY" || resp.Header.Get("Permissions-Policy") == "" {
+		t.Fatalf("security headers missing or incomplete: %#v", resp.Header)
 	}
 }
 

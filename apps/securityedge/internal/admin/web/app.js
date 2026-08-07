@@ -353,8 +353,11 @@ function renderBars(element, values, limit = 8) {
     return;
   }
   element.className = 'bar-list';
-  const maximum = entries[0][1];
-  element.innerHTML = entries.map(([name, value]) => `<div class="bar-row"><span>${esc(name)}</span><div class="bar-track"><div class="bar-fill" style="width:${value / maximum * 100}%"></div></div><strong>${fmt(value)}</strong></div>`).join('');
+  const maximum = Math.max(1, Number(entries[0][1]) || 0);
+  element.innerHTML = entries.map(([name, value]) => {
+    const numericValue = Math.max(0, Number(value) || 0);
+    return `<div class="bar-row"><span>${esc(name)}</span><div class="bar-track"><progress class="bar-progress" max="${maximum}" value="${numericValue}" aria-label="${esc(name)}"></progress></div><strong>${fmt(value)}</strong></div>`;
+  }).join('');
 }
 
 function actionClass(action) {

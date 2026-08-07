@@ -700,7 +700,12 @@ func (h *Handler) proxyProtocolUpgrade(w http.ResponseWriter, req *http.Request,
 
 	results := make(chan tunnelCopyResult, 2)
 	go func() {
-		n, _ := io.Copy(backend, client)
+		// The bufio.Reader returned by Hijack may already contain protocol bytes
+		// read ahead by net/http together with the HTTP upgrade request. Continue
+		// client -> backend copying through that reader so those bytes are not
+		// stranded or lost before the raw net.Conn is consumed. Once its buffer
+		// is empty, the reader transparently continues from the same connection.
+		n, _ := io.Copy(backend, buffered.Reader)
 		results <- tunnelCopyResult{direction: "in", bytes: n}
 	}()
 	go func() {

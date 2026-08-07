@@ -39,6 +39,7 @@ func (c *deadlineTrackingConn) SetDeadline(deadline time.Time) error {
 type protocolHijackWriter struct {
 	header http.Header
 	conn   net.Conn
+	reader *bufio.Reader
 }
 
 func (w *protocolHijackWriter) Header() http.Header {
@@ -50,7 +51,11 @@ func (w *protocolHijackWriter) Header() http.Header {
 func (w *protocolHijackWriter) WriteHeader(int)             {}
 func (w *protocolHijackWriter) Write(p []byte) (int, error) { return len(p), nil }
 func (w *protocolHijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	return w.conn, bufio.NewReadWriter(bufio.NewReader(w.conn), bufio.NewWriter(w.conn)), nil
+	reader := w.reader
+	if reader == nil {
+		reader = bufio.NewReader(w.conn)
+	}
+	return w.conn, bufio.NewReadWriter(reader, bufio.NewWriter(w.conn)), nil
 }
 
 func testConfig(origin string) config.Config {
@@ -128,6 +133,63 @@ func TestProtocolUpgradeClearsHijackedServerDeadline(t *testing.T) {
 	}
 	if !tracked.cleared.Load() {
 		t.Fatal("hijacked client connection retained net/http server deadline")
+	}
+
+	_ = clientConn.Close()
+	_ = originPeer.Close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("upgrade tunnel: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("upgrade tunnel did not terminate after peers closed")
+	}
+}
+
+func TestProtocolUpgradeForwardsBytesAlreadyBufferedByHTTPServer(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	backendConn, originPeer := net.Pipe()
+	h := &Handler{tunnels: make(map[*activeProtocolTunnel]struct{})}
+	earlyPayload := []byte("early-protocol-payload")
+	reader := bufio.NewReader(io.MultiReader(bytes.NewReader(earlyPayload), serverConn))
+	writer := &protocolHijackWriter{conn: serverConn, reader: reader}
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/socket", nil)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "echo-test")
+	resp := &http.Response{
+		StatusCode: http.StatusSwitchingProtocols,
+		Status:     "101 Switching Protocols",
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1, ProtoMinor: 1,
+		Header: http.Header{"Connection": {"Upgrade"}, "Upgrade": {"echo-test"}},
+		Body:   backendConn,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.proxyProtocolUpgrade(writer, req, resp, "request-buffered", time.Now())
+		done <- err
+	}()
+
+	clientReader := bufio.NewReader(clientConn)
+	response, err := http.ReadResponse(clientReader, req)
+	if err != nil {
+		t.Fatalf("read upgrade response: %v", err)
+	}
+	if response.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("upgrade status=%d, want 101", response.StatusCode)
+	}
+
+	if err := originPeer.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	received := make([]byte, len(earlyPayload))
+	if _, err := io.ReadFull(originPeer, received); err != nil {
+		t.Fatalf("origin did not receive buffered protocol bytes: %v", err)
+	}
+	if !bytes.Equal(received, earlyPayload) {
+		t.Fatalf("buffered payload=%q, want %q", received, earlyPayload)
 	}
 
 	_ = clientConn.Close()

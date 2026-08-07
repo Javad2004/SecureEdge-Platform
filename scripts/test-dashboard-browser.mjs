@@ -326,20 +326,24 @@ try {
   if (Object.values(systemForms).some(value => !String(value).trim())) {
     throw new Error(`Structured System forms were not populated: ${JSON.stringify(systemForms)}`);
   }
-  await cdp.evaluate(`(() => {
-    const field = document.querySelector('#system-waf-form [name="maximum_matches_per_request"]');
-    field.value = '48';
-    field.dispatchEvent(new Event('input', {bubbles:true}));
-    document.getElementById('system-waf-form').requestSubmit();
-  })()`);
-  await eventually(async () => await cdp.evaluate(`window.__fixtureRequests.some(request => request.method === 'PUT' && request.key === '/api/v1/waf' && request.body?.maximum_matches_per_request === 48)`), 'Structured WAF form submission');
+  let systemFormSubmission = false;
+  if (fixtureRoot) {
+    await cdp.evaluate(`(() => {
+      const field = document.querySelector('#system-waf-form [name="maximum_matches_per_request"]');
+      field.value = '48';
+      field.dispatchEvent(new Event('input', {bubbles:true}));
+      document.getElementById('system-waf-form').requestSubmit();
+    })()`);
+    await eventually(async () => await cdp.evaluate(`window.__fixtureRequests.some(request => request.method === 'PUT' && request.key === '/api/v1/waf' && request.body?.maximum_matches_per_request === 48)`), 'Structured WAF form submission');
+    systemFormSubmission = true;
+  }
   await sleep(500);
   if (exceptions.length) throw new Error(`Browser console/runtime errors: ${exceptions.join(' | ')}`);
 
   console.log(JSON.stringify({
     ok:true, mode, browser, url:fixtureRoot ? 'fixture://dashboard' : url,
     title:contract.title, route:routeEditor.name, algorithm:routeEditor.algorithm,
-    cache_route_options:cacheOptions, system_forms_populated:true, system_form_submission:true,
+    cache_route_options:cacheOptions, system_forms_populated:true, system_form_submission:systemFormSubmission, live_mutations_skipped:!fixtureRoot,
     refresh_coalescing:refreshCoalescing
   }, null, 2));
 } catch (error) {

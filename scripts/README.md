@@ -49,6 +49,8 @@ node .\scripts\test-dashboard-browser.mjs `
   --token $env:SECURITYEDGE_ADMIN_TOKEN
 ```
 
+Live mode is intentionally read-only: it verifies authentication, rendering, populated editors, navigation, and browser runtime behavior without submitting configuration changes to the running deployment. Mutation/form-submission coverage is exercised only in fixture mode, where API writes are intercepted by deterministic browser-side mocks.
+
 For CI, restricted sandboxes, or workstations whose browser policy blocks local HTTP navigation, fixture mode loads the real embedded Dashboard HTML and JavaScript into a real browser, supplies deterministic API responses from the checked-in local profiles, and verifies login, initial rendering, complete Route forms, per-route cache management, navigation, and browser runtime errors:
 
 ```powershell

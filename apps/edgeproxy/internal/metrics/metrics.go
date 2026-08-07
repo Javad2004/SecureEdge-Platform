@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -290,7 +291,7 @@ func (r *Registry) Begin(route, method string) func(RequestObservation) {
 			}
 			target.statusCodes.Add(strconv.Itoa(observation.Status), 1)
 			switch {
-			case observation.Status >= 200 && observation.Status < 400:
+			case observation.Status == http.StatusSwitchingProtocols || observation.Status >= 200 && observation.Status < 400:
 				target.success.Add(1)
 			case observation.Status >= 400 && observation.Status < 500:
 				target.clientErrors.Add(1)

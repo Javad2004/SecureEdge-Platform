@@ -18,6 +18,7 @@ EdgeProxy owns the platform's upstream delivery path:
 - active origin health checks, automatic failover, and recovery to higher-priority origins;
 - route-level readiness;
 - HTTP reverse proxying with trusted-proxy-aware forwarding headers;
+- generic HTTP/1.1 protocol upgrades, including WebSocket-style bidirectional tunnels;
 - retries for safe replayable requests;
 - connection pooling and upstream timeouts;
 - in-memory HTTP caching;
@@ -244,6 +245,8 @@ The cache is an in-memory, thread-safe LRU with a validated maximum of 1,000,000
 - route/host/path purge support.
 
 Requests or responses are bypassed when caching would be unsafe, including common cases involving `Authorization`, cookies, `Set-Cookie`, `Range`, `private`, `no-store`, `no-cache`, legacy `Pragma: no-cache`, or unsupported `Vary` values. If authenticated or cookie-bearing request caching is explicitly enabled, EdgeProxy automatically partitions cache keys with SHA-256 fingerprints of those headers. Responses that are explicitly allowed to be cached despite `Set-Cookie` keep the cookie on the live Origin response but never replay it from shared cache.
+
+Requests carrying an HTTP protocol upgrade (`Connection: Upgrade` plus one valid `Upgrade` token) always bypass cache lookup and storage. EdgeProxy forwards only an unambiguous upgrade token, verifies that the Origin selects the same protocol, returns `101 Switching Protocols`, and then proxies bytes in both directions until either side closes. The route's normal `proxy.request_timeout` covers HTTP request/response work but does not become a lifetime limit for an established upgraded connection. Tunnel traffic is included in request byte telemetry, and successful `101` handshakes count as successful requests. `active_requests` remains incremented until the complete response body or upgraded tunnel ends, so `least_connections` continues to account for long-lived streams while EWMA latency remains based on the Origin response-header time. Because hijacked connections are outside `net/http` server shutdown tracking, EdgeProxy explicitly owns active tunnels and closes them when a managed generation is retired; WebSocket clients should reconnect after an automatic restart.
 
 When the Origin explicitly sends `s-maxage`, `max-age`, or `Expires`, malformed values cause the response to bypass storage instead of silently falling back to the route default TTL. This prevents an invalid Origin freshness policy from extending a response's shared-cache lifetime.
 

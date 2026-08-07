@@ -3,6 +3,7 @@ package proxy
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -26,6 +27,66 @@ func removeHopByHop(h http.Header) {
 	for _, hname := range hopHeaders {
 		h.Del(hname)
 	}
+}
+
+// hasProtocolUpgrade reports whether the client is attempting to switch the
+// HTTP/1.1 connection to another protocol. Upgrade traffic is never eligible
+// for shared-cache lookup or storage because the successful response becomes a
+// bidirectional byte stream rather than a normal HTTP representation.
+func hasProtocolUpgrade(h http.Header) bool {
+	return headerHasToken(h.Values("Connection"), "upgrade") || strings.TrimSpace(h.Get("Upgrade")) != ""
+}
+
+// protocolUpgrade validates the strict form that is safe to forward. RFC 9110
+// defines a protocol as a token name with an optional token version separated
+// by '/'. Requiring one unambiguous protocol value and a matching Connection
+// token avoids different interpretations between proxy hops.
+func protocolUpgrade(h http.Header) (string, error) {
+	if !headerHasToken(h.Values("Connection"), "upgrade") {
+		if strings.TrimSpace(h.Get("Upgrade")) != "" {
+			return "", fmt.Errorf("Upgrade header requires Connection: upgrade")
+		}
+		return "", nil
+	}
+	values := h.Values("Upgrade")
+	if len(values) != 1 {
+		return "", fmt.Errorf("protocol upgrade requires exactly one Upgrade header")
+	}
+	value := strings.TrimSpace(values[0])
+	if !validHTTPProtocol(value) {
+		return "", fmt.Errorf("invalid protocol upgrade value")
+	}
+	return value, nil
+}
+
+func validHTTPProtocol(value string) bool {
+	name, version, versioned := strings.Cut(value, "/")
+	if !validHTTPToken(name) {
+		return false
+	}
+	if !versioned {
+		return true
+	}
+	return version != "" && !strings.Contains(version, "/") && validHTTPToken(version)
+}
+
+func validHTTPToken(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		b := value[i]
+		if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') {
+			continue
+		}
+		switch b {
+		case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // removeForwardingIdentityHeaders drops every client-controlled forwarding

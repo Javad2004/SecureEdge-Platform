@@ -47,10 +47,15 @@ type Handler struct {
 	routes  map[string]*routeRuntime
 	clients *clientResolver
 	life    *handlerLifecycle
+
+	tunnelMu      sync.Mutex
+	tunnels       map[*activeProtocolTunnel]struct{}
+	tunnelsClosed bool
+	tunnelWG      sync.WaitGroup
 }
 
 func NewHandler(cfg config.Config, logger *slog.Logger, registry *metrics.Registry, logStore *accesslog.Store) (*Handler, error) {
-	h := &Handler{logger: logger, metrics: registry, logs: logStore}
+	h := &Handler{logger: logger, metrics: registry, logs: logStore, tunnels: make(map[*activeProtocolTunnel]struct{})}
 	state, err := h.buildState(cfg)
 	if err != nil {
 		return nil, err
@@ -117,12 +122,73 @@ func (h *Handler) Reload(cfg config.Config) error {
 }
 
 func (h *Handler) Close() {
+	h.closeProtocolTunnels()
 	h.mu.Lock()
 	routes, life := h.routes, h.life
 	h.routes = map[string]*routeRuntime{}
 	h.life = nil
 	h.mu.Unlock()
 	closeHandlerState(routes, life)
+}
+
+type activeProtocolTunnel struct {
+	client  io.Closer
+	backend io.Closer
+	once    sync.Once
+}
+
+func (t *activeProtocolTunnel) Close() {
+	if t == nil {
+		return
+	}
+	t.once.Do(func() {
+		_ = t.client.Close()
+		_ = t.backend.Close()
+	})
+}
+
+func (h *Handler) registerProtocolTunnel(client, backend io.Closer) (*activeProtocolTunnel, bool) {
+	tunnel := &activeProtocolTunnel{client: client, backend: backend}
+	h.tunnelMu.Lock()
+	defer h.tunnelMu.Unlock()
+	if h.tunnelsClosed {
+		tunnel.Close()
+		return nil, false
+	}
+	h.tunnels[tunnel] = struct{}{}
+	h.tunnelWG.Add(1)
+	return tunnel, true
+}
+
+func (h *Handler) unregisterProtocolTunnel(tunnel *activeProtocolTunnel) {
+	if tunnel == nil {
+		return
+	}
+	h.tunnelMu.Lock()
+	if _, ok := h.tunnels[tunnel]; ok {
+		delete(h.tunnels, tunnel)
+		h.tunnelWG.Done()
+	}
+	h.tunnelMu.Unlock()
+}
+
+func (h *Handler) closeProtocolTunnels() {
+	h.tunnelMu.Lock()
+	if h.tunnelsClosed {
+		h.tunnelMu.Unlock()
+		h.tunnelWG.Wait()
+		return
+	}
+	h.tunnelsClosed = true
+	tunnels := make([]*activeProtocolTunnel, 0, len(h.tunnels))
+	for tunnel := range h.tunnels {
+		tunnels = append(tunnels, tunnel)
+	}
+	h.tunnelMu.Unlock()
+	for _, tunnel := range tunnels {
+		tunnel.Close()
+	}
+	h.tunnelWG.Wait()
 }
 
 func closeHandlerState(routes map[string]*routeRuntime, life *handlerLifecycle) {
@@ -165,15 +231,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		if streamedBody != nil {
 			bytesIn = streamedBody.BytesRead()
 		}
+		bytesIn = saturatingAddUint64(bytesIn, result.tunnelBytesIn)
+		bytesOut := saturatingAddUint64(uint64(maxInt64(rw.bytes, 0)), result.tunnelBytesOut)
 		status := rw.status
 		if status == 0 {
 			status = http.StatusOK
 		}
 		duration := time.Since(started)
+		if result.responseDuration > 0 {
+			duration = result.responseDuration
+		}
 		finish(metrics.RequestObservation{
 			Status:      status,
 			BytesIn:     bytesIn,
-			BytesOut:    uint64(maxInt64(rw.bytes, 0)),
+			BytesOut:    bytesOut,
 			Duration:    duration,
 			ProxyError:  result.proxyError,
 			Retries:     result.retries,
@@ -200,7 +271,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				Route:              rt.cfg.Name,
 				Status:             status,
 				BytesIn:            bytesIn,
-				BytesOut:           uint64(maxInt64(rw.bytes, 0)),
+				BytesOut:           bytesOut,
 				DurationMS:         durationMS(duration),
 				CacheStatus:        result.cacheStatus,
 				Upstream:           result.upstream,
@@ -225,7 +296,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			"route", rt.cfg.Name,
 			"status", status,
 			"bytes_in", bytesIn,
-			"bytes_out", rw.bytes,
+			"bytes_out", bytesOut,
 			"duration_ms", durationMS(duration),
 			"upstream", result.upstream,
 			"upstream_status", result.upstreamStatus,
@@ -237,7 +308,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		)
 	}()
 
-	result = h.handleRoute(rw, req, rt, id)
+	result = h.handleRoute(rw, req, rt, id, started)
 }
 
 type requestResult struct {
@@ -247,14 +318,23 @@ type requestResult struct {
 	upstreamDuration time.Duration
 	upstreamCalls    uint64
 	retries          uint64
+	tunnelBytesIn    uint64
+	tunnelBytesOut   uint64
+	responseDuration time.Duration
 	proxyError       bool
 	errorMessage     string
 }
 
-func (h *Handler) handleRoute(w http.ResponseWriter, req *http.Request, rt *routeRuntime, id string) requestResult {
+func (h *Handler) handleRoute(w http.ResponseWriter, req *http.Request, rt *routeRuntime, id string, started time.Time) requestResult {
+	if hasProtocolUpgrade(req.Header) {
+		if _, err := protocolUpgrade(req.Header); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return requestResult{cacheStatus: "BYPASS", errorMessage: err.Error()}
+		}
+	}
 	lookup, store, _ := requestCacheMode(req, rt.cfg.Cache)
 	if !lookup && !store {
-		return h.fetchAndServe(w, req, rt, id, nil, "BYPASS", false)
+		return h.fetchAndServe(w, req, rt, id, nil, "BYPASS", false, started)
 	}
 
 	key := cacheKey(req, rt.cfg.Cache)
@@ -291,13 +371,14 @@ func (h *Handler) handleRoute(w http.ResponseWriter, req *http.Request, rt *rout
 			stale = &entry
 		}
 	}
-	return h.fetchAndServe(w, req, rt, id, stale, "MISS", store)
+	return h.fetchAndServe(w, req, rt, id, stale, "MISS", store, started)
 }
 
-func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *routeRuntime, id string, stale *cache.Entry, cacheStatus string, store bool) requestResult {
+func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *routeRuntime, id string, stale *cache.Entry, cacheStatus string, store bool, started time.Time) requestResult {
 	result := requestResult{cacheStatus: cacheStatus}
 	ctx := req.Context()
-	if timeout := rt.cfg.Proxy.RequestTimeout.Duration; timeout > 0 {
+	upgradeRequest := hasProtocolUpgrade(req.Header)
+	if timeout := rt.cfg.Proxy.RequestTimeout.Duration; timeout > 0 && !upgradeRequest {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
@@ -309,6 +390,7 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 	}
 	var resp *http.Response
 	var lastErr error
+	var activeNode *upstream
 	excluded := make(map[*upstream]bool)
 	for attempt := 0; attempt < attempts; attempt++ {
 		node := rt.pool.pick(excluded)
@@ -320,7 +402,7 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		}
 		outReq, err := cloneRequest(ctx, req, node, rt.cfg, id, rt.forwardedForHeader)
 		if err != nil {
-			rt.pool.release(node, 0)
+			rt.pool.releaseActive(node)
 			lastErr = err
 			break
 		}
@@ -328,7 +410,7 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		started := time.Now()
 		resp, err = node.transport.RoundTrip(outReq)
 		elapsed := time.Since(started)
-		rt.pool.release(node, elapsed)
+		rt.pool.observe(node, elapsed)
 		result.upstreamDuration += elapsed
 		result.upstreamCalls++
 		// Count only retry requests that actually reached RoundTrip. A route
@@ -360,6 +442,7 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		h.recordUpstreamAttempt(req, rt.cfg.Name, id, node.url.String(), attempt+1, status, elapsed, attempt > 0, timedOut, attemptErr, failed)
 
 		if !failed {
+			activeNode = node
 			lastErr = nil
 			result.errorMessage = ""
 			setNodeHealth(node, true, healthChange{Upstream: node.url.String(), Healthy: true, Status: status, Duration: elapsed}, func(change healthChange) {
@@ -372,6 +455,7 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		// indicate an origin failure. Preserve the origin's health and stop here:
 		// every retry would inherit the same already-terminated context.
 		if err != nil && req.Context().Err() != nil {
+			rt.pool.releaseActive(node)
 			if resp != nil && resp.Body != nil {
 				_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 				_ = resp.Body.Close()
@@ -391,6 +475,7 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 
 		canRetry := attempt+1 < attempts
 		if retryableResponse && !canRetry {
+			activeNode = node
 			// The Origin produced a complete HTTP response. Once retries are exhausted,
 			// preserve its status, headers, and body instead of replacing useful 502,
 			// 503, or 504 semantics with a generic proxy-generated 502 response.
@@ -403,6 +488,7 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 			resp.Body.Close()
 			resp = nil
 		}
+		rt.pool.releaseActive(node)
 
 		// The route-wide timeout applies to the whole request, not each retry. Once
 		// it expires, record the failed origin but do not attempt another origin
@@ -428,6 +514,9 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		}
 	}
 
+	if activeNode != nil {
+		defer rt.pool.releaseActive(activeNode)
+	}
 	if lastErr != nil || resp == nil {
 		if stale != nil {
 			serveCacheEntry(w, req, *stale, "STALE", time.Now())
@@ -448,6 +537,23 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		return result
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		result.cacheStatus = "BYPASS"
+		tunnel, err := h.proxyProtocolUpgrade(w, req, resp, id, started)
+		result.tunnelBytesIn = tunnel.bytesIn
+		result.tunnelBytesOut = tunnel.bytesOut
+		result.responseDuration = tunnel.handshakeDuration
+		if err != nil {
+			result.proxyError = true
+			result.errorMessage = errorText(err)
+			h.logger.Warn("protocol upgrade failed", "request_id", id, "route", rt.cfg.Name, "upstream", result.upstream, "error", err)
+			if !tunnel.hijacked {
+				http.Error(w, "bad gateway", http.StatusBadGateway)
+			}
+		}
+		return result
+	}
 
 	if stale != nil && retryableStatus(resp.StatusCode) {
 		serveCacheEntry(w, req, *stale, "STALE", time.Now())
@@ -511,6 +617,103 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		}
 	}
 	return result
+}
+
+type protocolTunnelResult struct {
+	bytesIn           uint64
+	bytesOut          uint64
+	handshakeDuration time.Duration
+	hijacked          bool
+}
+
+type tunnelCopyResult struct {
+	direction string
+	bytes     int64
+}
+
+// proxyProtocolUpgrade completes a validated HTTP/1.1 protocol switch and
+// then proxies the resulting byte stream in both directions. Request-scoped
+// HTTP timeouts are intentionally disabled for upgrade requests because the
+// switched protocol (for example WebSocket) can be long-lived. Managed handler
+// shutdown explicitly closes tracked client/backend tunnel connections.
+func (h *Handler) proxyProtocolUpgrade(w http.ResponseWriter, req *http.Request, resp *http.Response, requestID string, started time.Time) (protocolTunnelResult, error) {
+	requested, err := protocolUpgrade(req.Header)
+	if err != nil {
+		return protocolTunnelResult{}, err
+	}
+	if requested == "" {
+		return protocolTunnelResult{}, errors.New("origin switched protocols without a valid client upgrade request")
+	}
+	selected, err := protocolUpgrade(resp.Header)
+	if err != nil {
+		return protocolTunnelResult{}, fmt.Errorf("invalid origin protocol upgrade response: %w", err)
+	}
+	if selected == "" || !strings.EqualFold(requested, selected) {
+		return protocolTunnelResult{}, fmt.Errorf("origin switched to protocol %q while client requested %q", selected, requested)
+	}
+	backend, ok := resp.Body.(io.ReadWriteCloser)
+	if !ok {
+		return protocolTunnelResult{}, errors.New("origin protocol upgrade response is not bidirectional")
+	}
+
+	client, buffered, err := http.NewResponseController(w).Hijack()
+	if err != nil {
+		return protocolTunnelResult{}, fmt.Errorf("hijack client connection: %w", err)
+	}
+	result := protocolTunnelResult{hijacked: true}
+	tunnel, ok := h.registerProtocolTunnel(client, backend)
+	if !ok {
+		return result, errors.New("proxy is shutting down")
+	}
+	defer h.unregisterProtocolTunnel(tunnel)
+	defer tunnel.Close()
+	if recorder, ok := w.(interface{ markHijackedStatus(int) }); ok {
+		recorder.markHijackedStatus(http.StatusSwitchingProtocols)
+	}
+
+	header := resp.Header.Clone()
+	removeHopByHop(header)
+	sanitizeOriginResponseHeaders(header)
+	header.Set("Connection", "Upgrade")
+	header.Set("Upgrade", selected)
+	header.Set("Via", "1.1 edgeproxy-go")
+	header.Set("X-Request-ID", requestID)
+	response := new(http.Response)
+	*response = *resp
+	response.Header = header
+	response.Body = nil
+	if err := response.Write(buffered); err != nil {
+		return result, fmt.Errorf("write protocol upgrade response: %w", err)
+	}
+	if err := buffered.Flush(); err != nil {
+		return result, fmt.Errorf("flush protocol upgrade response: %w", err)
+	}
+	result.handshakeDuration = time.Since(started)
+
+	results := make(chan tunnelCopyResult, 2)
+	go func() {
+		n, _ := io.Copy(backend, client)
+		results <- tunnelCopyResult{direction: "in", bytes: n}
+	}()
+	go func() {
+		n, _ := io.Copy(client, backend)
+		results <- tunnelCopyResult{direction: "out", bytes: n}
+	}()
+
+	first := <-results
+	tunnel.Close()
+	second := <-results
+	for _, copyResult := range []tunnelCopyResult{first, second} {
+		if copyResult.bytes < 0 {
+			continue
+		}
+		if copyResult.direction == "in" {
+			result.bytesIn = uint64(copyResult.bytes)
+		} else {
+			result.bytesOut = uint64(copyResult.bytes)
+		}
+	}
+	return result, nil
 }
 
 func invalidateUnsafeRequest(rt *routeRuntime, req *http.Request, status int) int {
@@ -665,7 +868,18 @@ func maxInt64(value, minimum int64) int64 {
 	return value
 }
 
+func saturatingAddUint64(left, right uint64) uint64 {
+	if ^uint64(0)-left < right {
+		return ^uint64(0)
+	}
+	return left + right
+}
+
 func cloneRequest(ctx context.Context, in *http.Request, node *upstream, cfg *config.RouteConfig, id, forwardedForHeader string) (*http.Request, error) {
+	upgrade, err := protocolUpgrade(in.Header)
+	if err != nil {
+		return nil, err
+	}
 	out := in.Clone(ctx)
 	out.URL = rewriteURL(in.URL, node.url, cfg.PathPrefix, cfg.StripPrefix)
 	out.RequestURI = ""
@@ -691,6 +905,10 @@ func cloneRequest(ctx context.Context, in *http.Request, node *upstream, cfg *co
 	out.Header.Set("X-Forwarded-Host", in.Host)
 	out.Header.Set("X-Request-ID", id)
 	out.Header.Add("Via", "1.1 edgeproxy-go")
+	if upgrade != "" {
+		out.Header.Set("Connection", "Upgrade")
+		out.Header.Set("Upgrade", upgrade)
+	}
 	if in.GetBody != nil && in.Body != nil {
 		body, err := in.GetBody()
 		if err != nil {
@@ -786,3 +1004,9 @@ func (w *responseCapture) Flush() {
 }
 
 func (w *responseCapture) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *responseCapture) markHijackedStatus(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+}

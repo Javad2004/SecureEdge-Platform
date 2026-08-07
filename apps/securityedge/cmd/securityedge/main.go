@@ -438,6 +438,20 @@ func newReverseProxy(target *url.URL, cfg config.ServerConfig, logger *slog.Logg
 		ModifyResponse: func(resp *http.Response) error {
 			resp.Header.Del("Server")
 			resp.Header.Set("X-Security-Gateway", "SecurityEdge")
+			if resp.StatusCode == http.StatusSwitchingProtocols {
+				// The gateway decision writer owns these response fields. Unlike a
+				// normal response, a hijacked 101 handshake is serialized directly
+				// by ReverseProxy, so remove upstream copies to avoid duplicate or
+				// spoofed security-decision headers.
+				for _, name := range []string{"X-Request-ID", "X-Security-Action", "X-Security-Score"} {
+					resp.Header.Del(name)
+				}
+				if cfg.AddSecurityHeaders {
+					for _, name := range []string{"X-Content-Type-Options", "Referrer-Policy", "X-Frame-Options", "Permissions-Policy"} {
+						resp.Header.Del(name)
+					}
+				}
+			}
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {

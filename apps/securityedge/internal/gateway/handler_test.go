@@ -1,9 +1,11 @@
 package gateway
 
 import (
+	"bufio"
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -326,6 +328,58 @@ func (w *informationalResponseWriter) WriteHeader(status int) {
 	w.statuses = append(w.statuses, status)
 }
 func (w *informationalResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+type hijackResponseWriter struct {
+	header http.Header
+	conn   net.Conn
+}
+
+func (w *hijackResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+func (w *hijackResponseWriter) WriteHeader(int)             {}
+func (w *hijackResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (w *hijackResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.conn, bufio.NewReadWriter(bufio.NewReader(w.conn), bufio.NewWriter(w.conn)), nil
+}
+
+func TestDecisionWriterTracksHijackAndHandlerCloseTerminatesTunnel(t *testing.T) {
+	serverConn, peerConn := net.Pipe()
+	defer peerConn.Close()
+	h := &Handler{tunnels: make(map[*trackedHijackedConn]struct{})}
+	underlying := &hijackResponseWriter{conn: serverConn}
+	writer := &decisionWriter{
+		ResponseWriter: underlying, requestID: "request-1", action: "ALLOW",
+		trackHijack: h.trackHijackedConn,
+	}
+	conn, _, err := writer.Hijack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writer.Status() != http.StatusSwitchingProtocols {
+		t.Fatalf("status=%d, want 101", writer.Status())
+	}
+
+	closed := make(chan struct{})
+	go func() {
+		h.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("handler close did not terminate tracked hijacked connection")
+	}
+	if _, err := peerConn.Read(make([]byte, 1)); err == nil {
+		t.Fatal("peer remained readable after handler close")
+	}
+	if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("closing tracked connection again: %v", err)
+	}
+}
 
 func TestDecisionWriterPreservesFinalStatusAfterInformationalResponse(t *testing.T) {
 	underlying := &informationalResponseWriter{}

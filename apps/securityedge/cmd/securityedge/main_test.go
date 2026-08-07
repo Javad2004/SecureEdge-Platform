@@ -178,6 +178,35 @@ func TestGatewayRejectsOversizedUpstreamResponseHeaders(t *testing.T) {
 	}
 }
 
+func TestReverseProxyStripsUpstreamDecisionHeadersFromUpgrade(t *testing.T) {
+	target, err := url.Parse("http://127.0.0.1:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := newReverseProxy(target, config.Default().Server, slog.Default())
+	resp := &http.Response{StatusCode: http.StatusSwitchingProtocols, Header: http.Header{
+		"Server":                 []string{"origin"},
+		"X-Request-Id":           []string{"upstream-id"},
+		"X-Security-Action":      []string{"BLOCK"},
+		"X-Security-Score":       []string{"999"},
+		"X-Content-Type-Options": []string{"unsafe"},
+		"Referrer-Policy":        []string{"unsafe-url"},
+		"X-Frame-Options":        []string{"ALLOWALL"},
+		"Permissions-Policy":     []string{"camera=*"},
+	}}
+	if err := proxy.ModifyResponse(resp); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"Server", "X-Request-ID", "X-Security-Action", "X-Security-Score", "X-Content-Type-Options", "Referrer-Policy", "X-Frame-Options", "Permissions-Policy"} {
+		if got := resp.Header.Get(name); got != "" {
+			t.Fatalf("%s=%q, want removed from upstream 101", name, got)
+		}
+	}
+	if got := resp.Header.Get("X-Security-Gateway"); got != "SecurityEdge" {
+		t.Fatalf("X-Security-Gateway=%q", got)
+	}
+}
+
 func TestGatewayTransportIgnoresAmbientProxySettings(t *testing.T) {
 	target, err := url.Parse("http://edgeproxy:8080")
 	if err != nil {

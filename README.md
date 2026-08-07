@@ -4,7 +4,7 @@ SecureEdge Platform is a modular, multi-module Go project that combines a high-p
 
 The repository contains two independently executable applications:
 
-- **[EdgeProxy](apps/edgeproxy/README.md)** — host/path routing, six per-route load-balancing algorithms, health-aware failover, reverse proxying, HTTP caching, detailed telemetry, automatic reload/restart, and a transactional Admin Control Plane.
+- **[EdgeProxy](apps/edgeproxy/README.md)** — host/path routing, six per-route load-balancing algorithms, health-aware failover, HTTP and WebSocket/protocol-upgrade reverse proxying, HTTP caching, detailed telemetry, automatic reload/restart, and a transactional Admin Control Plane.
 - **[SecurityEdge](apps/securityedge/README.md)** — Web Application Firewall inspection, HTTP flood and overload controls, security telemetry, independent configuration watchers, and an authenticated operations/control dashboard placed in front of EdgeProxy.
 
 The active runtime model uses **standalone non-embedded gateway mode**. SecurityEdge accepts public HTTP traffic, inspects and admits each request, and forwards accepted traffic to EdgeProxy over loopback in host deployments or over a private service network in Docker Compose.
@@ -63,6 +63,7 @@ The platform can be administered without manually stopping either executable:
 - Authenticated APIs and PowerShell tools provide full configuration replacement, Server/Admin sections, Route and Origin CRUD, dedicated cache/load-balancing/proxy/health-check operations, and security-policy CRUD.
 - The Dashboard exposes the same Control Plane with complete form-based Route, scheduler, retry, cache, health-check, Origin, SecurityEdge runtime/Admin/WAF, EdgeProxy dependency, and EdgeProxy listener/Admin management; raw JSON remains available only as an advanced escape hatch.
 - Complete per-route and per-Origin telemetry includes traffic, cache efficiency, status distributions, failures, retries, latency percentiles, scheduler selections, EWMA, active work, and watcher/revision state.
+- HTTP/1.1 protocol upgrades such as WebSocket are preserved end-to-end through SecurityEdge and EdgeProxy. Upgrade requests bypass the shared HTTP cache, validate the selected protocol on both hops, and switch to a long-lived bidirectional tunnel without inheriting the normal per-request timeout. Active upgraded tunnels are explicitly tracked and closed when either managed service generation is retired, so clients should reconnect after an automatic configuration restart instead of remaining attached to obsolete runtime state.
 - SecurityEdge retains a bounded, atomically persisted telemetry timeline for request/rejection rates and condensed Route/Origin history, so dashboard trends survive refreshes and service restarts.
 - Atomic persistence, timestamped backups, strict JSON validation, redacted secrets, bounded resource settings, restart preflight for sockets/TLS/persistent resources, synchronous listener binding, and post-preflight rollback to the latest successfully started or hot-applied file-backed revision protect management operations.
 

@@ -128,6 +128,9 @@ func requestCacheMode(req *http.Request, cfg config.CacheConfig) (lookup, store 
 	if !cfg.Enabled {
 		return false, false, "disabled"
 	}
+	if hasProtocolUpgrade(req.Header) {
+		return false, false, "protocol-upgrade"
+	}
 	if req.Method != http.MethodGet && req.Method != http.MethodHead {
 		return false, false, "method"
 	}

@@ -140,12 +140,23 @@ func (p *upstreamPool) pick(exclude map[*upstream]bool) *upstream {
 	return selected
 }
 
-func (p *upstreamPool) release(node *upstream, duration time.Duration) {
+func (p *upstreamPool) observe(node *upstream, duration time.Duration) {
 	if node == nil {
 		return
 	}
 	node.observeLatency(duration, p.ewmaAlpha)
+}
+
+func (p *upstreamPool) releaseActive(node *upstream) {
+	if node == nil {
+		return
+	}
 	node.active.Add(-1)
+}
+
+func (p *upstreamPool) release(node *upstream, duration time.Duration) {
+	p.observe(node, duration)
+	p.releaseActive(node)
 }
 
 func (p *upstreamPool) eligible(exclude map[*upstream]bool, healthyOnly bool) []*upstream {

@@ -48,6 +48,7 @@ type Runtime struct {
 	bans      *ratelimit.BanManager
 	admission *admission.Limiter
 	clients   *clientip.Resolver
+	gateway   *gateway.Handler
 	// healthyFileCfg is the latest persisted configuration that was either used
 	// to start this generation or successfully hot-applied to it. Restart
 	// rollback must use this revision rather than the file as it existed only at
@@ -143,9 +144,14 @@ func New(configPath string, logger *slog.Logger) (*Runtime, error) {
 
 func (r *Runtime) Close() {
 	r.limiter.Close()
-	r.mu.RLock()
+	r.mu.Lock()
+	gatewayHandler := r.gateway
+	r.gateway = nil
 	edge := r.edge
-	r.mu.RUnlock()
+	r.mu.Unlock()
+	if gatewayHandler != nil {
+		gatewayHandler.Close()
+	}
 	if edge != nil {
 		edge.CloseIdleConnections()
 	}
@@ -155,7 +161,15 @@ func (r *Runtime) Close() {
 }
 
 func (r *Runtime) Wrap(next http.Handler) http.Handler {
-	return gateway.New(next, r, r, r.inspector, r.limiter, r.bans, r.admission, r.clients, r.registry, r.logs, r.traffic, r.logger)
+	handler := gateway.New(next, r, r, r.inspector, r.limiter, r.bans, r.admission, r.clients, r.registry, r.logs, r.traffic, r.logger)
+	r.mu.Lock()
+	previous := r.gateway
+	r.gateway = handler
+	r.mu.Unlock()
+	if previous != nil {
+		previous.Close()
+	}
+	return handler
 }
 
 func (r *Runtime) AdminHandler() (http.Handler, error) {

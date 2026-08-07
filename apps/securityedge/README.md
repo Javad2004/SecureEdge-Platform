@@ -31,6 +31,8 @@ Application origin
 
 SecurityEdge also calls the EdgeProxy Admin API over loopback to obtain routes, origin health, cache metrics, access logs, and readiness information for its operations dashboard.
 
+The gateway path also preserves validated HTTP/1.1 protocol upgrades end-to-end. WebSocket-style traffic passes through the standard SecurityEdge reverse proxy and the EdgeProxy upgrade tunnel while still receiving the initial WAF, routing, admission, and trusted-client checks. WAF inspection applies to the HTTP upgrade handshake; after a successful switch, application-protocol frames are tunneled as opaque bytes rather than reinterpreted as HTTP requests. Once a `101 Switching Protocols` handshake succeeds, the switched connection is treated as a long-lived bidirectional stream rather than a cacheable HTTP response. SecurityEdge tracks the hijacked client connection explicitly, records the `101` decision correctly, and closes active upgraded tunnels when its managed generation is retired so a client cannot remain attached to obsolete WAF or routing state; clients should reconnect after an automatic restart.
+
 ## Main capabilities
 
 ### Web Application Firewall

@@ -63,6 +63,273 @@ func TestProxyCacheMissThenHit(t *testing.T) {
 	}
 }
 
+func TestProtocolUpgradeBypassesCacheAndOutlivesRequestTimeout(t *testing.T) {
+	var normalCalls atomic.Int64
+	var upgradeCalls atomic.Int64
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.EqualFold(r.Header.Get("Upgrade"), "echo-test") && headerHasToken(r.Header.Values("Connection"), "upgrade") {
+			upgradeCalls.Add(1)
+			conn, buffered, err := http.NewResponseController(w).Hijack()
+			if err != nil {
+				t.Errorf("origin hijack: %v", err)
+				return
+			}
+			defer conn.Close()
+			_, _ = fmt.Fprint(buffered, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade, X-Origin-Hop\r\nUpgrade: echo-test\r\nX-Origin-Hop: should-not-leak\r\nKeep-Alive: timeout=5\r\n\r\n")
+			if err := buffered.Flush(); err != nil {
+				t.Errorf("origin flush upgrade: %v", err)
+				return
+			}
+			_, _ = io.Copy(conn, buffered)
+			return
+		}
+
+		normalCalls.Add(1)
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		_, _ = io.WriteString(w, "normal-response")
+	}))
+	defer origin.Close()
+
+	cfg := testConfig(origin.URL)
+	cfg.Routes[0].Proxy.RequestTimeout = config.Duration{Duration: 50 * time.Millisecond}
+	registry := metrics.New()
+	h, err := NewHandler(cfg, slog.Default(), registry, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	proxyServer := httptest.NewServer(h)
+	defer proxyServer.Close()
+
+	for i, wantCache := range []string{"MISS", "HIT"} {
+		req, err := http.NewRequest(http.MethodGet, proxyServer.URL+"/socket", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = "proxy.test"
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("normal request %d: %v", i, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Cache") != wantCache || string(body) != "normal-response" {
+			t.Fatalf("normal request %d: status=%d cache=%q body=%q", i, resp.StatusCode, resp.Header.Get("X-Cache"), body)
+		}
+	}
+
+	request, err := http.NewRequest(http.MethodGet, proxyServer.URL+"/socket", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Host = "proxy.test"
+	request.Header.Set("Connection", "Upgrade")
+	request.Header.Set("Upgrade", "echo-test")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("upgrade request: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusSwitchingProtocols {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("upgrade status=%d headers=%v body=%q", response.StatusCode, response.Header, body)
+	}
+	if !strings.EqualFold(response.Header.Get("Upgrade"), "echo-test") {
+		t.Fatalf("upgrade response protocol=%q", response.Header.Get("Upgrade"))
+	}
+	if response.Header.Get("X-Origin-Hop") != "" || response.Header.Get("Keep-Alive") != "" {
+		t.Fatalf("origin hop-by-hop headers leaked through upgrade response: %#v", response.Header)
+	}
+	tunnel, ok := response.Body.(io.ReadWriteCloser)
+	if !ok {
+		t.Fatalf("upgrade response body type %T is not bidirectional", response.Body)
+	}
+
+	// The normal route request timeout must not become a lifetime limit for a
+	// successfully switched protocol.
+	time.Sleep(100 * time.Millisecond)
+	payload := []byte("echo-through-upgrade")
+	if _, err := tunnel.Write(payload); err != nil {
+		t.Fatalf("write upgraded payload after request timeout: %v", err)
+	}
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(tunnel, got); err != nil {
+		t.Fatalf("read upgraded payload after request timeout: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("upgraded echo=%q, want %q", got, payload)
+	}
+	statuses := h.RouteStatuses()
+	if len(statuses) != 1 || len(statuses[0].Upstreams) != 1 {
+		t.Fatalf("route statuses=%#v", statuses)
+	}
+	if active, ok := statuses[0].Upstreams[0]["active_requests"].(int64); !ok || active != 1 {
+		t.Fatalf("active upgraded requests=%v, want 1 while tunnel is open", statuses[0].Upstreams[0]["active_requests"])
+	}
+	// http.Server.Shutdown does not own hijacked connections. The proxy handler
+	// must terminate active protocol tunnels explicitly when its generation is
+	// retired, otherwise an old WebSocket can outlive a managed restart.
+	closed := make(chan struct{})
+	go func() {
+		h.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		_ = response.Body.Close()
+		t.Fatal("handler close did not terminate active protocol tunnel")
+	}
+	readResult := make(chan error, 1)
+	go func() {
+		_, err := tunnel.Read(make([]byte, 1))
+		readResult <- err
+	}()
+	select {
+	case err := <-readResult:
+		if err == nil {
+			t.Fatal("protocol tunnel remained readable after handler close")
+		}
+	case <-time.After(time.Second):
+		_ = response.Body.Close()
+		t.Fatal("client side of protocol tunnel was not closed")
+	}
+	_ = response.Body.Close()
+
+	if normalCalls.Load() != 1 {
+		t.Fatalf("normal origin calls=%d, want 1 because the second normal request was cached", normalCalls.Load())
+	}
+	if upgradeCalls.Load() != 1 {
+		t.Fatalf("upgrade origin calls=%d, want 1", upgradeCalls.Load())
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		snapshot := registry.Snapshot()
+		if snapshot.Total.Success == 3 && snapshot.Total.CacheBypasses == 1 && snapshot.Total.BytesIn >= uint64(len(payload)) && snapshot.Total.BytesOut >= uint64(len(payload)) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("upgrade telemetry=%#v, want three successes, one bypass, and tunnel bytes", snapshot.Total)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestProtocolUpgradeRequiresUnambiguousToken(t *testing.T) {
+	header := make(http.Header)
+	header.Set("Upgrade", "websocket")
+	if _, err := protocolUpgrade(header); err == nil {
+		t.Fatal("Upgrade without Connection: upgrade was accepted")
+	}
+
+	header.Set("Connection", "Upgrade")
+	header["Upgrade"] = []string{"websocket", "other"}
+	if _, err := protocolUpgrade(header); err == nil {
+		t.Fatal("multiple Upgrade header fields were accepted")
+	}
+
+	header["Upgrade"] = []string{"bad protocol"}
+	if _, err := protocolUpgrade(header); err == nil {
+		t.Fatal("invalid protocol token was accepted")
+	}
+
+	header["Upgrade"] = []string{"websocket"}
+	if got, err := protocolUpgrade(header); err != nil || got != "websocket" {
+		t.Fatalf("valid protocol upgrade got %q, %v", got, err)
+	}
+	header["Upgrade"] = []string{"chat/2"}
+	if got, err := protocolUpgrade(header); err != nil || got != "chat/2" {
+		t.Fatalf("versioned protocol upgrade got %q, %v", got, err)
+	}
+	header["Upgrade"] = []string{"chat/2/extra"}
+	if _, err := protocolUpgrade(header); err == nil {
+		t.Fatal("protocol upgrade with multiple version separators was accepted")
+	}
+}
+
+func TestMalformedProtocolUpgradeIsRejectedBeforeOrigin(t *testing.T) {
+	var calls atomic.Int64
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer origin.Close()
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/socket", nil)
+	req.Header.Set("Upgrade", "websocket")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%q, want 400", rec.Code, rec.Body.String())
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("origin calls=%d, want 0 for malformed client upgrade", calls.Load())
+	}
+}
+
+func TestActiveRequestsRemainUntilResponseBodyCompletes(t *testing.T) {
+	headersSent := make(chan struct{})
+	releaseBody := make(chan struct{})
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(headersSent)
+		<-releaseBody
+		_, _ = io.WriteString(w, "complete")
+	}))
+	defer origin.Close()
+
+	cfg := testConfig(origin.URL)
+	cfg.Routes[0].Cache.Enabled = false
+	h, err := NewHandler(cfg, slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	done := make(chan struct{})
+	response := httptest.NewRecorder()
+	go func() {
+		h.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://proxy.test/stream", nil))
+		close(done)
+	}()
+	select {
+	case <-headersSent:
+	case <-time.After(time.Second):
+		t.Fatal("origin did not send response headers")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		statuses := h.RouteStatuses()
+		if len(statuses) == 1 && len(statuses[0].Upstreams) == 1 && statuses[0].Upstreams[0]["active_requests"] == int64(1) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("active request was released before response body completed: %#v", statuses)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(releaseBody)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("proxy response did not complete")
+	}
+	statuses := h.RouteStatuses()
+	if got := statuses[0].Upstreams[0]["active_requests"]; got != int64(0) {
+		t.Fatalf("active requests=%v after response completion, want 0", got)
+	}
+}
+
 func TestChunkedRequestReportsActualInboundBytes(t *testing.T) {
 	const payload = "streamed-request-body"
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1939,7 +2206,7 @@ func TestCacheFillWaiterDoesNotServePurgedStaleEntry(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	done := make(chan requestResult, 1)
 	go func() {
-		done <- h.handleRoute(recorder, req, rt, "request-id")
+		done <- h.handleRoute(recorder, req, rt, "request-id", time.Now())
 	}()
 
 	locker := rt.fills.(*blockingFillLocker)

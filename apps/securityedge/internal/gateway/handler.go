@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -65,10 +66,77 @@ type Handler struct {
 	logs      *securitylog.Store
 	traffic   *traffic.Tracker
 	logger    *slog.Logger
+
+	tunnelMu      sync.Mutex
+	tunnels       map[*trackedHijackedConn]struct{}
+	tunnelsClosed bool
+	tunnelWG      sync.WaitGroup
 }
 
 func New(next http.Handler, table RouteMatcher, policies PolicyProvider, inspector *waf.Inspector, limiter *ratelimit.Limiter, bans *ratelimit.BanManager, admissionLimiter *admission.Limiter, clients *clientip.Resolver, registry *metrics.Registry, logs *securitylog.Store, trafficTracker *traffic.Tracker, logger *slog.Logger) *Handler {
-	return &Handler{next: next, routes: table, policies: policies, inspector: inspector, limiter: limiter, bans: bans, admission: admissionLimiter, clients: clients, metrics: registry, logs: logs, traffic: trafficTracker, logger: logger}
+	return &Handler{
+		next: next, routes: table, policies: policies, inspector: inspector, limiter: limiter, bans: bans, admission: admissionLimiter,
+		clients: clients, metrics: registry, logs: logs, traffic: trafficTracker, logger: logger,
+		tunnels: make(map[*trackedHijackedConn]struct{}),
+	}
+}
+
+type trackedHijackedConn struct {
+	net.Conn
+	owner *Handler
+	once  sync.Once
+}
+
+func (c *trackedHijackedConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(func() {
+		c.owner.unregisterHijackedConn(c)
+	})
+	return err
+}
+
+func (h *Handler) trackHijackedConn(conn net.Conn) (net.Conn, bool) {
+	h.tunnelMu.Lock()
+	defer h.tunnelMu.Unlock()
+	if h.tunnelsClosed {
+		return nil, false
+	}
+	tracked := &trackedHijackedConn{Conn: conn, owner: h}
+	h.tunnels[tracked] = struct{}{}
+	h.tunnelWG.Add(1)
+	return tracked, true
+}
+
+func (h *Handler) unregisterHijackedConn(conn *trackedHijackedConn) {
+	h.tunnelMu.Lock()
+	if _, ok := h.tunnels[conn]; ok {
+		delete(h.tunnels, conn)
+		h.tunnelWG.Done()
+	}
+	h.tunnelMu.Unlock()
+}
+
+// Close terminates active hijacked protocol tunnels. net/http Server.Shutdown
+// intentionally does not track hijacked connections, so managed generation
+// restarts must close them explicitly to avoid leaking an obsolete gateway.
+func (h *Handler) Close() {
+	h.tunnelMu.Lock()
+	if h.tunnelsClosed {
+		h.tunnelMu.Unlock()
+		h.tunnelWG.Wait()
+		return
+	}
+	h.tunnelsClosed = true
+	active := make([]*trackedHijackedConn, 0, len(h.tunnels))
+	for conn := range h.tunnels {
+		active = append(active, conn)
+	}
+	h.tunnelMu.Unlock()
+
+	for _, conn := range active {
+		_ = conn.Close()
+	}
+	h.tunnelWG.Wait()
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -211,7 +279,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 		setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
 		securityDuration = time.Since(started)
-		writer := &decisionWriter{ResponseWriter: w, requestID: requestID, action: action, score: score, addSecurityHeaders: serverCfg.AddSecurityHeaders, bodyLimit: bodyLimit}
+		writer := &decisionWriter{ResponseWriter: w, requestID: requestID, action: action, score: score, addSecurityHeaders: serverCfg.AddSecurityHeaders, bodyLimit: bodyLimit, trackHijack: h.trackHijackedConn}
 		h.next.ServeHTTP(writer, req)
 		if writer.EnforceBodyLimit() {
 			action, reason = "BLOCK", "body_too_large"
@@ -299,7 +367,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
 	securityDuration = time.Since(started)
-	writer := &decisionWriter{ResponseWriter: w, requestID: requestID, action: action, score: score, addSecurityHeaders: serverCfg.AddSecurityHeaders, bodyLimit: bodyLimit}
+	writer := &decisionWriter{ResponseWriter: w, requestID: requestID, action: action, score: score, addSecurityHeaders: serverCfg.AddSecurityHeaders, bodyLimit: bodyLimit, trackHijack: h.trackHijackedConn}
 	h.next.ServeHTTP(writer, req)
 	if writer.EnforceBodyLimit() {
 		action, reason = "BLOCK", "body_too_large"
@@ -574,9 +642,29 @@ type decisionWriter struct {
 	addSecurityHeaders bool
 	bodyLimit          *trackedRequestBody
 	status             int
+	trackHijack        func(net.Conn) (net.Conn, bool)
 }
 
 func (w *decisionWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w *decisionWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	setBaseHeaders(w.Header(), w.requestID, w.action, w.score, w.addSecurityHeaders)
+	conn, buffered, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	if w.trackHijack != nil {
+		tracked, ok := w.trackHijack(conn)
+		if !ok {
+			_ = conn.Close()
+			return nil, nil, errors.New("security gateway is shutting down")
+		}
+		conn = tracked
+	}
+	if w.status == 0 {
+		w.status = http.StatusSwitchingProtocols
+	}
+	return conn, buffered, nil
+}
 func (w *decisionWriter) Status() int {
 	if w.status == 0 {
 		return http.StatusOK

@@ -34,6 +34,10 @@ Content-Type: application/json
   "ewma_alpha": 0.25
 }
 
+### 3b. Readiness gate - re-run until both Origins report healthy
+GET {{admin}}/api/v1/edgeproxy/status
+Authorization: Bearer {{adminToken}}
+
 ### 4a. Uncached scheduler sample - inspect JSON origin
 GET {{gateway}}/api/time
 

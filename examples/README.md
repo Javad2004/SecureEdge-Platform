@@ -67,7 +67,7 @@ Each example includes a `requests.http` file using standard HTTP-client syntax s
 
 The request files contain only the **checked-in development credentials** from the local profiles. Never replace those values with production credentials in a committed file.
 
-If you prefer `curl.exe`, every README also includes equivalent commands for the important verification steps.
+If you prefer command-line execution, every README also includes equivalent PowerShell and/or `curl.exe` commands for the important verification steps.
 
 ## Safety and repeatability
 

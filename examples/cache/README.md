@@ -15,7 +15,7 @@ Start the standard local stack from the [examples index](../README.md), then run
 
 The purge changes only runtime cache contents; it does **not** modify JSON configuration.
 
-## curl.exe equivalents
+## PowerShell / curl.exe equivalents
 
 ```powershell
 $Headers = @{ Authorization = "Bearer dev-security-token" }
@@ -23,12 +23,18 @@ $Headers = @{ Authorization = "Bearer dev-security-token" }
 Invoke-RestMethod `
   -Method Post `
   -Headers $Headers `
-  http://127.0.0.1:9191/api/v1/edgeproxy/routes/demo-app/cache/purge
+  -Uri http://127.0.0.1:9191/api/v1/edgeproxy/routes/demo-app/cache/purge
 
 curl.exe -i http://127.0.0.1:8081/api/products
 curl.exe -i http://127.0.0.1:8081/api/products
 curl.exe -i http://127.0.0.1:8081/api/private
 curl.exe -i -H "Authorization: Bearer example-user-token" http://127.0.0.1:8081/api/products
+
+Invoke-RestMethod `
+  -Method Get `
+  -Headers $Headers `
+  -Uri http://127.0.0.1:9191/api/v1/edgeproxy/routes/demo-app/cache |
+  ConvertTo-Json -Depth 8
 ```
 
 If more than 30 seconds elapse between the first two `/api/products` requests, the Origin's cache TTL may expire and the second request can legitimately become another `MISS`.

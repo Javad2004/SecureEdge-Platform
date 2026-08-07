@@ -667,11 +667,11 @@ docker compose `
 The full stack publishes:
 
 ```text
-SecurityEdge ingress    http://127.0.0.1:8081
-SecurityEdge dashboard  http://127.0.0.1:9191
+SecurityEdge ingress    host TCP port 8081 (all host interfaces)
+SecurityEdge dashboard  http://127.0.0.1:9191 (loopback only)
 ```
 
-EdgeProxy and the Origin remain internal to the Docker network, preventing direct host-side bypass of SecurityEdge.
+Local verification can still use `http://127.0.0.1:8081`; clients on another machine must use the Docker host's reachable address. EdgeProxy and the Origin remain internal to the Docker network, preventing direct host-side bypass of SecurityEdge.
 
 To reset persisted policy configuration and logs:
 

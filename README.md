@@ -196,6 +196,10 @@ bash ./scripts/dev-watch.sh
 
 The watcher fingerprints the repository, debounces save bursts, builds an isolated candidate generation before stopping a healthy process, and restores the previous generation if startup fails. Go source, embedded Dashboard assets, workspace files, deployment files, and integration contracts restart only the affected applications. Its default EdgeProxy profile is the same authoritative `integration/edgeproxy-local-behind-waf.json` Route table referenced by the SecurityEdge local profile, so Dashboard/API mutations and both runtime watchers remain synchronized. The active JSON and `.env` files remain owned by each application's transactional runtime watcher, so hot-applicable revisions do not cause a development-process restart. Build products are written under ignored `.dev/`.
 
+## Platform examples
+
+Runnable end-to-end request collections for the complete stack are available in [`examples/`](examples/README.md). They cover the normal request path, cache behavior, WAF decisions, and a disposable multi-Origin load-balancing/failover scenario without duplicating the application configuration catalog.
+
 ## Reference LAN deployment
 
 The checked-in reference profile uses the following lab values:

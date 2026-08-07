@@ -1,0 +1,83 @@
+# IMPORTANT: Run this collection only with the disposable profile setup in README.md.
+# The mutation requests persist changes to the EdgeProxy config selected by the running process.
+
+@gateway = http://127.0.0.1:8081
+@admin = http://127.0.0.1:9191
+@adminToken = dev-security-token
+@route = demo-app
+
+### 1. Inspect the initial Origin set - expected origin-1 only
+GET {{admin}}/api/v1/edgeproxy/routes/{{route}}/origins
+Authorization: Bearer {{adminToken}}
+
+### 2. Add the second local Origin to the disposable EdgeProxy profile
+POST {{admin}}/api/v1/edgeproxy/routes/{{route}}/origins
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "url": "http://127.0.0.1:9001",
+  "insecure_skip_verify": false,
+  "name": "origin-2",
+  "weight": 1,
+  "priority": 2
+}
+
+### 3. Select round-robin scheduling
+PUT {{admin}}/api/v1/edgeproxy/routes/{{route}}/load-balancing
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "algorithm": "round_robin",
+  "latency_sensitivity": 1,
+  "ewma_alpha": 0.25
+}
+
+### 4a. Uncached scheduler sample - inspect JSON origin
+GET {{gateway}}/api/time
+
+### 4b. Repeat - expected other healthy Origin under round robin
+GET {{gateway}}/api/time
+
+### 4c. Repeat again to make the sequence obvious
+GET {{gateway}}/api/time
+
+### 4d. Repeat again
+GET {{gateway}}/api/time
+
+### 5. Switch to priority failover: priority 1 is preferred while healthy
+PUT {{admin}}/api/v1/edgeproxy/routes/{{route}}/load-balancing
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "algorithm": "priority_failover",
+  "latency_sensitivity": 1,
+  "ewma_alpha": 0.25
+}
+
+### 6. With both healthy, expected JSON origin="origin-1"
+GET {{gateway}}/api/time
+
+### 7. After stopping origin-1 and waiting for health detection, expected origin-2
+GET {{gateway}}/api/time
+
+### 8. Inspect scheduler and Origin readiness through the management boundary
+GET {{admin}}/api/v1/edgeproxy/status
+Authorization: Bearer {{adminToken}}
+
+### 9. OPTIONAL CLEANUP - restore round robin
+PUT {{admin}}/api/v1/edgeproxy/routes/{{route}}/load-balancing
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "algorithm": "round_robin",
+  "latency_sensitivity": 1,
+  "ewma_alpha": 0.25
+}
+
+### 10. OPTIONAL CLEANUP - remove origin-2 from the disposable profile
+DELETE {{admin}}/api/v1/edgeproxy/routes/{{route}}/origins/origin-2
+Authorization: Bearer {{adminToken}}

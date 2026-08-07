@@ -1,0 +1,25 @@
+@gateway = http://127.0.0.1:8081
+@admin = http://127.0.0.1:9191
+@adminToken = dev-security-token
+@route = demo-app
+
+### 1. Purge the Route cache so the demonstration starts deterministically
+POST {{admin}}/api/v1/edgeproxy/routes/{{route}}/cache/purge
+Authorization: Bearer {{adminToken}}
+
+### 2. First cacheable request - expected X-Cache: MISS
+GET {{gateway}}/api/products
+
+### 3. Repeat before TTL expiry - expected X-Cache: HIT
+GET {{gateway}}/api/products
+
+### 4. Private/no-store response - must not become a shared cache hit
+GET {{gateway}}/api/private
+
+### 5. Authorized request - local profile disables caching for these requests
+GET {{gateway}}/api/products
+Authorization: Bearer example-user-token
+
+### 6. Read the effective per-Route cache configuration
+GET {{admin}}/api/v1/edgeproxy/routes/{{route}}/cache
+Authorization: Bearer {{adminToken}}

@@ -1,0 +1,20 @@
+@gateway = http://127.0.0.1:8081
+@admin = http://127.0.0.1:9191
+@adminToken = dev-security-token
+
+### Public health path - expected 200 and X-Security-Action: ALLOW
+GET {{gateway}}/healthz
+
+### Uncached Origin response - inspect the JSON "origin" field
+GET {{gateway}}/api/time
+
+### Routed and cache-aware application response
+GET {{gateway}}/api/products
+
+### SecurityEdge Dashboard overview - expected 200
+GET {{admin}}/api/v1/dashboard/overview
+Authorization: Bearer {{adminToken}}
+
+### EdgeProxy dependency status as observed through SecurityEdge
+GET {{admin}}/api/v1/edgeproxy/status
+Authorization: Bearer {{adminToken}}

@@ -282,7 +282,7 @@ The health topology contains only dependencies that SecurityEdge can actively in
 DNS Resolution → SecurityEdge → EdgeProxy → Routes → Origins
 ```
 
-The dashboard reports component status, probe latency, HTTP status, last success or failure, consecutive failures, route readiness, Origin health, and transition history. It also samples a bounded operational timeline containing SecurityEdge rejection rates, EdgeProxy request/cache/latency signals, and condensed per-Route/per-Origin counters. When `admin.telemetry_history.file_path` is configured, samples are replaced atomically and restored after restart; a corrupt history file is reported as degraded but never prevents service startup.
+The dashboard reports component status, probe latency, HTTP status, last success or failure, consecutive failures, route readiness, Origin health, and transition history. It also samples a bounded operational timeline containing SecurityEdge rejection rates, EdgeProxy request/cache/latency signals, and condensed per-Route/per-Origin counters. History is bounded by both sample count and a 16 MiB serialized in-memory budget; old samples are evicted first, and an individually oversized topology sample retains its aggregate security/EdgeProxy counters while marking Route details as truncated. The history API reports both retained and maximum retained bytes. When `admin.telemetry_history.file_path` is configured, samples are replaced atomically and restored after restart; the persisted document remains capped at 32 MiB, and a corrupt history file is reported as degraded but never prevents service startup.
 
 ### Recent Client Traffic
 
@@ -370,7 +370,7 @@ GET     /api/v1/connectivity
 POST    /api/v1/connectivity/check
 ```
 
-`DELETE /api/v1/logs` clears the in-memory event ring, truncates the active NDJSON log, and removes rotated backups. CSV exports neutralize spreadsheet-formula prefixes in user-controlled fields before writing rows.
+`DELETE /api/v1/logs` clears the in-memory event ring, truncates the active NDJSON log, and removes rotated backups. CSV exports neutralize spreadsheet-formula prefixes in user-controlled fields before writing rows. CSV and NDJSON downloads are streamed in bounded chunks rather than materializing the complete serialized export in a second memory buffer, so large retained rings remain safe to export and client disconnects stop work promptly.
 
 When NDJSON persistence is enabled, SecurityEdge restores the newest retained events from the active file and configured rotated backups during startup. Event sequence numbers continue monotonically across restarts; malformed or crash-truncated lines are skipped and counted in the log-store `file_errors` metric instead of preventing startup.
 

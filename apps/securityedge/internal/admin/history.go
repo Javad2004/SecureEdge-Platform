@@ -18,13 +18,17 @@ import (
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/metrics"
 )
 
-const maxTelemetryHistoryFileBytes int64 = 32 << 20
+const (
+	maxTelemetryHistoryFileBytes     int64 = 32 << 20
+	maxTelemetryHistoryRetainedBytes int64 = 16 << 20
+)
 
 type telemetryHistoryPoint struct {
-	GeneratedAt string                           `json:"generated_at"`
-	Security    telemetrySecurityHistoryPoint    `json:"security"`
-	EdgeProxy   telemetryEdgeHistoryPoint        `json:"edgeproxy"`
-	Routes      map[string]telemetryRouteHistory `json:"routes,omitempty"`
+	GeneratedAt           string                           `json:"generated_at"`
+	Security              telemetrySecurityHistoryPoint    `json:"security"`
+	EdgeProxy             telemetryEdgeHistoryPoint        `json:"edgeproxy"`
+	Routes                map[string]telemetryRouteHistory `json:"routes,omitempty"`
+	RouteDetailsTruncated bool                             `json:"route_details_truncated,omitempty"`
 }
 
 type telemetrySecurityHistoryPoint struct {
@@ -103,25 +107,30 @@ type telemetryHistoryDocument struct {
 }
 
 type telemetryHistorySnapshot struct {
-	Enabled        bool                    `json:"enabled"`
-	Persistent     bool                    `json:"persistent"`
-	Capacity       int                     `json:"capacity"`
-	SampleInterval string                  `json:"sample_interval"`
-	FilePath       string                  `json:"file_path,omitempty"`
-	LastError      string                  `json:"last_error,omitempty"`
-	Samples        []telemetryHistoryPoint `json:"samples"`
+	Enabled            bool                    `json:"enabled"`
+	Persistent         bool                    `json:"persistent"`
+	Capacity           int                     `json:"capacity"`
+	SampleInterval     string                  `json:"sample_interval"`
+	FilePath           string                  `json:"file_path,omitempty"`
+	LastError          string                  `json:"last_error,omitempty"`
+	RetainedBytes      int64                   `json:"retained_bytes"`
+	RetainedLimitBytes int64                   `json:"retained_limit_bytes"`
+	Samples            []telemetryHistoryPoint `json:"samples"`
 }
 
 type telemetryHistoryStore struct {
-	mu           sync.Mutex
-	cfg          config.TelemetryHistoryConfig
-	samples      []telemetryHistoryPoint
-	lastObserved time.Time
-	lastError    string
+	mu               sync.Mutex
+	cfg              config.TelemetryHistoryConfig
+	samples          []telemetryHistoryPoint
+	sampleBytes      []int64
+	retainedBytes    int64
+	maxRetainedBytes int64
+	lastObserved     time.Time
+	lastError        string
 }
 
 func newTelemetryHistoryStore(cfg config.TelemetryHistoryConfig) *telemetryHistoryStore {
-	store := &telemetryHistoryStore{cfg: cfg}
+	store := &telemetryHistoryStore{cfg: cfg, maxRetainedBytes: maxTelemetryHistoryRetainedBytes}
 	if !cfg.Enabled || strings.TrimSpace(cfg.FilePath) == "" {
 		return store
 	}
@@ -209,10 +218,7 @@ func (s *telemetryHistoryStore) observe(security metrics.Snapshot, edgeRaw json.
 		}
 	}
 
-	s.samples = append(s.samples, point)
-	if len(s.samples) > s.cfg.Capacity {
-		s.samples = append([]telemetryHistoryPoint(nil), s.samples[len(s.samples)-s.cfg.Capacity:]...)
-	}
+	s.appendPointLocked(point)
 	s.lastObserved = nowTime
 	if s.cfg.FilePath != "" {
 		if err := s.persistLocked(); err != nil {
@@ -221,6 +227,45 @@ func (s *telemetryHistoryStore) observe(security metrics.Snapshot, edgeRaw json.
 			s.lastError = ""
 		}
 	}
+}
+
+func (s *telemetryHistoryStore) appendPointLocked(point telemetryHistoryPoint) {
+	limit := s.maxRetainedBytes
+	if limit <= 0 {
+		limit = maxTelemetryHistoryRetainedBytes
+	}
+	size := telemetryHistoryPointSize(point)
+	if size > limit && len(point.Routes) > 0 {
+		point.Routes = nil
+		point.RouteDetailsTruncated = true
+		size = telemetryHistoryPointSize(point)
+	}
+	if size > limit {
+		return
+	}
+
+	s.samples = append(s.samples, point)
+	s.sampleBytes = append(s.sampleBytes, size)
+	s.retainedBytes += size
+	for len(s.samples) > 0 && (len(s.samples) > s.cfg.Capacity || s.retainedBytes > limit) {
+		s.retainedBytes -= s.sampleBytes[0]
+		s.samples[0] = telemetryHistoryPoint{}
+		s.samples = s.samples[1:]
+		s.sampleBytes = s.sampleBytes[1:]
+	}
+	if len(s.samples) == 0 {
+		s.samples = nil
+		s.sampleBytes = nil
+		s.retainedBytes = 0
+	}
+}
+
+func telemetryHistoryPointSize(point telemetryHistoryPoint) int64 {
+	data, err := json.Marshal(point)
+	if err != nil {
+		return maxTelemetryHistoryRetainedBytes + 1
+	}
+	return int64(len(data))
 }
 
 func (s *telemetryHistoryStore) snapshot(limit int) telemetryHistorySnapshot {
@@ -236,14 +281,20 @@ func (s *telemetryHistoryStore) snapshot(limit int) telemetryHistorySnapshot {
 	if start < 0 {
 		start = 0
 	}
+	retainedLimit := s.maxRetainedBytes
+	if retainedLimit <= 0 {
+		retainedLimit = maxTelemetryHistoryRetainedBytes
+	}
 	return telemetryHistorySnapshot{
-		Enabled:        s.cfg.Enabled,
-		Persistent:     s.cfg.Enabled && s.cfg.FilePath != "",
-		Capacity:       s.cfg.Capacity,
-		SampleInterval: s.cfg.SampleInterval.String(),
-		FilePath:       s.cfg.FilePath,
-		LastError:      s.lastError,
-		Samples:        append([]telemetryHistoryPoint(nil), s.samples[start:]...),
+		Enabled:            s.cfg.Enabled,
+		Persistent:         s.cfg.Enabled && s.cfg.FilePath != "",
+		Capacity:           s.cfg.Capacity,
+		SampleInterval:     s.cfg.SampleInterval.String(),
+		FilePath:           s.cfg.FilePath,
+		LastError:          s.lastError,
+		RetainedBytes:      s.retainedBytes,
+		RetainedLimitBytes: retainedLimit,
+		Samples:            append([]telemetryHistoryPoint(nil), s.samples[start:]...),
 	}
 }
 
@@ -274,10 +325,9 @@ func (s *telemetryHistoryStore) load() error {
 		}
 	}
 	sort.SliceStable(valid, func(i, j int) bool { return valid[i].GeneratedAt < valid[j].GeneratedAt })
-	if len(valid) > s.cfg.Capacity {
-		valid = valid[len(valid)-s.cfg.Capacity:]
+	for _, sample := range valid {
+		s.appendPointLocked(sample)
 	}
-	s.samples = append([]telemetryHistoryPoint(nil), valid...)
 	if len(s.samples) > 0 {
 		s.lastObserved, _ = time.Parse(time.RFC3339Nano, s.samples[len(s.samples)-1].GeneratedAt)
 	}

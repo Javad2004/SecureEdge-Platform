@@ -24,6 +24,37 @@ import (
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/waf"
 )
 
+type boundedChunkResponseWriter struct {
+	header      http.Header
+	status      int
+	maxChunk    int
+	maxObserved int
+	written     int
+}
+
+func (w *boundedChunkResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *boundedChunkResponseWriter) WriteHeader(status int) { w.status = status }
+
+func (w *boundedChunkResponseWriter) Write(data []byte) (int, error) {
+	if len(data) > w.maxObserved {
+		w.maxObserved = len(data)
+	}
+	if w.maxChunk > 0 && len(data) > w.maxChunk {
+		return 0, errors.New("response write exceeded bounded chunk")
+	}
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	w.written += len(data)
+	return len(data), nil
+}
+
 type fakeRuntime struct {
 	mu         sync.Mutex
 	cfg        config.Config
@@ -115,6 +146,41 @@ func newAdminTestServerWithTraffic(t *testing.T, failures int) (*httptest.Server
 		t.Fatal(err)
 	}
 	return httptest.NewServer(s.HTTPServer().Handler), tracker
+}
+
+func TestLogExportStreamsInBoundedChunks(t *testing.T) {
+	store := securitylog.New(256)
+	for i := 0; i < 200; i++ {
+		store.Append(securitylog.Entry{
+			Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+			Event:     "request",
+			Path:      "/" + strings.Repeat("x", 1024),
+			Action:    "ALLOW",
+			Status:    http.StatusOK,
+		})
+	}
+	cfg := config.Default().Admin
+	cfg.LogStore.Capacity = 256
+	cfg.LogStore.DefaultPageSize = 100
+	cfg.LogStore.MaxPageSize = 256
+	server := &Server{cfg: cfg, logs: store}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/logs/export?format=csv", nil)
+	w := &boundedChunkResponseWriter{maxChunk: 8 << 10}
+
+	server.exportLogs(w, req)
+
+	if w.status != http.StatusOK {
+		t.Fatalf("status=%d, want %d", w.status, http.StatusOK)
+	}
+	if w.written <= w.maxChunk {
+		t.Fatalf("export was too small to exercise streaming: wrote %d bytes", w.written)
+	}
+	if w.maxObserved > w.maxChunk {
+		t.Fatalf("export materialized an oversized response chunk: %d bytes", w.maxObserved)
+	}
+	if got := w.Header().Get("Content-Disposition"); !strings.Contains(got, "security-events.csv") {
+		t.Fatalf("content disposition=%q", got)
+	}
 }
 
 func TestReadyEndpointDoesNotExposeEdgeProxyDetails(t *testing.T) {

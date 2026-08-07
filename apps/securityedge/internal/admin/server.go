@@ -496,6 +496,17 @@ func (s *Server) connectivityCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.connectivity.Snapshot(r.Context(), true))
 }
 
+type exportWriteTracker struct {
+	writer  io.Writer
+	written int64
+}
+
+func (w *exportWriteTracker) Write(data []byte) (int, error) {
+	n, err := w.writer.Write(data)
+	w.written += int64(n)
+	return n, err
+}
+
 func (s *Server) exportLogs(w http.ResponseWriter, r *http.Request) {
 	f, err := s.parseLogFilter(r)
 	if err != nil {
@@ -512,11 +523,6 @@ func (s *Server) exportLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var payload bytes.Buffer
-	if err := s.logs.Export(&payload, f, format); err != nil {
-		writeError(w, http.StatusInternalServerError, "export_failed", "security event export failed")
-		return
-	}
 	if format == "csv" {
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 		w.Header().Set("Content-Disposition", `attachment; filename="security-events.csv"`)
@@ -525,8 +531,21 @@ func (s *Server) exportLogs(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", `attachment; filename="security-events.ndjson"`)
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(payload.Bytes())
+
+	// Stream exports through the format writer instead of materializing the
+	// complete CSV/NDJSON payload in a second in-memory buffer. The retained log
+	// store can be intentionally large, and duplicating every serialized field
+	// would otherwise allow an authenticated export to create a large transient
+	// memory spike. Export writes in bounded buffered chunks and naturally stops
+	// when the client disconnects.
+	tracker := &exportWriteTracker{writer: w}
+	if err := s.logs.Export(tracker, f, format); err != nil {
+		if tracker.written == 0 {
+			w.Header().Del("Content-Disposition")
+			writeError(w, http.StatusInternalServerError, "export_failed", "security event export failed")
+		}
+		return
+	}
 }
 func (s *Server) bans(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{"generated_at": now(), "bans": s.runtime.ActiveBans()})

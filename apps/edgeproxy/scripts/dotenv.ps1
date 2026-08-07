@@ -332,17 +332,25 @@ function Apply-EdgeProxyEnvironmentOverrides {
         $seenSuffixes[$suffix] = [string]$route.name
         $urls = Get-EnvironmentList -Name $urlsName
         if ($null -ne $urls) {
+            if ($urls.Count -gt 256) {
+                throw "$urlsName cannot contain more than 256 URLs."
+            }
             $existing = @($route.upstreams)
             $replacement = @()
             for ($i = 0; $i -lt $urls.Count; $i++) {
-                $skipVerify = $false
-                if ($i -lt $existing.Count -and $null -ne $existing[$i].insecure_skip_verify) {
-                    $skipVerify = [bool]$existing[$i].insecure_skip_verify
+                $origin = [ordered]@{}
+                if ($i -lt $existing.Count) {
+                    foreach ($property in $existing[$i].PSObject.Properties) {
+                        $origin[$property.Name] = $property.Value
+                    }
+                } else {
+                    $origin['insecure_skip_verify'] = $false
                 }
-                $replacement += [pscustomobject]@{
-                    url = [string]$urls[$i]
-                    insecure_skip_verify = $skipVerify
-                }
+                # Match the Go runtime: the environment replaces only the URL.
+                # File-backed name, weight, priority, and TLS policy remain
+                # authoritative for positions that already exist.
+                $origin['url'] = [string]$urls[$i]
+                $replacement += [pscustomobject]$origin
             }
             $route.upstreams = $replacement
         }

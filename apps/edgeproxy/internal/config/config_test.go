@@ -548,12 +548,16 @@ func TestApplyEnvironmentOverridesCoversEndpointsAndRouteValues(t *testing.T) {
 	cfg := Default()
 	cfg.Routes = []RouteConfig{validRouteForValidation()}
 	cfg.Routes[0].Name = "demo-app"
+	cfg.Routes[0].Upstreams[0].Name = "primary-origin"
+	cfg.Routes[0].Upstreams[0].Weight = 7
+	cfg.Routes[0].Upstreams[0].Priority = 3
+	cfg.Routes[0].Upstreams[0].InsecureSkipVerify = true
 
 	t.Setenv("EDGEPROXY_SERVER_LISTEN_ADDR", "0.0.0.0:8180")
 	t.Setenv("EDGEPROXY_ADMIN_LISTEN_ADDR", "127.0.0.1:9190")
 	t.Setenv("EDGEPROXY_ADMIN_TOKEN", "runtime-token")
 	t.Setenv("EDGEPROXY_TRUSTED_PROXY_CIDRS", "127.0.0.1/32, 10.0.0.0/8")
-	t.Setenv("EDGEPROXY_ROUTE_DEMO_APP_UPSTREAM_URLS", "http://10.0.0.10:9000,http://10.0.0.11:9000")
+	t.Setenv("EDGEPROXY_ROUTE_DEMO_APP_UPSTREAM_URLS", "https://10.0.0.10:9443,http://10.0.0.11:9000")
 	t.Setenv("EDGEPROXY_TLS_ENABLED", "false")
 
 	if err := ApplyEnvironmentOverrides(&cfg); err != nil {
@@ -573,6 +577,28 @@ func TestApplyEnvironmentOverridesCoversEndpointsAndRouteValues(t *testing.T) {
 	}
 	if cfg.Routes[0].Upstreams[1].URL != "http://10.0.0.11:9000" {
 		t.Fatalf("unexpected upstream override: %#v", cfg.Routes[0].Upstreams)
+	}
+	first := cfg.Routes[0].Upstreams[0]
+	if first.Name != "primary-origin" || first.Weight != 7 || first.Priority != 3 || !first.InsecureSkipVerify {
+		t.Fatalf("environment URL override discarded file-backed origin metadata: %#v", first)
+	}
+	second := cfg.Routes[0].Upstreams[1]
+	if second.Name != "origin-2" || second.Weight != 1 || second.Priority != 2 {
+		t.Fatalf("new environment endpoint did not receive validation defaults: %#v", second)
+	}
+}
+
+func TestApplyEnvironmentOverridesRejectsTooManyRouteUpstreams(t *testing.T) {
+	cfg := Default()
+	cfg.Routes = []RouteConfig{validRouteForValidation()}
+	cfg.Routes[0].Name = "demo-app"
+	urls := make([]string, maxUpstreamsPerRoute+1)
+	for i := range urls {
+		urls[i] = fmt.Sprintf("http://127.0.0.1:%d", 10000+i)
+	}
+	t.Setenv("EDGEPROXY_ROUTE_DEMO_APP_UPSTREAM_URLS", strings.Join(urls, ","))
+	if err := ApplyEnvironmentOverrides(&cfg); err == nil || !strings.Contains(err.Error(), "cannot contain more than") {
+		t.Fatalf("expected bounded environment upstream error, got %v", err)
 	}
 }
 

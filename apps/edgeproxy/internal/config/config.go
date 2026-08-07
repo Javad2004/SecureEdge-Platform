@@ -200,12 +200,21 @@ func ApplyEnvironmentOverrides(cfg *Config) error {
 			if len(urls) == 0 {
 				return fmt.Errorf("%s must contain at least one URL", upstreamsKey)
 			}
+			if len(urls) > maxUpstreamsPerRoute {
+				return fmt.Errorf("%s cannot contain more than %d URLs", upstreamsKey, maxUpstreamsPerRoute)
+			}
+
+			// The environment variable intentionally replaces only the endpoint URLs.
+			// Preserve file-backed scheduler and TLS metadata by position so changing a
+			// deployment endpoint does not silently reset names, weights, priorities,
+			// or certificate-verification policy. Additional endpoints receive the
+			// normal validation defaults; omitted endpoints are removed.
 			upstreams := make([]UpstreamConfig, len(urls))
 			for j, rawURL := range urls {
-				upstreams[j].URL = rawURL
 				if j < len(route.Upstreams) {
-					upstreams[j].InsecureSkipVerify = route.Upstreams[j].InsecureSkipVerify
+					upstreams[j] = route.Upstreams[j]
 				}
+				upstreams[j].URL = rawURL
 			}
 			route.Upstreams = upstreams
 		}

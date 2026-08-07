@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,6 +131,80 @@ func TestTelemetryHistoryCorruptionDoesNotPreventRecovery(t *testing.T) {
 	store.observe(metrics.Snapshot{Total: metrics.CounterSnapshot{Requests: 1}}, nil)
 	if got := store.snapshot(5); got.LastError != "" || len(got.Samples) != 1 {
 		t.Fatalf("expected history to recover after a valid sample: %#v", got)
+	}
+}
+
+func TestTelemetryHistoryBoundsRetainedSerializedBytes(t *testing.T) {
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled:        true,
+		Capacity:       100,
+		SampleInterval: config.Duration{Duration: time.Second},
+	})
+	store.maxRetainedBytes = 1800
+
+	for i := 0; i < 20; i++ {
+		point := telemetryHistoryPoint{
+			GeneratedAt: time.Now().UTC().Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			Security:    telemetrySecurityHistoryPoint{Requests: uint64(i + 1)},
+			Routes: map[string]telemetryRouteHistory{
+				"route-" + strconv.Itoa(i): {
+					Requests: uint64(i + 1),
+					Origins: map[string]telemetryOriginHistory{
+						strings.Repeat("origin-", 40) + strconv.Itoa(i): {Calls: uint64(i + 1)},
+					},
+				},
+			},
+		}
+		store.appendPointLocked(point)
+	}
+
+	if store.retainedBytes > store.maxRetainedBytes {
+		t.Fatalf("retained history exceeded byte budget: %d > %d", store.retainedBytes, store.maxRetainedBytes)
+	}
+	if len(store.samples) >= 20 {
+		t.Fatalf("expected byte budget to evict old samples, retained %d", len(store.samples))
+	}
+	if len(store.samples) != len(store.sampleBytes) {
+		t.Fatalf("sample size accounting mismatch: %d samples, %d sizes", len(store.samples), len(store.sampleBytes))
+	}
+	snapshot := store.snapshot(100)
+	if snapshot.RetainedBytes != store.retainedBytes || snapshot.RetainedLimitBytes != store.maxRetainedBytes {
+		t.Fatalf("unexpected retained-byte status: %#v", snapshot)
+	}
+}
+
+func TestTelemetryHistoryTruncatesOversizedRouteDetails(t *testing.T) {
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled:        true,
+		Capacity:       10,
+		SampleInterval: config.Duration{Duration: time.Second},
+	})
+	store.maxRetainedBytes = 600
+
+	origins := make(map[string]telemetryOriginHistory, 20)
+	for i := 0; i < 20; i++ {
+		origins[strings.Repeat("large-origin-name-", 4)+strconv.Itoa(i)] = telemetryOriginHistory{Calls: uint64(i + 1)}
+	}
+	store.appendPointLocked(telemetryHistoryPoint{
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Security:    telemetrySecurityHistoryPoint{Requests: 1},
+		Routes: map[string]telemetryRouteHistory{
+			"large-route": {Requests: 1, Origins: origins},
+		},
+	})
+
+	if len(store.samples) != 1 {
+		t.Fatalf("expected aggregate sample to be retained, got %d", len(store.samples))
+	}
+	point := store.samples[0]
+	if !point.RouteDetailsTruncated {
+		t.Fatal("expected oversized route details to be marked as truncated")
+	}
+	if len(point.Routes) != 0 {
+		t.Fatalf("expected oversized route details to be omitted, got %d routes", len(point.Routes))
+	}
+	if store.retainedBytes > store.maxRetainedBytes {
+		t.Fatalf("retained history exceeded byte budget: %d > %d", store.retainedBytes, store.maxRetainedBytes)
 	}
 }
 

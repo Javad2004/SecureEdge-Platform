@@ -85,6 +85,25 @@ func TestSystemdEnvironmentTemplateContainsOnlyRuntimeSecrets(t *testing.T) {
 	}
 }
 
+func TestPowerShellDotenvPreservesOriginMetadata(t *testing.T) {
+	path := filepath.Join("..", "..", "scripts", "dotenv.ps1")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read PowerShell dotenv loader: %v", err)
+	}
+	script := string(data)
+	for _, required := range []string{
+		"$urls.Count -gt 256",
+		"foreach ($property in $existing[$i].PSObject.Properties)",
+		"$origin[$property.Name] = $property.Value",
+		"$origin['url'] = [string]$urls[$i]",
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("PowerShell dotenv loader is missing metadata-preservation contract %q", required)
+		}
+	}
+}
+
 func activeSystemdEnvironmentKeys(t *testing.T, path string) []string {
 	t.Helper()
 	file, err := os.Open(path)

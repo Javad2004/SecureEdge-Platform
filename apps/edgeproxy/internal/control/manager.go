@@ -357,18 +357,17 @@ func (m *Manager) watch(ctx context.Context) {
 				}
 			}
 
+			// Read and compare the digest while holding the same transaction lock used
+			// by API mutations. Reading it before the lock leaves a stale-digest race:
+			// a watcher can observe the old file, wait for an API save/hot-apply to
+			// finish, and then incorrectly reapply that already-committed revision.
+			m.transactionMu.Lock()
 			digest, err := fileDigest(m.path)
 			if err != nil {
+				m.transactionMu.Unlock()
 				m.recordError("config_watcher", err)
 				continue
 			}
-
-			// Serialize the final digest check with API/file transactions. An API
-			// mutation saves, hot-applies, and records its digest while holding the
-			// same lock. Without this second check, a watcher tick that observed the
-			// file in the narrow save-to-digest window could apply the same revision
-			// twice and reset scheduler state.
-			m.transactionMu.Lock()
 			m.mu.RLock()
 			changed := digest != m.lastDigest
 			m.mu.RUnlock()

@@ -428,6 +428,66 @@ func TestWatcherDoesNotReapplyManagerRevision(t *testing.T) {
 	}
 }
 
+func TestWatcherDoesNotReapplyRevisionFromStaleDigest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "edgeproxy.json")
+	cfg := testConfig(t)
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager, err := New(path, "", logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := proxy.NewHandler(cfg, logger, metrics.New(), accesslog.New(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handler.Close()
+	manager.Attach(handler, cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.Start(ctx)
+
+	// Hold the transaction lock across a watcher tick. The old implementation
+	// read the digest before waiting on this lock, so it retained the stale
+	// pre-API digest and reapplied the API revision after the lock was released.
+	manager.transactionMu.Lock()
+	time.Sleep(750 * time.Millisecond)
+	manager.mu.RLock()
+	candidate := clone(manager.persisted)
+	manager.mu.RUnlock()
+	candidate.Routes[0].LoadBalancing.Algorithm = "weighted_round_robin"
+	if err := config.Save(path, candidate); err != nil {
+		manager.transactionMu.Unlock()
+		t.Fatal(err)
+	}
+	runtimeCfg, err := config.Load(path)
+	if err != nil {
+		manager.transactionMu.Unlock()
+		t.Fatal(err)
+	}
+	result, err := manager.apply(candidate, runtimeCfg, "api_race_test")
+	if err != nil {
+		manager.transactionMu.Unlock()
+		t.Fatal(err)
+	}
+	digest, err := fileDigest(path)
+	if err != nil {
+		manager.transactionMu.Unlock()
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	manager.lastDigest = digest
+	manager.mu.Unlock()
+	manager.transactionMu.Unlock()
+
+	time.Sleep(300 * time.Millisecond)
+	if got := manager.WatchStatus().Revision; got != result.Revision {
+		t.Fatalf("watcher reapplied a stale-digest API revision: revision changed from %d to %d", result.Revision, got)
+	}
+}
+
 func TestEnvironmentConfigPathCanFollowDotenvRevision(t *testing.T) {
 	directory := t.TempDir()
 	fallback := filepath.Join(directory, "default.json")

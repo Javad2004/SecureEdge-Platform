@@ -137,6 +137,48 @@ func TestPolicyWriteDoesNotPersistEnvironmentOverridesOrAbsoluteRoutePath(t *tes
 	}
 }
 
+func TestReloadSkipsAlreadyAppliedControlPlaneRevision(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	policy := runtime.EffectivePolicy("demo-app")
+	policy.AnomalyThreshold++
+	if err := runtime.UpdateDefaultPolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+	runtime.mu.RLock()
+	appliedEdgeClient := runtime.edge
+	runtime.mu.RUnlock()
+
+	// The file supervisor observes the API's atomic Save after the API has
+	// already applied the same revision. Reload must acknowledge that file state
+	// without replacing live components again.
+	if err := runtime.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	runtime.mu.RLock()
+	currentEdgeClient := runtime.edge
+	runtime.mu.RUnlock()
+	if currentEdgeClient != appliedEdgeClient {
+		t.Fatal("reload reapplied an already-hot-applied Control Plane revision")
+	}
+}
+
 func TestNewRejectsUnknownRoutePolicy(t *testing.T) {
 	dir := t.TempDir()
 	edgePath := filepath.Join(dir, "edge.json")

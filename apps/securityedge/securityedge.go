@@ -439,8 +439,23 @@ func (r *Runtime) Reload() error {
 	r.mu.RLock()
 	previousFileCfg := cloneConfig(r.healthyFileCfg)
 	r.mu.RUnlock()
+	// cloneConfig intentionally owns all slice storage, but empty slices can
+	// collapse to nil during cloning. Re-run validation to restore the same
+	// canonical representation produced by LoadFile before comparing the two
+	// persisted views or checking environment-managed collection fields.
+	if err := previousFileCfg.Validate(); err != nil {
+		return fmt.Errorf("validate last applied security configuration: %w", err)
+	}
 	if err := config.ValidateEnvironmentManagedChanges(previousFileCfg, fileCfg); err != nil {
 		return err
+	}
+	// Control Plane mutations persist and hot-apply the file while holding the
+	// same config transaction lock. The external file supervisor will still
+	// observe the resulting atomic replacement on its next poll; treat that
+	// already-applied file revision as a no-op instead of rebuilding the route
+	// table, WAF inspector inputs, and EdgeProxy Admin client a second time.
+	if reflect.DeepEqual(previousFileCfg, fileCfg) {
+		return nil
 	}
 	cfg := cloneConfig(fileCfg)
 	if err := config.ApplyEnvironmentOverrides(&cfg); err != nil {

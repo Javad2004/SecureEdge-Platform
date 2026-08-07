@@ -50,7 +50,7 @@ func TestHealthChecksUseBoundedConcurrency(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		pool.runHealthChecks(ctx, config.HealthCheckConfig{Enabled: true, Path: "/healthz", Interval: config.Duration{Duration: 10 * time.Second}, Timeout: config.Duration{Duration: time.Second}, HealthyStatuses: []int{http.StatusOK}}, nil)
+		pool.runHealthChecks(ctx, config.HealthCheckConfig{Enabled: true, Path: "/healthz", Interval: config.Duration{Duration: 10 * time.Second}, Timeout: config.Duration{Duration: time.Second}, HealthyStatuses: []int{http.StatusOK}}, make(chan struct{}, maxConcurrentHealthChecksGlobal), nil)
 		close(done)
 	}()
 
@@ -80,6 +80,99 @@ func TestHealthChecksUseBoundedConcurrency(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("health-check loop did not stop after context cancellation")
+	}
+}
+
+func TestHealthChecksShareGlobalConcurrencyBudget(t *testing.T) {
+	const globalLimit = 7
+	const routeCount = 3
+	const upstreamsPerRoute = maxConcurrentHealthChecks
+
+	var active atomic.Int32
+	var maximum atomic.Int32
+	var completed atomic.Int32
+	release := make(chan struct{})
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		current := active.Add(1)
+		for {
+			previous := maximum.Load()
+			if current <= previous || maximum.CompareAndSwap(previous, current) {
+				break
+			}
+		}
+		<-release
+		active.Add(-1)
+		completed.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer origin.Close()
+
+	globalSlots := make(chan struct{}, globalLimit)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pools := make([]*upstreamPool, 0, routeCount)
+	done := make(chan struct{}, routeCount)
+	for routeIndex := 0; routeIndex < routeCount; routeIndex++ {
+		upstreams := make([]config.UpstreamConfig, 0, upstreamsPerRoute)
+		for upstreamIndex := 0; upstreamIndex < upstreamsPerRoute; upstreamIndex++ {
+			upstreams = append(upstreams, config.UpstreamConfig{
+				URL: origin.URL, Name: fmt.Sprintf("route-%d-origin-%d", routeIndex+1, upstreamIndex+1), Weight: 1, Priority: upstreamIndex + 1,
+			})
+		}
+		route := config.RouteConfig{
+			Name: fmt.Sprintf("route-%d", routeIndex+1), Upstreams: upstreams,
+			Proxy: config.ProxyConfig{DialTimeout: config.Duration{Duration: time.Second}, ResponseHeaderTimeout: config.Duration{Duration: time.Second}, MaxIdleConns: routeCount * upstreamsPerRoute, MaxIdleConnsPerHost: routeCount * upstreamsPerRoute},
+		}
+		pool, err := newUpstreamPool(route)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pools = append(pools, pool)
+		go func(pool *upstreamPool) {
+			pool.runHealthChecks(ctx, config.HealthCheckConfig{Enabled: true, Path: "/healthz", Interval: config.Duration{Duration: time.Hour}, Timeout: config.Duration{Duration: time.Second}, HealthyStatuses: []int{http.StatusOK}}, globalSlots, nil)
+			done <- struct{}{}
+		}(pool)
+	}
+	defer func() {
+		for _, pool := range pools {
+			pool.closeIdleConnections()
+		}
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for maximum.Load() < globalLimit && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := maximum.Load(); got != globalLimit {
+		close(release)
+		cancel()
+		for range routeCount {
+			<-done
+		}
+		t.Fatalf("maximum concurrent health checks=%d, want shared limit %d", got, globalLimit)
+	}
+	close(release)
+
+	wantCompleted := int32(routeCount * upstreamsPerRoute)
+	deadline = time.Now().Add(4 * time.Second)
+	for completed.Load() < wantCompleted && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := completed.Load(); got != wantCompleted {
+		cancel()
+		for range routeCount {
+			<-done
+		}
+		t.Fatalf("completed health checks=%d, want %d", got, wantCompleted)
+	}
+	cancel()
+	for range routeCount {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("health-check loop did not stop after cancellation")
+		}
 	}
 }
 
@@ -129,7 +222,7 @@ func TestHealthCheckDoesNotFollowRedirects(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		pool.runHealthChecks(ctx, route.HealthCheck, func(change healthChange) {
+		pool.runHealthChecks(ctx, route.HealthCheck, make(chan struct{}, maxConcurrentHealthChecksGlobal), func(change healthChange) {
 			changes <- change
 		})
 	}()
@@ -204,7 +297,7 @@ func TestHealthCheckUsesRepresentativePreservedHost(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		pool.runHealthChecks(ctx, route.HealthCheck, func(change healthChange) {
+		pool.runHealthChecks(ctx, route.HealthCheck, make(chan struct{}, maxConcurrentHealthChecksGlobal), func(change healthChange) {
 			changes <- change
 		})
 	}()

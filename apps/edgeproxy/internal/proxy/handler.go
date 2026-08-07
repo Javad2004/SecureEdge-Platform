@@ -48,14 +48,15 @@ type Handler struct {
 	clients *clientResolver
 	life    *handlerLifecycle
 
-	tunnelMu      sync.Mutex
-	tunnels       map[*activeProtocolTunnel]struct{}
-	tunnelsClosed bool
-	tunnelWG      sync.WaitGroup
+	tunnelMu         sync.Mutex
+	tunnels          map[*activeProtocolTunnel]struct{}
+	tunnelsClosed    bool
+	tunnelWG         sync.WaitGroup
+	healthProbeSlots chan struct{}
 }
 
 func NewHandler(cfg config.Config, logger *slog.Logger, registry *metrics.Registry, logStore *accesslog.Store) (*Handler, error) {
-	h := &Handler{logger: logger, metrics: registry, logs: logStore, tunnels: make(map[*activeProtocolTunnel]struct{})}
+	h := &Handler{logger: logger, metrics: registry, logs: logStore, tunnels: make(map[*activeProtocolTunnel]struct{}), healthProbeSlots: make(chan struct{}, maxConcurrentHealthChecksGlobal)}
 	state, err := h.buildState(cfg)
 	if err != nil {
 		return nil, err
@@ -96,7 +97,7 @@ func (h *Handler) buildState(cfg config.Config) (handlerState, error) {
 			life.wg.Add(1)
 			go func(rt *routeRuntime) {
 				defer life.wg.Done()
-				rt.pool.runHealthChecks(ctx, rt.cfg.HealthCheck, func(change healthChange) {
+				rt.pool.runHealthChecks(ctx, rt.cfg.HealthCheck, h.healthProbeSlots, func(change healthChange) {
 					h.recordHealthChange(rt.cfg.Name, change)
 				})
 			}(runtime)

@@ -19,7 +19,10 @@ import (
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
 )
 
-const maxConcurrentHealthChecks = 16
+const (
+	maxConcurrentHealthChecks       = 16
+	maxConcurrentHealthChecksGlobal = 64
+)
 
 type upstream struct {
 	name             string
@@ -297,7 +300,7 @@ func (p *upstreamPool) schedulerSnapshot() map[string]any {
 	}
 }
 
-func (p *upstreamPool) runHealthChecks(ctx context.Context, cfg config.HealthCheckConfig, onChange func(healthChange)) {
+func (p *upstreamPool) runHealthChecks(ctx context.Context, cfg config.HealthCheckConfig, globalSlots chan struct{}, onChange func(healthChange)) {
 	if !cfg.Enabled {
 		return
 	}
@@ -332,33 +335,32 @@ func (p *upstreamPool) runHealthChecks(ctx context.Context, cfg config.HealthChe
 		}
 		setNodeHealth(node, healthy, healthChange{Upstream: node.url.String(), Healthy: healthy, Status: resp.StatusCode, Duration: elapsed}, onChange)
 	}
+	if globalSlots == nil {
+		globalSlots = make(chan struct{}, maxConcurrentHealthChecksGlobal)
+	}
 	check := func() {
-		workerCount := min(maxConcurrentHealthChecks, len(p.nodes))
-		if workerCount == 0 {
-			return
-		}
-		jobs := make(chan *upstream)
-		var workers sync.WaitGroup
-		workers.Add(workerCount)
-		for range workerCount {
-			go func() {
-				defer workers.Done()
-				for node := range jobs {
-					checkNode(node)
+		for start := 0; start < len(p.nodes); start += maxConcurrentHealthChecks {
+			end := min(start+maxConcurrentHealthChecks, len(p.nodes))
+			var batch sync.WaitGroup
+			for _, node := range p.nodes[start:end] {
+				select {
+				case globalSlots <- struct{}{}:
+				case <-ctx.Done():
+					batch.Wait()
+					return
 				}
-			}()
-		}
-		for _, node := range p.nodes {
-			select {
-			case jobs <- node:
-			case <-ctx.Done():
-				close(jobs)
-				workers.Wait()
+				batch.Add(1)
+				go func(node *upstream) {
+					defer batch.Done()
+					defer func() { <-globalSlots }()
+					checkNode(node)
+				}(node)
+			}
+			batch.Wait()
+			if ctx.Err() != nil {
 				return
 			}
 		}
-		close(jobs)
-		workers.Wait()
 	}
 	check()
 	ticker := time.NewTicker(cfg.Interval.Duration)

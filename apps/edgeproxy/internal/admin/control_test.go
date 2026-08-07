@@ -119,7 +119,7 @@ func TestControlPlaneCRUDAndRestartAcceptance(t *testing.T) {
 	}
 
 	restartConfig := manager.Config()
-	restartConfig.Server.ListenAddr = "127.0.0.1:18081"
+	restartConfig.Server.ListenAddr = "127.0.0.1:0"
 	restart := controlRequest(t, server, http.MethodPut, "/api/v1/config", restartConfig)
 	if restart.Code != http.StatusAccepted {
 		t.Fatalf("restart-required replace=%d: %s", restart.Code, restart.Body.String())
@@ -132,7 +132,7 @@ func TestControlPlaneCRUDAndRestartAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.Server.ListenAddr != "127.0.0.1:18081" || saved.Admin.AuthToken != "test-token" {
+	if saved.Server.ListenAddr != "127.0.0.1:0" || saved.Admin.AuthToken != "test-token" {
 		t.Fatalf("persisted restart config is invalid: listen=%q token=%q", saved.Server.ListenAddr, saved.Admin.AuthToken)
 	}
 }

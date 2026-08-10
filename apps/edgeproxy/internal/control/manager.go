@@ -44,23 +44,24 @@ type WatchStatus struct {
 }
 
 type Manager struct {
-	transactionMu sync.Mutex
-	mu            sync.RWMutex
-	path          string
-	defaultPath   string
-	envPath       string
-	allowEnvPath  bool
-	logger        *slog.Logger
-	handler       *proxy.Handler
-	current       config.Config
-	persisted     config.Config
-	healthyPath   string
-	healthyConfig config.Config
-	status        WatchStatus
-	lastDigest    [32]byte
-	lastEnvDigest [32]byte
-	restartCh     chan config.Config
-	watchCancel   context.CancelFunc
+	transactionMu          sync.Mutex
+	mu                     sync.RWMutex
+	path                   string
+	defaultPath            string
+	envPath                string
+	allowEnvPath           bool
+	logger                 *slog.Logger
+	handler                *proxy.Handler
+	current                config.Config
+	persisted              config.Config
+	healthyPath            string
+	healthyConfig          config.Config
+	status                 WatchStatus
+	lastDigest             [32]byte
+	lastEnvDigest          [32]byte
+	restartCh              chan config.Config
+	restartEnvironmentFrom *envfile.ManagedSnapshot
+	watchCancel            context.CancelFunc
 }
 
 func New(path, envPath string, logger *slog.Logger, allowEnvironmentPath ...bool) (*Manager, error) {
@@ -102,6 +103,7 @@ func (m *Manager) Attach(handler *proxy.Handler, current config.Config) {
 	m.status.RestartFields = nil
 	m.status.AppliedRevision = m.status.Revision
 	m.status.LastAppliedAt = now()
+	m.restartEnvironmentFrom = nil
 	m.mu.Unlock()
 }
 
@@ -111,6 +113,23 @@ func (m *Manager) Attach(handler *proxy.Handler, current config.Config) {
 // the replacement generation binds it. This rollback keeps that rare TOCTOU
 // race from terminating an otherwise healthy managed proxy.
 func (m *Manager) RecoverFailedRestart(cause error) (config.Config, error) {
+	// Dotenv reload validation holds the envfile lock while acquiring
+	// transactionMu. Restore the managed environment before taking
+	// transactionMu here so recovery follows the same lock ordering and cannot
+	// deadlock with a concurrent watcher iteration.
+	m.mu.RLock()
+	var environmentSnapshot *envfile.ManagedSnapshot
+	if m.restartEnvironmentFrom != nil {
+		snapshot := *m.restartEnvironmentFrom
+		environmentSnapshot = &snapshot
+	}
+	m.mu.RUnlock()
+	if environmentSnapshot != nil {
+		if err := envfile.RestoreManagedEnvironment(*environmentSnapshot); err != nil {
+			return config.Config{}, fmt.Errorf("restore last-known-good EdgeProxy environment: %w", err)
+		}
+	}
+
 	m.transactionMu.Lock()
 	defer m.transactionMu.Unlock()
 
@@ -141,6 +160,7 @@ func (m *Manager) RecoverFailedRestart(cause error) (config.Config, error) {
 	m.status.LastChangeAt = now()
 	m.status.LastSource = "restart_rollback"
 	m.status.LastError = fmt.Sprintf("replacement generation failed; restored last healthy configuration: %v", cause)
+	m.restartEnvironmentFrom = nil
 	m.mu.Unlock()
 
 	for {
@@ -344,7 +364,35 @@ func (m *Manager) watch(ctx context.Context) {
 					envChanged := envDigest != m.lastEnvDigest
 					m.mu.RUnlock()
 					if envChanged {
-						if err := envfile.ReloadValidated(m.envPath, m.reloadEnvironmentRevision); err != nil {
+						previousEnvironment := envfile.SnapshotManagedEnvironment()
+						// Install the rollback snapshot before validation can publish a restart
+						// request. The managed run loop may consume restartCh immediately, so
+						// storing it only after ReloadValidated returns leaves a race where a
+						// fast replacement failure has no environment rollback point.
+						snapshot := previousEnvironment
+						snapshotPtr := &snapshot
+						installedSnapshot := false
+						m.mu.Lock()
+						if m.restartEnvironmentFrom == nil {
+							m.restartEnvironmentFrom = snapshotPtr
+							installedSnapshot = true
+						}
+						m.mu.Unlock()
+
+						restartRequired := false
+						err := envfile.ReloadValidated(m.envPath, func() error {
+							result, reloadErr := m.reloadEnvironmentRevision()
+							restartRequired = result.RestartRequired
+							return reloadErr
+						})
+						if installedSnapshot && (err != nil || !restartRequired) {
+							m.mu.Lock()
+							if m.restartEnvironmentFrom == snapshotPtr {
+								m.restartEnvironmentFrom = nil
+							}
+							m.mu.Unlock()
+						}
+						if err != nil {
 							m.recordError("environment_watcher", err)
 						}
 						// Remember rejected revisions too. A corrected file has a new
@@ -384,7 +432,7 @@ func (m *Manager) watch(ctx context.Context) {
 	}
 }
 
-func (m *Manager) reloadEnvironmentRevision() error {
+func (m *Manager) reloadEnvironmentRevision() (ApplyResult, error) {
 	m.transactionMu.Lock()
 	defer m.transactionMu.Unlock()
 
@@ -396,15 +444,15 @@ func (m *Manager) reloadEnvironmentRevision() error {
 	if desired != currentPath {
 		persisted, err := config.LoadFile(desired)
 		if err != nil {
-			return fmt.Errorf("load EDGEPROXY_CONFIG target %q: %w", desired, err)
+			return ApplyResult{}, fmt.Errorf("load EDGEPROXY_CONFIG target %q: %w", desired, err)
 		}
 		runtimeCfg, err := config.Load(desired)
 		if err != nil {
-			return fmt.Errorf("validate EDGEPROXY_CONFIG target %q: %w", desired, err)
+			return ApplyResult{}, fmt.Errorf("validate EDGEPROXY_CONFIG target %q: %w", desired, err)
 		}
 		digest, err := fileDigest(desired)
 		if err != nil {
-			return err
+			return ApplyResult{}, err
 		}
 		m.mu.Lock()
 		m.path = desired
@@ -418,13 +466,12 @@ func (m *Manager) reloadEnvironmentRevision() error {
 			m.status.ConfigPath = currentPath
 			m.lastDigest = currentDigest
 			m.mu.Unlock()
-			return err
+			return ApplyResult{}, err
 		}
 		m.logger.Info("configuration path changed from environment", "previous", currentPath, "current", desired, "revision", result.Revision)
-		return nil
+		return result, nil
 	}
-	_, err := m.reload("environment_watcher")
-	return err
+	return m.reload("environment_watcher")
 }
 
 func (m *Manager) environmentConfigPath() string {

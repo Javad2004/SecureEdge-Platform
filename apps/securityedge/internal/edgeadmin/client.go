@@ -3,6 +3,7 @@ package edgeadmin
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -29,6 +30,7 @@ func New(rawURL, token string, timeout time.Duration) (*Client, error) {
 		timeout = 5 * time.Second
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	// The Admin API is an internal control-plane dependency. Never send its
 	// bearer token through an ambient HTTP(S)_PROXY, and do not follow redirects
 	// that could move credentials to an unexpected endpoint.

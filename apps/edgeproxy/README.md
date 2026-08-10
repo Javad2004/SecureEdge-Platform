@@ -231,6 +231,31 @@ EdgeProxy provides:
 
 Configuration validation also places explicit ceilings on work-amplifying and memory-backed settings: at most 2,048 Routes, 256 hosts and 256 Origins per Route, 10 retries, 1,000,000 transport idle-connection slots, 4,096 trusted-proxy CIDRs, and 128 entries in each cache-header, cache-status, or health-status collection. Validation work itself stops at these ceilings, so a rejected oversized profile cannot amplify CPU or diagnostic-memory use before it is discarded.
 
+## Native HTTPS/TLS data plane
+
+EdgeProxy can terminate TLS directly on its data-plane listener when it is deployed as a public proxy or when the SecurityEdge-to-EdgeProxy hop crosses a host or trust boundary:
+
+```json
+{
+  "server": {
+    "listen_addr": "0.0.0.0:443",
+    "tls": {
+      "enabled": true,
+      "cert_file": "/etc/edgeproxy/tls/fullchain.pem",
+      "key_file": "/etc/edgeproxy/tls/privkey.pem"
+    }
+  }
+}
+```
+
+The certificate chain and matching private key are loaded before a TLS generation is committed, and the native listener enforces TLS 1.2 or newer. Changes to the listener or any `server.tls` field are restart-required. The Control Plane, file watcher, Dashboard, and `EDGEPROXY_TLS_*` environment overrides all use the same managed restart path: certificate/key material and newly claimed listeners are preflighted before the healthy generation is drained. If startup still fails after preflight, EdgeProxy restores both the latest known-good file-backed configuration and the dotenv-managed environment that produced the healthy generation. Process/systemd environment variables remain authoritative and are never rewritten by this rollback.
+
+Environment-only TLS changes affect the effective runtime without being persisted to JSON. Certificate **contents** are intentionally not watched independently when a configured path stays unchanged; after replacing or renewing PEM files in place, perform a controlled process restart so the new key pair is loaded.
+
+HTTPS Origins are supported per Origin URL. EdgeProxy verifies Origin certificates by default and explicitly requires TLS 1.2 or newer on outbound HTTPS connections. `insecure_skip_verify` remains an explicit per-Origin development/testing escape hatch and should remain `false` in a trusted production deployment.
+
+The integrated single-host systemd profile intentionally keeps EdgeProxy on HTTP loopback behind SecurityEdge. Enabling EdgeProxy TLS there is optional and normally unnecessary because that hop never leaves the host. For a split-host deployment, enable native TLS and use a certificate trusted by SecurityEdge.
+
 ## HTTP cache
 
 The cache is an in-memory, thread-safe LRU with a validated maximum of 1,000,000 entries, 64 GiB total configured capacity, and 1 GiB per object. It provides:
@@ -327,7 +352,7 @@ Control Plane writes use strict JSON decoding, reject unknown fields and bodies 
 
 Hot-applicable routing, cache, health, and scheduler changes return `200 OK` and are installed without dropping traffic. Listener, TLS, Admin listener/auth/log-store, and process-timeout changes are persisted and return `202 Accepted`; the managed process coalesces pending work and performs an automatic graceful generation restart. Before a healthy generation is drained, EdgeProxy revalidates enabled TLS material and probes every newly claimed listener. A certificate that disappeared, an occupied port, or another unusable restart candidate is rejected, API writes are rolled back, and file-watcher errors are exposed without interrupting the active listeners. Listener sockets are also bound synchronously before a new generation is announced as started, so partial startup cannot leak one listener or report a false success. If a socket is claimed by another process in the narrow interval after preflight, EdgeProxy atomically restores the last successfully started configuration and retries that generation instead of terminating the managed process.
 
-Invalid JSON or `.env` revisions never replace the last healthy runtime. Dotenv reload is transactional across parsing, environment overrides, an optional `EDGEPROXY_CONFIG` target switch, complete configuration validation, and runtime application; a rejected revision restores the previous managed environment exactly. `GET /api/v1/config/watch` reports watched files, revisions, the last apply mode/error, and pending restart state.
+Invalid JSON or `.env` revisions never replace the last healthy runtime. Dotenv reload is transactional across parsing, environment overrides, an optional `EDGEPROXY_CONFIG` target switch, complete configuration validation, runtime application, and restart recovery; a rejected revision or a late restart failure restores the previous dotenv-managed environment exactly while preserving process/systemd-owned variables. `GET /api/v1/config/watch` reports watched files, revisions, the last apply mode/error, and pending restart state.
 
 Local-development credentials:
 
@@ -445,7 +470,7 @@ The script reads `EDGEPROXY_ADMIN_TOKEN` from the process environment or `.env`,
 
 ## Linux systemd deployment
 
-The supplied unit runs EdgeProxy as an unprivileged service without ambient Linux capabilities while preserving writable transactional configuration. Its integrated profile binds only loopback ports above `1024`; SecurityEdge owns public port `80`. Commands below assume a release binary has already been built. Run them as `root` from `apps/edgeproxy` or adapt the source paths to your release directory.
+The supplied unit runs EdgeProxy as an unprivileged service without ambient Linux capabilities while preserving writable transactional configuration. Its integrated profile binds only loopback ports above `1024`; SecurityEdge owns the public native-HTTPS boundary on port `443` in the supplied systemd deployment. Commands below assume a release binary has already been built. Run them as `root` from `apps/edgeproxy` or adapt the source paths to your release directory.
 
 Create the service account and install the binary, unit, secret environment, and initial active profile:
 

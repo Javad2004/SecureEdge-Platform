@@ -14,6 +14,7 @@ import (
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/accesslog"
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/envfile"
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/metrics"
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/proxy"
 )
@@ -565,5 +566,84 @@ func TestManagerRejectsEnvironmentManagedUpdateWithoutPersisting(t *testing.T) {
 	}
 	if persisted.Admin.AuthToken != cfg.Admin.AuthToken {
 		t.Fatalf("rejected managed token update was persisted: got %q", persisted.Admin.AuthToken)
+	}
+}
+
+func TestEnvironmentRestartRollbackRestoresLastHealthyDotenv(t *testing.T) {
+	const key = "EDGEPROXY_SERVER_LISTEN_ADDR"
+	initialManaged := envfile.SnapshotManagedEnvironment()
+	originalValue, originalExists := os.LookupEnv(key)
+	_ = os.Unsetenv(key)
+	t.Cleanup(func() {
+		if err := envfile.RestoreManagedEnvironment(initialManaged); err != nil {
+			t.Errorf("restore initial managed environment: %v", err)
+		}
+		if originalExists {
+			_ = os.Setenv(key, originalValue)
+		} else {
+			_ = os.Unsetenv(key)
+		}
+	})
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "edgeproxy.json")
+	envPath := filepath.Join(dir, ".env")
+	cfg := testConfig(t)
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envPath, []byte(key+"="+cfg.Server.ListenAddr+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := envfile.Load(envPath); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager, err := New(path, envPath, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := proxy.NewHandler(cfg, logger, metrics.New(), accesslog.New(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handler.Close()
+	manager.Attach(handler, cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.Start(ctx)
+
+	candidateAddress := availableListenerAddress(t)
+	if err := os.WriteFile(envPath, []byte(key+"="+candidateAddress+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case next := <-manager.RestartRequests():
+		if next.Server.ListenAddr != candidateAddress {
+			t.Fatalf("restart listen=%q, want %q", next.Server.ListenAddr, candidateAddress)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("environment revision did not schedule a restart")
+	}
+	if got := os.Getenv(key); got != candidateAddress {
+		t.Fatalf("candidate environment was not active before restart: %q", got)
+	}
+
+	recovered, err := manager.RecoverFailedRestart(errors.New("late listener failure"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Server.ListenAddr != cfg.Server.ListenAddr {
+		t.Fatalf("recovered listener=%q, want %q", recovered.Server.ListenAddr, cfg.Server.ListenAddr)
+	}
+	if got := os.Getenv(key); got != cfg.Server.ListenAddr {
+		t.Fatalf("dotenv rollback restored %q, want %q", got, cfg.Server.ListenAddr)
+	}
+	manager.mu.RLock()
+	pendingEnvironment := manager.restartEnvironmentFrom
+	manager.mu.RUnlock()
+	if pendingEnvironment != nil {
+		t.Fatal("environment rollback snapshot remained pending after recovery")
 	}
 }

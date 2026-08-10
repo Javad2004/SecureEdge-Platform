@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
 	"log/slog"
@@ -220,6 +221,9 @@ func TestGatewayTransportIgnoresAmbientProxySettings(t *testing.T) {
 	}
 	if transport.Proxy != nil {
 		t.Fatal("SecurityEdge data-plane transport must connect directly instead of honoring HTTP_PROXY/HTTPS_PROXY")
+	}
+	if transport.TLSClientConfig == nil || transport.TLSClientConfig.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("unexpected EdgeProxy TLS client configuration: %#v", transport.TLSClientConfig)
 	}
 }
 

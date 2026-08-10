@@ -25,6 +25,52 @@ var (
 	managedValues = map[string]string{}
 )
 
+// ManagedSnapshot captures only values owned by this dotenv loader. Process
+// variables supplied by a service manager or parent process are deliberately
+// excluded and therefore remain authoritative during rollback.
+type ManagedSnapshot struct {
+	values map[string]string
+}
+
+// SnapshotManagedEnvironment records the currently applied dotenv-owned
+// variables so the managed-generation supervisor can recover after a
+// post-preflight startup failure.
+func SnapshotManagedEnvironment() ManagedSnapshot {
+	managedMu.Lock()
+	defer managedMu.Unlock()
+	values := make(map[string]string, len(managedValues))
+	for key, value := range managedValues {
+		values[key] = value
+	}
+	return ManagedSnapshot{values: values}
+}
+
+// RestoreManagedEnvironment restores a prior dotenv-owned environment without
+// touching deployment-level variables that the loader never managed.
+func RestoreManagedEnvironment(snapshot ManagedSnapshot) error {
+	managedMu.Lock()
+	defer managedMu.Unlock()
+
+	for key := range managedValues {
+		if _, keep := snapshot.values[key]; keep {
+			continue
+		}
+		if err := os.Unsetenv(key); err != nil {
+			return fmt.Errorf("unset %s while restoring managed environment: %w", key, err)
+		}
+	}
+	for key, value := range snapshot.values {
+		if err := os.Setenv(key, value); err != nil {
+			return fmt.Errorf("set %s while restoring managed environment: %w", key, err)
+		}
+	}
+	managedValues = make(map[string]string, len(snapshot.values))
+	for key, value := range snapshot.values {
+		managedValues[key] = value
+	}
+	return nil
+}
+
 func ApplicationCandidates(repositoryPath string) []string {
 	candidates := []string{repositoryPath}
 	if currentModulePath() == applicationModulePath {

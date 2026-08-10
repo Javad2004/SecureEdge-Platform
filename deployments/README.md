@@ -10,3 +10,9 @@ Available deployment paths:
   - [`../apps/securityedge/deploy/systemd/`](../apps/securityedge/deploy/systemd/)
 
 Application-specific units remain next to the application they execute so their configuration contract, runtime paths, and documentation stay versioned together. Each systemd directory contains a hardened unit, a credentials-only environment template, and an initial production JSON profile. The deployment keeps secrets read-only under `/etc`, while transactionally managed JSON, telemetry history, and security logs live in writable `/var/lib` and `/var/log` locations. Mutable settings are intentionally not active environment assignments; otherwise systemd would reapply them over file-backed values after every reload or restart. If an operator deliberately adds such an override, the Control Plane rejects attempts to change that managed field rather than returning a misleading success response.
+
+## TLS boundaries
+
+The supplied single-host systemd deployment uses SecurityEdge as the public native-HTTPS boundary on port `443` and keeps EdgeProxy on HTTP loopback at `127.0.0.1:8080`. This is intentional: encrypting a hop that never leaves the same host provides little additional transport protection while adding certificate lifecycle overhead.
+
+EdgeProxy nevertheless supports native TLS independently. When SecurityEdge and EdgeProxy are placed on different hosts or cross an untrusted network boundary, enable `server.tls` on EdgeProxy, use an `https://` SecurityEdge upstream URL, and provide a certificate trusted by the SecurityEdge host. SecurityEdge-to-EdgeProxy HTTPS and EdgeProxy-to-Origin HTTPS both enforce TLS 1.2 or newer with certificate verification enabled by default. Management listeners remain private boundaries unless a deployment deliberately places a separately trusted TLS access layer in front of them.

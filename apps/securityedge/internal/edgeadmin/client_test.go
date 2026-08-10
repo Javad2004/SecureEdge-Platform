@@ -3,6 +3,7 @@ package edgeadmin
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -49,6 +50,9 @@ func TestClientDisablesAmbientProxyAndRedirects(t *testing.T) {
 	transport, ok := client.http.Transport.(*http.Transport)
 	if !ok || transport.Proxy != nil {
 		t.Fatalf("control-plane client must disable ambient proxy: %#v", client.http.Transport)
+	}
+	if transport.TLSClientConfig == nil || transport.TLSClientConfig.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("unexpected EdgeProxy Admin TLS configuration: %#v", transport.TLSClientConfig)
 	}
 	_, status, err := client.JSON(context.Background(), http.MethodGet, "/healthz", nil, nil)
 	if err == nil || status != http.StatusFound {

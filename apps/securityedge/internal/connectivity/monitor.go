@@ -2,6 +2,7 @@ package connectivity
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -278,35 +279,44 @@ func probeDataPlaneTCP(ctx context.Context, cfg config.Config) probeResult {
 	if err != nil {
 		return probeResult{id: "edgeproxy_data_tcp", name: "EdgeProxy data-plane TCP", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: cfg.Server.UpstreamProxyURL, message: "upstream proxy URL is invalid", err: err.Error()}
 	}
+	protocol := strings.ToLower(u.Scheme)
+	if protocol == "" {
+		protocol = "http"
+	}
+	details := map[string]any{"protocol": protocol, "tls": protocol == "https"}
 	started := time.Now()
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", hostPort(u))
 	latency := time.Since(started)
 	if err != nil {
-		return probeResult{id: "edgeproxy_data_tcp", name: "EdgeProxy data-plane TCP", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: cfg.Server.UpstreamProxyURL, message: "SecurityEdge cannot establish a TCP connection to EdgeProxy", err: err.Error(), latency: latency}
+		return probeResult{id: "edgeproxy_data_tcp", name: "EdgeProxy data-plane TCP", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: cfg.Server.UpstreamProxyURL, message: "SecurityEdge cannot establish a TCP connection to EdgeProxy", err: err.Error(), latency: latency, details: details}
 	}
 	_ = conn.Close()
-	return probeResult{id: "edgeproxy_data_tcp", name: "EdgeProxy data-plane TCP", layer: "edgeproxy", status: StatusHealthy, critical: true, endpoint: cfg.Server.UpstreamProxyURL, message: "SecurityEdge can establish a TCP connection to EdgeProxy", latency: latency}
+	return probeResult{id: "edgeproxy_data_tcp", name: "EdgeProxy data-plane TCP", layer: "edgeproxy", status: StatusHealthy, critical: true, endpoint: cfg.Server.UpstreamProxyURL, message: "SecurityEdge can establish a TCP connection to EdgeProxy", latency: latency, details: details}
 }
 
 func probeDataPlaneHTTP(ctx context.Context, cfg config.Config, configuredRoutes []routes.Route) probeResult {
 	if cfg.Server.Mode != "gateway" {
-		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy HTTP health", layer: "edgeproxy", status: StatusNotApplicable, critical: true, message: "embedded mode invokes EdgeProxy in-process"}
+		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy data-plane HTTP(S)", layer: "edgeproxy", status: StatusNotApplicable, critical: true, message: "embedded mode invokes EdgeProxy in-process"}
 	}
 	target := representativeDataPlaneTarget(configuredRoutes)
 	u, err := url.Parse(cfg.Server.UpstreamProxyURL)
 	if err != nil {
-		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy HTTP health", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: cfg.Server.UpstreamProxyURL, message: "upstream proxy URL is invalid", err: err.Error()}
+		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy data-plane HTTP(S)", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: cfg.Server.UpstreamProxyURL, message: "upstream proxy URL is invalid", err: err.Error()}
 	}
 	u.Path = joinURLPath(u.Path, target.path)
 	u.RawQuery = ""
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, u.String(), nil)
 	if err != nil {
-		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy HTTP health", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: u.String(), message: "failed to construct EdgeProxy data-plane request", err: err.Error()}
+		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy data-plane HTTP(S)", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: u.String(), message: "failed to construct EdgeProxy data-plane request", err: err.Error()}
 	}
 	if target.host != "" {
 		req.Host = target.host
 	}
-	details := map[string]any{"probe_path": target.path}
+	protocol := strings.ToLower(u.Scheme)
+	if protocol == "" {
+		protocol = "http"
+	}
+	details := map[string]any{"probe_path": target.path, "protocol": protocol, "tls": protocol == "https"}
 	if target.host != "" {
 		details["probe_host"] = target.host
 	}
@@ -314,7 +324,11 @@ func probeDataPlaneHTTP(ctx context.Context, cfg config.Config, configuredRoutes
 		details["route"] = target.routeName
 	}
 	client := &http.Client{
-		Transport:     &http.Transport{Proxy: nil, DisableKeepAlives: true},
+		Transport: &http.Transport{
+			Proxy:             nil,
+			DisableKeepAlives: true,
+			TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12},
+		},
 		Timeout:       cfg.Admin.Connectivity.Timeout.Duration,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
@@ -322,16 +336,16 @@ func probeDataPlaneHTTP(ctx context.Context, cfg config.Config, configuredRoutes
 	resp, err := client.Do(req)
 	latency := time.Since(started)
 	if err != nil {
-		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy HTTP health", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: u.String(), message: "EdgeProxy data plane is unreachable over HTTP", err: err.Error(), latency: latency, details: details}
+		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy data-plane HTTP(S)", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: u.String(), message: fmt.Sprintf("EdgeProxy data plane is unreachable over %s", strings.ToUpper(protocol)), err: err.Error(), latency: latency, details: details}
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	requestID := strings.TrimSpace(resp.Header.Get("X-Request-ID"))
 	if requestID == "" {
-		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy HTTP health", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: u.String(), message: fmt.Sprintf("EdgeProxy returned HTTP %d without matching the configured probe route", resp.StatusCode), httpStatus: resp.StatusCode, latency: latency, details: details}
+		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy data-plane HTTP(S)", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: u.String(), message: fmt.Sprintf("EdgeProxy returned HTTP %d without matching the configured probe route", resp.StatusCode), httpStatus: resp.StatusCode, latency: latency, details: details}
 	}
 	details["request_id"] = requestID
-	return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy HTTP health", layer: "edgeproxy", status: StatusHealthy, critical: true, endpoint: u.String(), message: fmt.Sprintf("EdgeProxy accepted the configured route probe with HTTP %d", resp.StatusCode), httpStatus: resp.StatusCode, latency: latency, details: details}
+	return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy data-plane HTTP(S)", layer: "edgeproxy", status: StatusHealthy, critical: true, endpoint: u.String(), message: fmt.Sprintf("EdgeProxy accepted the configured route probe with HTTP %d", resp.StatusCode), httpStatus: resp.StatusCode, latency: latency, details: details}
 }
 
 func (m *Monitor) probeEdgeHealth(ctx context.Context, cfg config.Config) probeResult {

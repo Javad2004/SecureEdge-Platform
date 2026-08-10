@@ -193,3 +193,50 @@ func TestReloadValidatedRollsBackEnvironmentOnValidationFailure(t *testing.T) {
 		t.Fatalf("expected previous environment value after rollback, got %q", got)
 	}
 }
+
+func TestManagedEnvironmentSnapshotRestoresOnlyDotenvValues(t *testing.T) {
+	initial := SnapshotManagedEnvironment()
+	t.Cleanup(func() {
+		if err := RestoreManagedEnvironment(initial); err != nil {
+			t.Errorf("restore initial managed environment: %v", err)
+		}
+		_ = os.Unsetenv("EDGEPROXY_DOTENV_A")
+		_ = os.Unsetenv("EDGEPROXY_DOTENV_B")
+		_ = os.Unsetenv("EDGEPROXY_DOTENV_C")
+	})
+	t.Setenv("EDGEPROXY_DEPLOYMENT_OWNED_VALUE", "parent")
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.env")
+	second := filepath.Join(dir, "second.env")
+	if err := os.WriteFile(first, []byte("EDGEPROXY_DOTENV_A=one\nEDGEPROXY_DOTENV_B=two\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("EDGEPROXY_DOTENV_A=changed\nEDGEPROXY_DOTENV_C=three\nEDGEPROXY_DEPLOYMENT_OWNED_VALUE=ignored\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(first); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := SnapshotManagedEnvironment()
+	if err := Reload(second); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("EDGEPROXY_DOTENV_C"); got != "three" {
+		t.Fatalf("candidate environment was not applied: %q", got)
+	}
+	if err := RestoreManagedEnvironment(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("EDGEPROXY_DOTENV_A"); got != "one" {
+		t.Fatalf("EDGEPROXY_DOTENV_A=%q", got)
+	}
+	if got := os.Getenv("EDGEPROXY_DOTENV_B"); got != "two" {
+		t.Fatalf("EDGEPROXY_DOTENV_B=%q", got)
+	}
+	if _, exists := os.LookupEnv("EDGEPROXY_DOTENV_C"); exists {
+		t.Fatal("candidate-only managed variable was not removed")
+	}
+	if got := os.Getenv("EDGEPROXY_DEPLOYMENT_OWNED_VALUE"); got != "parent" {
+		t.Fatalf("deployment variable changed: %q", got)
+	}
+}

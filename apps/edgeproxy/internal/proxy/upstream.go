@@ -97,7 +97,7 @@ func newUpstreamPool(route config.RouteConfig) (*upstreamPool, error) {
 			ResponseHeaderTimeout:  route.Proxy.ResponseHeaderTimeout.Duration,
 			MaxResponseHeaderBytes: route.Proxy.MaxResponseHeaderBytes,
 			DisableCompression:     true,
-			TLSClientConfig:        &tls.Config{InsecureSkipVerify: raw.InsecureSkipVerify}, //nolint:gosec -- explicit per-upstream option
+			TLSClientConfig:        &tls.Config{InsecureSkipVerify: raw.InsecureSkipVerify, MinVersion: tls.VersionTLS12}, //nolint:gosec -- explicit per-upstream option
 		}
 		node := &upstream{name: raw.Name, url: parsed, weight: raw.Weight, priority: raw.Priority, transport: tr}
 		node.healthy.Store(!route.HealthCheck.Enabled)

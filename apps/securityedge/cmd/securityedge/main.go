@@ -444,6 +444,7 @@ func newReverseProxy(target *url.URL, cfg config.ServerConfig, logger *slog.Logg
 		TLSHandshakeTimeout: t.TLSHandshakeTimeout.Duration, ResponseHeaderTimeout: t.ResponseHeaderTimeout.Duration,
 		ExpectContinueTimeout:  t.ExpectContinueTimeout.Duration,
 		MaxResponseHeaderBytes: t.MaxResponseHeaderBytes,
+		TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12},
 	}
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,

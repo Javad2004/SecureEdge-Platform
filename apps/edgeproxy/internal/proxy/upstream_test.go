@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -489,5 +490,31 @@ func TestHealthTransitionCountersIncludeDataPlaneChanges(t *testing.T) {
 	}
 	if got := node.healthRecoveries.Load(); got != 1 {
 		t.Fatalf("health recoveries=%d, want 1", got)
+	}
+}
+
+func TestHTTPSUpstreamTransportRequiresTLS12OrNewer(t *testing.T) {
+	route := config.RouteConfig{
+		Name:      "tls-origin",
+		Upstreams: []config.UpstreamConfig{{URL: "https://origin.example.test", Name: "origin-1", Weight: 1, Priority: 1}},
+		Proxy: config.ProxyConfig{
+			DialTimeout:            config.Duration{Duration: time.Second},
+			ResponseHeaderTimeout:  config.Duration{Duration: time.Second},
+			IdleConnTimeout:        config.Duration{Duration: time.Minute},
+			MaxIdleConns:           8,
+			MaxIdleConnsPerHost:    4,
+			MaxResponseHeaderBytes: 1 << 20,
+		},
+	}
+	pool, err := newUpstreamPool(route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.closeIdleConnections()
+	if len(pool.nodes) != 1 || pool.nodes[0].transport.TLSClientConfig == nil {
+		t.Fatalf("unexpected upstream transport: %#v", pool.nodes)
+	}
+	if got := pool.nodes[0].transport.TLSClientConfig.MinVersion; got != tls.VersionTLS12 {
+		t.Fatalf("TLS minimum version=%#x, want TLS 1.2", got)
 	}
 }

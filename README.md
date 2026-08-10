@@ -4,10 +4,10 @@ SecureEdge Platform is a modular, multi-module Go project that combines a high-p
 
 The repository contains two independently executable applications:
 
-- **[EdgeProxy](apps/edgeproxy/README.md)** — host/path routing, six per-route load-balancing algorithms, health-aware failover, HTTP and WebSocket/protocol-upgrade reverse proxying, HTTP caching, detailed telemetry, automatic reload/restart, and a transactional Admin Control Plane.
+- **[EdgeProxy](apps/edgeproxy/README.md)** — host/path routing, six per-route load-balancing algorithms, health-aware failover, optional native HTTPS/TLS, HTTP and WebSocket/protocol-upgrade reverse proxying, HTTP caching, detailed telemetry, automatic reload/restart, and a transactional Admin Control Plane.
 - **[SecurityEdge](apps/securityedge/README.md)** — Web Application Firewall inspection, native optional HTTPS/TLS ingress, HTTP flood and overload controls, security telemetry, independent configuration watchers, and an authenticated operations/control dashboard placed in front of EdgeProxy.
 
-The active runtime model uses **standalone non-embedded gateway mode**. SecurityEdge accepts public HTTP or native HTTPS traffic, inspects and admits each request, and forwards accepted traffic to EdgeProxy over loopback in host deployments or over a private service network in Docker Compose.
+The active runtime model uses **standalone non-embedded gateway mode**. SecurityEdge accepts public HTTP or native HTTPS traffic, inspects and admits each request, and forwards accepted traffic to EdgeProxy over loopback in the supplied single-host deployment or over a private service network in Docker Compose. EdgeProxy can also terminate native TLS when that internal hop crosses a host or trust boundary; outbound HTTPS connections from SecurityEdge to EdgeProxy and from EdgeProxy to Origins explicitly require TLS 1.2 or newer.
 
 SecurityEdge resolves the original client address using an explicit trusted-proxy policy and forwards only that verified address to EdgeProxy. EdgeProxy independently trusts forwarding metadata only from the expected SecurityEdge peer, preserving client identity without accepting spoofed headers from direct clients.
 
@@ -21,7 +21,8 @@ HTTP/HTTPS client
 SecurityEdge public ingress
     │  WAF inspection, rate limiting, admission control
     ▼
-EdgeProxy loopback data plane
+EdgeProxy data plane
+    │  loopback HTTP in the supplied single-host profile; optional HTTPS across hosts
     │  routing, cache, health-aware origin selection
     ▼
 Application origin

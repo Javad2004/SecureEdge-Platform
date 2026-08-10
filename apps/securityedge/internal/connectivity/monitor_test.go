@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -199,6 +200,47 @@ func TestProbeDataPlaneHTTPUsesConfiguredWildcardRoute(t *testing.T) {
 	}
 	if result.details["request_id"] != "matched-route" || result.details["route"] != "api" {
 		t.Fatalf("details=%#v", result.details)
+	}
+	if result.details["protocol"] != "http" || result.details["tls"] != false {
+		t.Fatalf("protocol details=%#v", result.details)
+	}
+}
+
+func TestProbeDataPlaneTCPReportsHTTPSProtocol(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	cfg := config.Default()
+	cfg.Server.Mode = "gateway"
+	cfg.Server.UpstreamProxyURL = "https://" + listener.Addr().String()
+	result := probeDataPlaneTCP(context.Background(), cfg)
+	if result.status != StatusHealthy {
+		t.Fatalf("result=%#v", result)
+	}
+	if result.details["protocol"] != "https" || result.details["tls"] != true {
+		t.Fatalf("TLS protocol details=%#v", result.details)
+	}
+}
+
+func TestProbeDataPlaneHTTPSReportsTLSProtocol(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.Mode = "gateway"
+	cfg.Server.UpstreamProxyURL = "https://127.0.0.1:1"
+	cfg.Admin.Connectivity.Timeout = config.Duration{Duration: 100 * time.Millisecond}
+	result := probeDataPlaneHTTP(context.Background(), cfg, []routes.Route{{
+		Name: "api", Hosts: []string{"project.test"}, PathPrefix: "/",
+	}})
+	if result.status != StatusDown {
+		t.Fatalf("result=%#v", result)
+	}
+	if result.details["protocol"] != "https" || result.details["tls"] != true {
+		t.Fatalf("TLS protocol details=%#v", result.details)
+	}
+	if !strings.Contains(result.message, "HTTPS") {
+		t.Fatalf("message=%q", result.message)
 	}
 }
 

@@ -231,7 +231,7 @@ function renderConnectivity() {
     '<span class="topology-arrow">→</span>',
     topologyNode(ingress?.status, 'SecurityEdge', 'Public application-security ingress', ingress?.endpoint || '—'),
     '<span class="topology-arrow">→</span>',
-    topologyNode(connectivity.edgeproxy_connection_status, 'EdgeProxy', 'Data plane + Admin API', edgeHTTP ? compactLatency(edgeHTTP.latency_ms) : '—'),
+    topologyNode(connectivity.edgeproxy_connection_status, 'EdgeProxy', `${String(edgeHTTP?.details?.protocol || 'http').toUpperCase()} data plane + Admin API`, edgeHTTP ? compactLatency(edgeHTTP.latency_ms) : '—'),
     '<span class="topology-arrow">→</span>',
     topologyNode(routeStatus, 'Routes', `${fmt(counts.ready_routes)}/${fmt(counts.total_routes)} ready`, 'Route readiness'),
     '<span class="topology-arrow">→</span>',
@@ -882,8 +882,11 @@ function renderSystem() {
   const connection = state.overview?.connectivity || {};
   const edgeAdmin = componentByID(connection, 'edgeproxy_admin_health');
   const edgeData = componentByID(connection, 'edgeproxy_data_http');
+  const edgeServer = state.edgeConfig?.server || {};
+  const edgeProtocol = String(edgeData?.details?.protocol || (edgeServer.tls?.enabled ? 'https' : 'http')).toUpperCase();
   $('edge-system').innerHTML = metricRows([
-    ['Overall connection',statusLabel(connection.edgeproxy_connection_status)],['Data-plane HTTP',statusLabel(edgeData?.status)],
+    ['Overall connection',statusLabel(connection.edgeproxy_connection_status)],['Data-plane health',statusLabel(edgeData?.status)],
+    ['Data-plane protocol',edgeProtocol],['Data-plane listener',edgeServer.listen_addr||'—'],
     ['Admin API',statusLabel(edgeAdmin?.status)],['Admin HTTP status',edgeStatus||'unavailable'],
     ['Last connectivity check',dateText(connection.generated_at)],['Data-plane latency',compactLatency(edgeData?.latency_ms)],
     ['Metrics schema',state.overview?.edgeproxy_metrics?.schema_version||'—'],['Uptime',`${fmt(state.overview?.edgeproxy_metrics?.uptime_seconds)} s`],

@@ -5,16 +5,36 @@ bin/
 build/
 dist/
 logs/
+.dev/
+.cache/
 
 *.log
 *.ndjson
 *.exe
 *.test
 *.out
+*.tmp
+*.bak
+coverage.out
+coverage.html
+*.coverprofile
 
+# Local environment files and TLS key/certificate material must never enter
+# the Docker build context. Keep only committed environment templates.
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+*.zip
+*.tar
+*.tar.gz
 
 .vscode/
 .idea/
+.DS_Store
+Thumbs.db
+desktop.ini

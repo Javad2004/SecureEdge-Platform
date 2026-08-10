@@ -1,7 +1,7 @@
 {
   "server": {
     "mode": "gateway",
-    "listen_addr": "0.0.0.0:80",
+    "listen_addr": "0.0.0.0:443",
     "upstream_proxy_url": "http://127.0.0.1:8080",
     "read_header_timeout": "5s",
     "read_timeout": "30s",
@@ -16,6 +16,11 @@
     "forwarded_for_header": "X-Forwarded-For",
     "preserve_host": true,
     "add_security_headers": true,
+    "tls": {
+      "enabled": true,
+      "cert_file": "/etc/securityedge/tls/fullchain.pem",
+      "key_file": "/etc/securityedge/tls/privkey.pem"
+    },
     "upstream_transport": {
       "dial_timeout": "5s",
       "tls_handshake_timeout": "5s",

@@ -64,6 +64,7 @@ func TestDashboardAdvancedControlPlaneContract(t *testing.T) {
 		"cache-config-form", "cache-route-select", "telemetry-dialog", "telemetry-status-bars",
 		"system-security-server-form", "system-security-admin-form", "system-security-edgeproxy-form",
 		"system-waf-form", "system-edge-server-form", "system-edge-admin-form",
+		`name="tls.enabled"`, `name="tls.cert_file"`, `name="tls.key_file"`,
 		"/cache/purge", "load_balancing", "health_check", "/telemetry",
 		"/api/v1/edgeproxy-settings", "/api/v1/waf", "/api/v1/edgeproxy/server", "/api/v1/edgeproxy/admin",
 	} {

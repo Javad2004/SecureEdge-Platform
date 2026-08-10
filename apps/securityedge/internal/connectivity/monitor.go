@@ -261,7 +261,13 @@ func probeGatewayListener(ctx context.Context, cfg config.Config) probeResult {
 		return probeResult{id: "securityedge_ingress", name: "SecurityEdge public ingress", layer: "securityedge", status: StatusDown, critical: true, endpoint: endpoint, message: "configured public listener is not accepting local TCP connections", err: err.Error(), latency: latency}
 	}
 	_ = conn.Close()
-	return probeResult{id: "securityedge_ingress", name: "SecurityEdge public ingress", layer: "securityedge", status: StatusHealthy, critical: true, endpoint: endpoint, message: "public gateway listener is accepting TCP connections", latency: latency, details: map[string]any{"external_firewall_verified": false}}
+	protocol := "http"
+	message := "public HTTP gateway listener is accepting TCP connections"
+	if cfg.Server.TLS.Enabled {
+		protocol = "https"
+		message = "public HTTPS gateway listener is accepting TCP connections"
+	}
+	return probeResult{id: "securityedge_ingress", name: "SecurityEdge public ingress", layer: "securityedge", status: StatusHealthy, critical: true, endpoint: endpoint, message: message, latency: latency, details: map[string]any{"external_firewall_verified": false, "protocol": protocol, "tls": cfg.Server.TLS.Enabled}}
 }
 
 func probeDataPlaneTCP(ctx context.Context, cfg config.Config) probeResult {

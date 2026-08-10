@@ -12,7 +12,7 @@ The files are stored at repository level because they describe how both applicat
 ### Host or LAN gateway mode
 
 ```text
-HTTP client → SecurityEdge → EdgeProxy → Application Origin
+HTTP/HTTPS client → SecurityEdge → EdgeProxy → Application Origin
 ```
 
 SecurityEdge and EdgeProxy run as separate processes on the gateway host. EdgeProxy binds its data and Admin listeners to loopback so clients cannot bypass SecurityEdge.
@@ -172,7 +172,7 @@ When changing a paired deployment profile:
 
 ## Security boundaries
 
-- SecurityEdge is the only public HTTP ingress.
+- SecurityEdge is the only public HTTP/HTTPS ingress; native TLS may terminate there or at a deliberately trusted external edge.
 - SecurityEdge-to-EdgeProxy and EdgeProxy-to-Origin data-plane connections are direct and do not use ambient `HTTP_PROXY` or `HTTPS_PROXY` variables.
 - EdgeProxy and Origin listeners are loopback-only on host deployments or unpublished on private container networks.
 - The SecurityEdge dashboard remains loopback-bound on the host unless another trusted access layer is added.

@@ -9,7 +9,8 @@ param(
     [string]$OriginHost = "",
     [int]$OriginPort = 0,
     [string]$AdminUrl = "",
-    [string]$Token = ""
+    [string]$Token = "",
+    [switch]$Insecure
 )
 
 $ErrorActionPreference = "Stop"
@@ -95,12 +96,23 @@ if (-not $OriginHost) { $OriginHost = $originUri.Host }
 if ($OriginPort -eq 0) { $OriginPort = $originUri.Port }
 $edgeDataUrl = ([string]$configObject.server.upstream_proxy_url).TrimEnd('/')
 $ingressPort = Port-FromListen ([string]$configObject.server.listen_addr)
-$publicBaseUrl = if ($ingressPort -eq 80) { "http://$Domain" } else { "http://${Domain}:$ingressPort" }
+$ingressScheme = if ([bool]$configObject.server.tls.enabled) { "https" } else { "http" }
+$publicBaseUrl = if (($ingressScheme -eq "http" -and $ingressPort -eq 80) -or ($ingressScheme -eq "https" -and $ingressPort -eq 443)) {
+    "${ingressScheme}://$Domain"
+}
+else {
+    "${ingressScheme}://${Domain}:$ingressPort"
+}
+$publicCurlArgs = if ($Insecure) { @("-k") } else { @() }
 
 Section "Configuration contract"
 Assert ($configObject.server.mode -eq "gateway") "Deployment profile uses standalone gateway mode"
 Assert (Test-Path $edgeConfigPath) "Referenced EdgeProxy configuration exists"
-Write-Host "SecurityEdge ingress: $($configObject.server.listen_addr)"
+Write-Host "SecurityEdge ingress: $publicBaseUrl ($($configObject.server.listen_addr))"
+if ([bool]$configObject.server.tls.enabled) {
+    Assert (-not [string]::IsNullOrWhiteSpace([string]$configObject.server.tls.cert_file)) "Native TLS certificate path is configured"
+    Assert (-not [string]::IsNullOrWhiteSpace([string]$configObject.server.tls.key_file)) "Native TLS private-key path is configured"
+}
 Write-Host "EdgeProxy data plane: $edgeDataUrl"
 Write-Host "Operations API: $AdminUrl"
 Write-Host "Origin: ${OriginHost}:$OriginPort"
@@ -137,8 +149,8 @@ Assert ($edgeHealth.Status -eq 200) "EdgeProxy loopback health returns HTTP 200"
 Section "Clean request and cache"
 $nonce = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 $url = "$publicBaseUrl/verification?run=$nonce"
-$first = Invoke-Probe $url
-$second = Invoke-Probe $url
+$first = Invoke-Probe $url $publicCurlArgs
+$second = Invoke-Probe $url $publicCurlArgs
 Assert ($first.Status -eq 200) "First clean request returns HTTP 200"
 Assert ($first.Headers -match '(?im)^X-Security-Action:\s*ALLOW\s*$') "SecurityEdge allows the clean request"
 Assert ($first.Headers -match '(?im)^X-Cache:\s*MISS\s*$') "First request is an EdgeProxy cache MISS"
@@ -155,7 +167,7 @@ $attacks = @(
     @{ Name = "Path traversal"; Url = "$publicBaseUrl/download?file=..%2F..%2Fetc%2Fpasswd" }
 )
 foreach ($attack in $attacks) {
-    $response = Invoke-Probe $attack.Url
+    $response = Invoke-Probe $attack.Url $publicCurlArgs
     Assert ($response.Status -eq 403) "$($attack.Name) is blocked with HTTP 403"
 }
 

@@ -15,6 +15,9 @@ func TestSystemdProfileKeepsMutableSettingsFileBacked(t *testing.T) {
 		"SECURITYEDGE_SERVER_LISTEN_ADDR",
 		"SECURITYEDGE_UPSTREAM_PROXY_URL",
 		"SECURITYEDGE_FORWARDED_FOR_HEADER",
+		"SECURITYEDGE_TLS_ENABLED",
+		"SECURITYEDGE_TLS_CERT_FILE",
+		"SECURITYEDGE_TLS_KEY_FILE",
 		"SECURITYEDGE_ADMIN_LISTEN_ADDR",
 		"SECURITYEDGE_LOG_FILE_PATH",
 		"SECURITYEDGE_TELEMETRY_HISTORY_FILE",
@@ -38,8 +41,11 @@ func TestSystemdProfileKeepsMutableSettingsFileBacked(t *testing.T) {
 	if cfg.Admin.AuthToken != "runtime-securityedge-token" || cfg.EdgeProxy.AdminToken != "runtime-edgeproxy-token" {
 		t.Fatalf("runtime credentials were not injected")
 	}
-	if cfg.Server.ListenAddr != "0.0.0.0:80" || cfg.Admin.ListenAddr != "127.0.0.1:9191" {
+	if cfg.Server.ListenAddr != "0.0.0.0:443" || cfg.Admin.ListenAddr != "127.0.0.1:9191" {
 		t.Fatalf("unexpected initial systemd listeners: server=%q admin=%q", cfg.Server.ListenAddr, cfg.Admin.ListenAddr)
+	}
+	if !cfg.Server.TLS.Enabled || cfg.Server.TLS.CertFile != "/etc/securityedge/tls/fullchain.pem" || cfg.Server.TLS.KeyFile != "/etc/securityedge/tls/privkey.pem" {
+		t.Fatalf("unexpected systemd TLS configuration: %#v", cfg.Server.TLS)
 	}
 	if cfg.EdgeProxy.ConfigPath != "/var/lib/edgeproxy/config.json" {
 		t.Fatalf("unexpected shared Route-table path %q", cfg.EdgeProxy.ConfigPath)
@@ -156,5 +162,12 @@ func TestEnvironmentManagedChangesAreRejected(t *testing.T) {
 	t.Setenv("SECURITYEDGE_EDGEPROXY_CONFIG_PATH", "")
 	if err := ValidateEnvironmentManagedChanges(current, next); err != nil {
 		t.Fatalf("unmanaged file-backed change was rejected: %v", err)
+	}
+
+	t.Setenv("SECURITYEDGE_TLS_ENABLED", "false")
+	next = current
+	next.Server.TLS.Enabled = !current.Server.TLS.Enabled
+	if err := ValidateEnvironmentManagedChanges(current, next); err == nil || !strings.Contains(err.Error(), "SECURITYEDGE_TLS_ENABLED") {
+		t.Fatalf("expected managed TLS mode change to be rejected, got %v", err)
 	}
 }

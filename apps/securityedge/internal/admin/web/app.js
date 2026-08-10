@@ -866,8 +866,12 @@ function renderSystem() {
   const status = state.overview?.security_status || {};
   const history = state.overview?.telemetry_history || {};
   const build = state.overview?.build || {};
+  const securityServer = state.securityConfig?.server || {};
+  const ingress = securityServer.mode === 'gateway'
+    ? `${securityServer.tls?.enabled ? 'HTTPS' : 'HTTP'} · ${securityServer.listen_addr || '—'}`
+    : 'Embedded';
   $('security-system').innerHTML = metricRows([
-    ['Version',build.version||'—'],['Build commit',build.commit||'—'],['Runtime',`${build.go_version||'—'} · ${build.os||'—'}/${build.arch||'—'}`],
+    ['Ingress',ingress],['Version',build.version||'—'],['Build commit',build.commit||'—'],['Runtime',`${build.go_version||'—'} · ${build.os||'—'}/${build.arch||'—'}`],
     ['Metrics schema',metrics.schema_version||'—'],['Uptime',`${fmt(metrics.uptime_seconds)} s`],['In flight',fmt(metrics.inflight)],
     ['Rate-limit buckets',fmt(status.rate_limit_buckets)],['Active temporary bans',fmt(status.active_bans)],
     ['Retained security events',fmt(logs.retained)],['Overwritten memory events',fmt(logs.dropped)],['Persistent log bytes',fmt(logs.file_bytes)],['Persistent log errors',fmt(logs.file_errors)],

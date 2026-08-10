@@ -76,7 +76,14 @@ type ServerConfig struct {
 	ForwardedForHeader     string          `json:"forwarded_for_header"`
 	PreserveHost           bool            `json:"preserve_host"`
 	AddSecurityHeaders     bool            `json:"add_security_headers"`
+	TLS                    TLSConfig       `json:"tls"`
 	UpstreamTransport      TransportConfig `json:"upstream_transport"`
+}
+
+type TLSConfig struct {
+	Enabled  bool   `json:"enabled"`
+	CertFile string `json:"cert_file"`
+	KeyFile  string `json:"key_file"`
 }
 
 type TransportConfig struct {
@@ -274,6 +281,8 @@ func ApplyEnvironmentOverrides(cfg *Config) error {
 	applyStringEnv("SECURITYEDGE_SERVER_LISTEN_ADDR", &cfg.Server.ListenAddr)
 	applyStringEnv("SECURITYEDGE_UPSTREAM_PROXY_URL", &cfg.Server.UpstreamProxyURL)
 	applyStringEnv("SECURITYEDGE_FORWARDED_FOR_HEADER", &cfg.Server.ForwardedForHeader)
+	applyStringEnv("SECURITYEDGE_TLS_CERT_FILE", &cfg.Server.TLS.CertFile)
+	applyStringEnv("SECURITYEDGE_TLS_KEY_FILE", &cfg.Server.TLS.KeyFile)
 	applyStringEnv("SECURITYEDGE_ADMIN_LISTEN_ADDR", &cfg.Admin.ListenAddr)
 	applyStringEnv("SECURITYEDGE_ADMIN_TOKEN", &cfg.Admin.AuthToken)
 	applyStringEnv("SECURITYEDGE_LOG_FILE_PATH", &cfg.Admin.LogStore.FilePath)
@@ -285,6 +294,13 @@ func ApplyEnvironmentOverrides(cfg *Config) error {
 
 	if value, ok := nonEmptyEnvironment("SECURITYEDGE_TRUSTED_PROXY_CIDRS"); ok {
 		cfg.Server.TrustedProxyCIDRs = splitEnvironmentList(value)
+	}
+	if value, ok := nonEmptyEnvironment("SECURITYEDGE_TLS_ENABLED"); ok {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("SECURITYEDGE_TLS_ENABLED must be a boolean: %w", err)
+		}
+		cfg.Server.TLS.Enabled = enabled
 	}
 	if value, ok := nonEmptyEnvironment("SECURITYEDGE_DNS_NAMES"); ok {
 		cfg.Admin.Connectivity.DNS.Names = splitEnvironmentList(value)
@@ -324,6 +340,9 @@ func ValidateEnvironmentManagedChanges(current, next Config) error {
 	add("SECURITYEDGE_UPSTREAM_PROXY_URL", "server.upstream_proxy_url", current.Server.UpstreamProxyURL != next.Server.UpstreamProxyURL)
 	add("SECURITYEDGE_FORWARDED_FOR_HEADER", "server.forwarded_for_header", current.Server.ForwardedForHeader != next.Server.ForwardedForHeader)
 	add("SECURITYEDGE_TRUSTED_PROXY_CIDRS", "server.trusted_proxy_cidrs", !reflect.DeepEqual(current.Server.TrustedProxyCIDRs, next.Server.TrustedProxyCIDRs))
+	add("SECURITYEDGE_TLS_ENABLED", "server.tls.enabled", current.Server.TLS.Enabled != next.Server.TLS.Enabled)
+	add("SECURITYEDGE_TLS_CERT_FILE", "server.tls.cert_file", current.Server.TLS.CertFile != next.Server.TLS.CertFile)
+	add("SECURITYEDGE_TLS_KEY_FILE", "server.tls.key_file", current.Server.TLS.KeyFile != next.Server.TLS.KeyFile)
 	add("SECURITYEDGE_ADMIN_LISTEN_ADDR", "admin.listen_addr", current.Admin.ListenAddr != next.Admin.ListenAddr)
 	add("SECURITYEDGE_ADMIN_TOKEN", "admin.auth_token", current.Admin.AuthToken != next.Admin.AuthToken)
 	add("SECURITYEDGE_LOG_FILE_PATH", "admin.log_store.file_path", current.Admin.LogStore.FilePath != next.Admin.LogStore.FilePath)
@@ -454,6 +473,8 @@ func (c *Config) Validate() error {
 	c.Server.ListenAddr = strings.TrimSpace(c.Server.ListenAddr)
 	c.Server.UpstreamProxyURL = strings.TrimSpace(c.Server.UpstreamProxyURL)
 	c.Server.ForwardedForHeader = strings.TrimSpace(c.Server.ForwardedForHeader)
+	c.Server.TLS.CertFile = strings.TrimSpace(c.Server.TLS.CertFile)
+	c.Server.TLS.KeyFile = strings.TrimSpace(c.Server.TLS.KeyFile)
 	c.Admin.ListenAddr = strings.TrimSpace(c.Admin.ListenAddr)
 	c.Admin.AuthToken = strings.TrimSpace(c.Admin.AuthToken)
 	c.Admin.LogStore.FilePath = strings.TrimSpace(c.Admin.LogStore.FilePath)
@@ -519,6 +540,12 @@ func (c *Config) Validate() error {
 		trusted = append(trusted, canonical)
 	}
 	c.Server.TrustedProxyCIDRs = trusted
+	if c.Server.TLS.Enabled && c.Server.Mode != "gateway" {
+		errs = append(errs, errors.New("server.tls.enabled requires server.mode gateway"))
+	}
+	if c.Server.TLS.Enabled && (c.Server.TLS.CertFile == "" || c.Server.TLS.KeyFile == "") {
+		errs = append(errs, errors.New("server.tls.cert_file and key_file are required when TLS is enabled"))
+	}
 	if err := validateTransport(c.Server.UpstreamTransport); err != nil {
 		errs = append(errs, err)
 	}

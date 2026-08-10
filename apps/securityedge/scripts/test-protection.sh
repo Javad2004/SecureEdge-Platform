@@ -5,6 +5,7 @@ BASE_URL="${BASE_URL:-http://project.test:8081}"
 ADMIN_URL="${ADMIN_URL:-http://127.0.0.1:9191}"
 TOKEN="${TOKEN:-${SECURITYEDGE_ADMIN_TOKEN:-}}"
 CURL_BIN="${CURL_BIN:-curl}"
+INSECURE="${INSECURE:-0}"
 
 if [ -z "$TOKEN" ]; then
   printf '%s\n' 'SECURITYEDGE_ADMIN_TOKEN (or TOKEN) is required.' >&2
@@ -12,11 +13,18 @@ if [ -z "$TOKEN" ]; then
   exit 2
 fi
 
+curl_common() {
+  if [ "$INSECURE" = "1" ]; then
+    "$CURL_BIN" --noproxy '*' -k "$@"
+  else
+    "$CURL_BIN" --noproxy '*' "$@"
+  fi
+}
 request() {
-  "$CURL_BIN" --noproxy '*' -fsS "$@"
+  curl_common -fsS "$@"
 }
 status_code() {
-  "$CURL_BIN" --noproxy '*' -sS -o /dev/null -w '%{http_code}' "$@"
+  curl_common -sS -o /dev/null -w '%{http_code}' "$@"
 }
 
 for path in \

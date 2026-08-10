@@ -1,6 +1,7 @@
 package securityedge
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -18,6 +19,12 @@ import (
 // after shutdown.
 func (r *Runtime) validateRestartCandidate(configPath string, current, next config.Config) error {
 	var errs []error
+
+	if next.Server.Mode == "gateway" && next.Server.TLS.Enabled {
+		if _, err := tls.LoadX509KeyPair(next.Server.TLS.CertFile, next.Server.TLS.KeyFile); err != nil {
+			errs = append(errs, fmt.Errorf("load server TLS certificate: %w", err))
+		}
+	}
 
 	prepared, err := prepareRuntimeConfig(configPath, next)
 	if err != nil {

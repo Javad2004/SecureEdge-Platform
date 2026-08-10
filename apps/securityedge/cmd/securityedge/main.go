@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -93,17 +94,19 @@ func run() int {
 }
 
 type securityGeneration struct {
-	runtime       *securityedge.Runtime
-	cfg           config.Config
-	gatewayServer *http.Server
-	adminServer   *http.Server
-	errCh         chan error
+	runtime                *securityedge.Runtime
+	cfg                    config.Config
+	gatewayServer          *http.Server
+	adminServer            *http.Server
+	errCh                  chan error
+	restartEnvironmentFrom *envfile.ManagedSnapshot
 }
 
 type securityRestartFallback struct {
-	path  string
-	cfg   config.Config
-	watch securityedge.WatchStatus
+	path        string
+	cfg         config.Config
+	watch       securityedge.WatchStatus
+	environment *envfile.ManagedSnapshot
 }
 
 type securityRollbackNotice struct {
@@ -145,7 +148,7 @@ func runManaged(configPath, envPath string, logger *slog.Logger, allowEnvironmen
 		restart, nextConfigPath, runErr := superviseSecurityGeneration(sigCtx, gen, envPath, defaultConfigPath, allowEnvironmentConfigPath, logger)
 		if restart {
 			fallbackPath, fallbackConfig := gen.runtime.RestartFallback()
-			fallback = &securityRestartFallback{path: fallbackPath, cfg: fallbackConfig, watch: gen.runtime.WatchStatus()}
+			fallback = &securityRestartFallback{path: fallbackPath, cfg: fallbackConfig, watch: gen.runtime.WatchStatus(), environment: gen.restartEnvironmentFrom}
 		}
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), gen.cfg.Server.ShutdownTimeout.Duration)
 		shutdownErr := shutdownServers(shutdownCtx,
@@ -199,6 +202,17 @@ func startSecurityGeneration(configPath, envPath string, previousWatch securitye
 			WriteTimeout: cfg.Server.WriteTimeout.Duration, IdleTimeout: cfg.Server.IdleTimeout.Duration,
 			MaxHeaderBytes: cfg.Server.MaxHeaderBytes,
 		}
+		if cfg.Server.TLS.Enabled {
+			certificate, certErr := tls.LoadX509KeyPair(cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile)
+			if certErr != nil {
+				runtime.Close()
+				return nil, fmt.Errorf("load security gateway TLS certificate: %w", certErr)
+			}
+			gen.gatewayServer.TLSConfig = &tls.Config{
+				Certificates: []tls.Certificate{certificate},
+				MinVersion:   tls.VersionTLS12,
+			}
+		}
 		gatewayListener, err = net.Listen("tcp", cfg.Server.ListenAddr)
 		if err != nil {
 			runtime.Close()
@@ -217,9 +231,15 @@ func startSecurityGeneration(configPath, envPath string, previousWatch securitye
 	}
 	if gen.gatewayServer != nil {
 		go func() {
-			logger.Info("security gateway starting", "address", cfg.Server.ListenAddr, "upstream", cfg.Server.UpstreamProxyURL, "max_concurrent", cfg.Server.MaxConcurrentRequests, "max_body_bytes", cfg.Server.MaxRequestBodyBytes)
-			if err := gen.gatewayServer.Serve(gatewayListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				gen.errCh <- fmt.Errorf("security gateway: %w", err)
+			logger.Info("security gateway starting", "address", cfg.Server.ListenAddr, "tls", cfg.Server.TLS.Enabled, "upstream", cfg.Server.UpstreamProxyURL, "max_concurrent", cfg.Server.MaxConcurrentRequests, "max_body_bytes", cfg.Server.MaxRequestBodyBytes)
+			var serveErr error
+			if cfg.Server.TLS.Enabled {
+				serveErr = gen.gatewayServer.ServeTLS(gatewayListener, "", "")
+			} else {
+				serveErr = gen.gatewayServer.Serve(gatewayListener)
+			}
+			if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+				gen.errCh <- fmt.Errorf("security gateway: %w", serveErr)
 			}
 		}()
 	}
@@ -235,6 +255,11 @@ func startSecurityGeneration(configPath, envPath string, previousWatch securitye
 }
 
 func restoreSecurityFallback(fallback securityRestartFallback, failedPath string) error {
+	if fallback.environment != nil {
+		if err := envfile.RestoreManagedEnvironment(*fallback.environment); err != nil {
+			return fmt.Errorf("restore last-known-good SecurityEdge environment: %w", err)
+		}
+	}
 	// A config-path switch leaves the healthy file untouched. When the failed
 	// candidate replaced the same file, restore its last successfully started
 	// persisted representation before retrying the previous generation.
@@ -273,6 +298,7 @@ func superviseSecurityGeneration(ctx context.Context, gen *securityGeneration, e
 					gen.runtime.RecordWatchChange(envPath, false, false, err)
 				} else if digest != envDigest {
 					envDigest = digest
+					previousEnvironment := envfile.SnapshotManagedEnvironment()
 					nextPath := securityPath
 					restartRequired := false
 					hotApplied := false
@@ -285,7 +311,7 @@ func superviseSecurityGeneration(ctx context.Context, gen *securityGeneration, e
 							restartRequired = true
 							return nil
 						}
-						if err := gen.runtime.Reload(); err != nil {
+						if err := gen.runtime.ReloadEnvironment(); err != nil {
 							var restart interface{ RestartRequired() bool }
 							if errors.As(err, &restart) && restart.RestartRequired() {
 								restartRequired = true
@@ -299,6 +325,7 @@ func superviseSecurityGeneration(ctx context.Context, gen *securityGeneration, e
 					if err != nil {
 						gen.runtime.RecordWatchChange(envPath, false, false, err)
 					} else if restartRequired {
+						gen.restartEnvironmentFrom = &previousEnvironment
 						gen.runtime.RecordWatchChange(envPath, false, true, nil)
 						return true, nextPath, nil
 					} else if hotApplied {

@@ -125,10 +125,13 @@ http://origin:9000
 
 ## Production notes
 
+The checked-in Compose profile intentionally uses HTTP ingress on port `8081` for local reproducibility. Native SecurityEdge TLS is available through `server.tls`; an Internet-facing container profile can enable it and mount the configured certificate chain/private key paths read-only. If TLS terminates outside SecurityEdge instead, restrict `trusted_proxy_cidrs` to the actual terminating proxy addresses so forwarded client identity remains trustworthy.
+
+
 The checked-in stack is a hardened project demonstration, not a complete Internet-edge production deployment. Before external use:
 
 - rotate both Admin tokens through a secret manager or protected environment file;
-- place TLS termination, a trusted load balancer, or a CDN in front of SecurityEdge;
+- either enable native SecurityEdge TLS with certificate/key material mounted read-only into the container, or place a trusted TLS-terminating load balancer/CDN in front of SecurityEdge;
 - apply host firewall policy and Docker daemon hardening;
 - verify that `172.30.0.0/24` does not overlap an existing local or VPN network, or change the subnet and matching EdgeProxy trusted-proxy CIDR together;
 - define resource limits appropriate to the host;

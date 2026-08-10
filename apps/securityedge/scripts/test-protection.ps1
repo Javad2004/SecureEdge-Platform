@@ -5,7 +5,8 @@ param(
     [string]$Token = "",
     [int]$BurstRequests = 60,
     [string]$EnvFile = "",
-    [switch]$NoEnv
+    [switch]$NoEnv,
+    [switch]$Insecure
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,6 +34,7 @@ if (-not $AdminUrl) {
 if (-not $Token) { $Token = [string]$configObject.admin.auth_token }
 
 $headers = @{ Authorization = "Bearer $Token" }
+$CurlArgs = if ($Insecure) { @("-k") } else { @() }
 function Section([string]$Text) { Write-Host "`n=== $Text ===" -ForegroundColor Cyan }
 
 Section "WAF categories"
@@ -44,21 +46,21 @@ $attacks = @(
     "/download?file=..%2F..%2Fetc%2Fpasswd"
 )
 foreach ($path in $attacks) {
-    $status = & curl.exe -s -o NUL -w "%{http_code}" "$BaseUrl$path"
+    $status = & curl.exe @CurlArgs -s -o NUL -w "%{http_code}" "$BaseUrl$path"
     if ($status -ne "403") { throw "Expected 403 for $path, got $status" }
     Write-Host "[OK] 403 $path" -ForegroundColor Green
 }
 
 Section "Protocol size limit"
 $longPath = "a" * 5000
-$status = & curl.exe -s -o NUL -w "%{http_code}" "$BaseUrl/$longPath"
+$status = & curl.exe @CurlArgs -s -o NUL -w "%{http_code}" "$BaseUrl/$longPath"
 if ($status -ne "414") { throw "Expected 414 for oversized path, got $status" }
 Write-Host "[OK] 414 oversized path" -ForegroundColor Green
 
 Section "Hierarchical rate limit and auto-ban"
 $codes = @{}
 for ($i = 1; $i -le $BurstRequests; $i++) {
-    $status = & curl.exe -s -o NUL -w "%{http_code}" "$BaseUrl/flood?i=$i"
+    $status = & curl.exe @CurlArgs -s -o NUL -w "%{http_code}" "$BaseUrl/flood?i=$i"
     if (-not $codes.ContainsKey($status)) { $codes[$status] = 0 }
     $codes[$status]++
 }

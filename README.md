@@ -5,16 +5,16 @@ SecureEdge Platform is a modular, multi-module Go project that combines a high-p
 The repository contains two independently executable applications:
 
 - **[EdgeProxy](apps/edgeproxy/README.md)** — host/path routing, six per-route load-balancing algorithms, health-aware failover, HTTP and WebSocket/protocol-upgrade reverse proxying, HTTP caching, detailed telemetry, automatic reload/restart, and a transactional Admin Control Plane.
-- **[SecurityEdge](apps/securityedge/README.md)** — Web Application Firewall inspection, HTTP flood and overload controls, security telemetry, independent configuration watchers, and an authenticated operations/control dashboard placed in front of EdgeProxy.
+- **[SecurityEdge](apps/securityedge/README.md)** — Web Application Firewall inspection, native optional HTTPS/TLS ingress, HTTP flood and overload controls, security telemetry, independent configuration watchers, and an authenticated operations/control dashboard placed in front of EdgeProxy.
 
-The active runtime model uses **standalone non-embedded gateway mode**. SecurityEdge accepts public HTTP traffic, inspects and admits each request, and forwards accepted traffic to EdgeProxy over loopback in host deployments or over a private service network in Docker Compose.
+The active runtime model uses **standalone non-embedded gateway mode**. SecurityEdge accepts public HTTP or native HTTPS traffic, inspects and admits each request, and forwards accepted traffic to EdgeProxy over loopback in host deployments or over a private service network in Docker Compose.
 
 SecurityEdge resolves the original client address using an explicit trusted-proxy policy and forwards only that verified address to EdgeProxy. EdgeProxy independently trusts forwarding metadata only from the expected SecurityEdge peer, preserving client identity without accepting spoofed headers from direct clients.
 
 ## Architecture
 
 ```text
-HTTP client
+HTTP/HTTPS client
     │
     │ DNS or static host mapping
     ▼
@@ -30,7 +30,8 @@ Application origin
 The administrative listeners remain local to the gateway host:
 
 ```text
-SecurityEdge ingress       0.0.0.0:80       public in the LAN profile
+SecurityEdge LAN ingress   0.0.0.0:80       public HTTP in the LAN profile
+SecurityEdge systemd       0.0.0.0:443      public native HTTPS in the systemd profile
 EdgeProxy data plane       127.0.0.1:8080   internal only
 EdgeProxy Admin API        127.0.0.1:9090   internal only
 SecurityEdge dashboard     127.0.0.1:9191   local operations access
@@ -72,7 +73,7 @@ The platform can be administered without manually stopping either executable:
 - Go **1.26.5** or later
 - Windows PowerShell for the supplied `.ps1` operational scripts
 - Bash and GNU `find` for the optional Linux development watcher
-- `curl` or `curl.exe` for HTTP verification
+- `curl` or `curl.exe` for HTTP/HTTPS verification
 - Docker only for the optional container workflows
 - A DNS record or static host mapping for named LAN testing
 
@@ -236,7 +237,7 @@ go run ./apps/securityedge/cmd/securityedge -pretty-logs
 
 Use `-env <path>` when the real environment file is stored outside the application directory. Explicit `-listen`, `-config`, or other CLI values still override `.env` for one-off tests.
 
-Open the public hostname from any permitted HTTP client. Requests that reach SecurityEdge appear automatically in the **Recent Client Traffic** panel; no external reporting script is required.
+Open the public hostname from any permitted HTTP or HTTPS client, according to the selected SecurityEdge profile. Requests that reach SecurityEdge appear automatically in the **Recent Client Traffic** panel; no external reporting script is required.
 
 ## Configuration profiles
 
@@ -259,6 +260,7 @@ Open the public hostname from any permitted HTTP client. Requests that reach Sec
 | `apps/securityedge/configs/securityedge.json` | LAN gateway on `0.0.0.0:80` |
 | `apps/securityedge/configs/embedded.json` | Optional future embedded integration profile |
 | `apps/securityedge/configs/compose.json` | Full-platform container profile using Docker service discovery |
+| `apps/securityedge/deploy/systemd/securityedge.json` | Hardened Linux gateway with native HTTPS on `0.0.0.0:443` |
 
 See [integration/README.md](integration/README.md) for the shared deployment contract.
 
@@ -444,7 +446,7 @@ Process-level environment variables remain supported and take precedence over `.
 
 ## Security boundaries
 
-- Only SecurityEdge should expose the public HTTP ingress in the integrated deployment.
+- Only SecurityEdge should expose the public HTTP/HTTPS ingress in the integrated deployment.
 - EdgeProxy data and Admin listeners should remain bound to loopback on host deployments, or remain unpublished on a private container network.
 - The SecurityEdge dashboard should remain bound to loopback unless protected by an additional trusted access layer.
 - The Origin should accept its application port only from the gateway host.

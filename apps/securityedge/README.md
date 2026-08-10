@@ -1,6 +1,6 @@
 # SecurityEdge
 
-SecurityEdge is the application-security gateway and operations component of the [SecureEdge Platform](../../README.md). It runs in front of [EdgeProxy](../edgeproxy/README.md), inspects incoming HTTP requests, enforces traffic policies, records security telemetry, and exposes an authenticated dashboard and Admin API.
+SecurityEdge is the application-security gateway and operations component of the [SecureEdge Platform](../../README.md). It runs in front of [EdgeProxy](../edgeproxy/README.md), inspects incoming HTTP or HTTPS requests, enforces traffic policies, records security telemetry, and exposes an authenticated dashboard and Admin API.
 
 This README assumes commands are executed from:
 
@@ -13,11 +13,12 @@ The active deployment mode is **standalone non-embedded gateway mode**. EdgeProx
 ## Architecture
 
 ```text
-HTTP client
+HTTP/HTTPS client
     │
     │ public request
     ▼
 SecurityEdge ingress
+    │  optional native TLS termination (TLS 1.2+)
     │  WAF inspection
     │  request-size and protocol controls
     │  per-client and global rate limiting
@@ -49,6 +50,18 @@ The gateway path also preserves validated HTTP/1.1 protocol upgrades end-to-end.
 - IP allowlists and denylists;
 - bounded inspection and fail-closed options.
 
+### Native HTTPS/TLS ingress
+
+- optional native TLS termination on the standalone SecurityEdge gateway listener;
+- certificate-chain and private-key paths are configured under `server.tls`;
+- TLS-enabled listeners enforce a minimum protocol version of TLS 1.2;
+- certificate/key material is loaded before the public listener is committed to a generation;
+- TLS enablement, certificate paths, and key paths are restart-required settings handled by the managed graceful-generation supervisor;
+- restart preflight revalidates the configured certificate/key pair before draining the healthy generation, including when the TLS file paths themselves did not change;
+- embedded mode rejects `server.tls.enabled=true` because it has no independent SecurityEdge listener.
+
+Native TLS is optional. Local-development, LAN-reference, and Compose profiles remain HTTP by default, while the checked-in systemd production profile demonstrates direct HTTPS on port `443`. A trusted external load balancer, CDN, or reverse proxy can still terminate TLS instead when that is the desired deployment boundary.
+
 ### HTTP flood and overload protection
 
 - per-client token-bucket rate limits;
@@ -79,12 +92,13 @@ SecurityEdge provides application-layer HTTP protection. SYN floods, UDP floods,
 
 ## Configuration profiles
 
-| Configuration | SecurityEdge ingress | EdgeProxy profile | Purpose |
-|---|---:|---|---|
-| `configs/local-dev.json` | `127.0.0.1:8081` | `../../integration/edgeproxy-local-behind-waf.json` | Local integrated development |
-| `configs/securityedge.json` | `0.0.0.0:80` | `../../integration/edgeproxy-behind-waf.json` | Reference LAN deployment |
-| `configs/embedded.json` | no standalone ingress | local integration profile | Optional future embedded mode |
-| `configs/compose.json` | `0.0.0.0:8081` | `../../integration/edgeproxy-compose-behind-waf.json` | Full-platform Docker Compose deployment |
+| Configuration | SecurityEdge ingress | TLS | EdgeProxy profile | Purpose |
+|---|---:|---|---|---|
+| `configs/local-dev.json` | `127.0.0.1:8081` | off | `../../integration/edgeproxy-local-behind-waf.json` | Local integrated development |
+| `configs/securityedge.json` | `0.0.0.0:80` | off | `../../integration/edgeproxy-behind-waf.json` | Reference LAN deployment |
+| `configs/embedded.json` | no standalone ingress | not applicable | local integration profile | Optional future embedded mode |
+| `configs/compose.json` | `0.0.0.0:8081` | off | `../../integration/edgeproxy-compose-behind-waf.json` | Full-platform Docker Compose deployment |
+| `deploy/systemd/securityedge.json` | `0.0.0.0:443` | native HTTPS | `/var/lib/edgeproxy/config.json` | Hardened Linux systemd deployment |
 
 The JSON value stored in `edgeproxy.config_path` is resolved relative to the SecurityEdge configuration file, not relative to the shell's current directory. The checked-in values therefore use `../../../integration/...` internally and correctly resolve to the repository-level `integration` directory.
 
@@ -110,6 +124,9 @@ Important variables:
 |---|---|
 | `SECURITYEDGE_CONFIG` | SecurityEdge JSON profile; relative paths are resolved from the loaded `.env` file |
 | `SECURITYEDGE_SERVER_LISTEN_ADDR` | Public gateway IP and port |
+| `SECURITYEDGE_TLS_ENABLED` | Enable or disable native TLS on the standalone gateway listener |
+| `SECURITYEDGE_TLS_CERT_FILE` | Certificate-chain PEM path used by native TLS |
+| `SECURITYEDGE_TLS_KEY_FILE` | Private-key PEM path used by native TLS |
 | `SECURITYEDGE_ADMIN_LISTEN_ADDR` | Dashboard and Admin API IP and port |
 | `SECURITYEDGE_ADMIN_TOKEN` | Dashboard and SecurityEdge Admin API credential |
 | `SECURITYEDGE_UPSTREAM_PROXY_URL` | Internal EdgeProxy data-plane URL |
@@ -128,6 +145,32 @@ Important variables:
 Empty or missing variables preserve the JSON values. Environment-derived values are runtime-only: dashboard policy updates continue to persist the file-backed configuration without writing secrets or machine-specific endpoint overrides into JSON.
 
 A missing auto-discovered `.env` file is not an error. An explicitly selected file must identify a regular UTF-8 file no larger than 1 MiB. Invalid files are rejected before any values are applied. Double-quoted dotenv values use JSON-compatible escapes in both the Go executable and PowerShell scripts; Go-only escapes such as `\xNN` are rejected. Never commit the real `.env`; commit only `.env.example`. SecurityEdge PowerShell verification, listener, connectivity, and firewall scripts use compatible validated dotenv loading and the same precedence as the service; `test-deployment.ps1` additionally loads the EdgeProxy `.env` so route and Origin overrides are tested exactly as deployed.
+
+## Native HTTPS configuration
+
+Native HTTPS is configured directly on the standalone gateway server:
+
+```json
+{
+  "server": {
+    "mode": "gateway",
+    "listen_addr": "0.0.0.0:443",
+    "tls": {
+      "enabled": true,
+      "cert_file": "/etc/securityedge/tls/fullchain.pem",
+      "key_file": "/etc/securityedge/tls/privkey.pem"
+    }
+  }
+}
+```
+
+`cert_file` must contain a PEM certificate chain appropriate for the public hostname and `key_file` must contain its matching private key. SecurityEdge validates that both paths are present when TLS is enabled and loads the X.509 key pair before accepting the generation. Runtime TLS uses a minimum version of TLS 1.2. Certificate verification remains the client's responsibility; production deployments should use a certificate issued for the hostname clients actually connect to.
+
+Changing `server.tls.enabled`, `cert_file`, or `key_file` through the JSON file, Admin API, Dashboard System form, or `SECURITYEDGE_TLS_*` environment overrides is restart-required. The supervisor validates the candidate certificate and listener before draining the healthy generation. Environment-only TLS changes are applied to the effective runtime without being persisted into the JSON file. Invalid environment revisions restore the previous managed environment.
+
+Certificate **contents** are intentionally not watched independently when the configured path stays the same. After replacing or renewing a PEM file in place, perform a controlled SecurityEdge restart (for systemd, `systemctl restart securityedge.service`) so the new certificate is loaded. A restart-required configuration change also causes the certificate pair to be revalidated.
+
+The SecurityEdge Admin/Dashboard listener is a separate management boundary and remains HTTP in the current design, normally bound to loopback. Protect remote Admin access with SSH/VPN/private-network access or a separately trusted TLS access layer rather than exposing port `9191` publicly.
 
 ## Quick start: local integrated development
 
@@ -266,7 +309,7 @@ The authenticated dashboard is also the platform Control Center. In addition to 
 - use a focused per-route cache editor and segment-aware purge controls without editing raw JSON;
 - inspect per-route request volume, success/error counts, status distributions, cache hit ratio, min/average/max and P50/P95/P99 latency, retries, upstream calls, timeouts, and bytes;
 - inspect per-Origin health, active requests, EWMA latency, scheduler selections, response/status counts, failures, retries, timeouts, and health transitions;
-- manage SecurityEdge gateway, Admin API, EdgeProxy dependency, and WAF settings through dedicated validated System forms;
+- manage SecurityEdge gateway—including native TLS enablement and certificate/key paths—Admin API, EdgeProxy dependency, and WAF settings through dedicated validated System forms;
 - manage EdgeProxy data-plane and Admin listeners, TLS, trusted proxies, timeouts, authentication, and log capacity through dedicated validated System forms;
 - rotate secrets without exposing existing values to browser JavaScript; blank secret inputs preserve the current redacted value;
 - edit and validate raw EdgeProxy and SecurityEdge JSON configurations for advanced multi-section transactions;
@@ -384,10 +427,10 @@ SecurityEdge watches three inputs independently: its own JSON configuration, the
 
 - a shared EdgeProxy file change reloads only SecurityEdge's Route metadata and policy lookup table;
 - a hot-applicable SecurityEdge change updates policies, WAF rules, trusted proxies, route metadata, and EdgeProxy Admin connectivity without interrupting traffic;
-- hot-applicable `.env` overrides are validated and applied in place; listener, transport, Admin listener/auth/log-store, process-wide limiter/ban-store, or configuration-path changes schedule an automatic graceful generation restart;
+- hot-applicable `.env` overrides are validated and applied in place; listener, TLS, transport, Admin listener/auth/log-store, process-wide limiter/ban-store, or configuration-path changes schedule an automatic graceful generation restart;
 - invalid JSON, referenced Route-table, or `.env` revisions restore the previous managed environment, keep the last healthy runtime, and are reported through `/api/v1/config/watch`.
 
-`POST /api/v1/reload` remains available for an explicit re-read. `PUT /api/v1/config` validates and atomically persists a complete candidate. Hot changes return `200 OK`; restart-required revisions from either endpoint return `202 Accepted` and are applied automatically by the managed process. Before the active generation is drained, SecurityEdge rebuilds configuration-dependent runtime components, verifies the shared Route table, reopens the security log store, probes the telemetry-history destination, and tests every newly claimed listener. An occupied port or unavailable persistent resource is rejected without persisting the API revision or stopping the healthy generation. New gateway and Admin sockets are bound synchronously, and a partial bind failure closes every socket acquired by that candidate. If startup still loses a post-preflight race, the supervisor restores the latest file-backed configuration known to be healthy in the active generation—including successful WAF, policy, Route-metadata, and dependency hot reloads—restarts that generation, and records the rejected candidate in watcher status.
+`POST /api/v1/reload` remains available for an explicit re-read. `PUT /api/v1/config` validates and atomically persists a complete candidate. Hot changes return `200 OK`; restart-required revisions from either endpoint return `202 Accepted` and are applied automatically by the managed process. Before the active generation is drained, SecurityEdge rebuilds configuration-dependent runtime components, verifies the shared Route table, reopens the security log store, probes the telemetry-history destination, validates enabled TLS certificate/key material, and tests every newly claimed listener. An occupied port or unavailable persistent resource is rejected without persisting the API revision or stopping the healthy generation. New gateway and Admin sockets are bound synchronously, and a partial bind failure closes every socket acquired by that candidate. If startup still loses a post-preflight race, the supervisor restores the latest file-backed configuration known to be healthy in the active generation—including successful WAF, policy, Route-metadata, and dependency hot reloads—restarts that generation, and records the rejected candidate in watcher status.
 
 Dedicated `GET/PUT /api/v1/server`, `GET/PUT /api/v1/admin`, `GET/PUT /api/v1/edgeproxy-settings`, and `GET/PUT /api/v1/waf` endpoints provide section-scoped SecurityEdge configuration management without requiring a complete-document replacement. The PowerShell control client exposes the same operations as `GetServer`, `SetServer`, `GetAdmin`, `SetAdmin`, `GetEdgeProxySettings`, `SetEdgeProxySettings`, `GetWAF`, and `SetWAF`; full-document editing remains available for advanced or multi-section transactions.
 
@@ -528,7 +571,7 @@ ADMIN_URL='http://127.0.0.1:9191' \
 bash ./scripts/test-security.sh
 ```
 
-Both scripts fail before sending requests when no Admin token is supplied and bypass ambient HTTP proxy settings for local verification. `test-protection.sh` expects a profile whose rate limiter and automatic-ban behavior are enabled.
+Both scripts fail before sending requests when no Admin token is supplied and bypass ambient HTTP proxy settings for local verification. For an HTTPS test endpoint with a deliberately self-signed development certificate, set `INSECURE=1`; production verification should leave it unset so certificate validation remains enabled. The PowerShell `test-security.ps1`, `test-protection.ps1`, and `test-deployment.ps1` scripts provide the equivalent opt-in `-Insecure` switch. `test-protection.sh` expects a profile whose rate limiter and automatic-ban behavior are enabled.
 
 ## Build and verification
 
@@ -588,6 +631,7 @@ install -o root -g root -m 0755 ./bin/securityedge \
 install -o root -g root -m 0644 ./deploy/systemd/securityedge.service \
   /etc/systemd/system/securityedge.service
 install -d -o root -g securityedge -m 0750 /etc/securityedge
+install -d -o root -g securityedge -m 0750 /etc/securityedge/tls
 install -o root -g securityedge -m 0640 \
   ./deploy/systemd/securityedge.env.example \
   /etc/securityedge/securityedge.env
@@ -598,7 +642,14 @@ install -o securityedge -g securityedge -m 0640 \
   /var/lib/securityedge/securityedge.json
 ```
 
-Replace both placeholder credentials in `/etc/securityedge/securityedge.env`. `EDGEPROXY_ADMIN_TOKEN` must exactly match the value used by EdgeProxy. Confirm the shared Route table is readable but not writable by SecurityEdge, then start the services. Startup validates each effective profile after applying its systemd environment overrides:
+Replace both placeholder credentials in `/etc/securityedge/securityedge.env`. `EDGEPROXY_ADMIN_TOKEN` must exactly match the value used by EdgeProxy. The checked-in systemd profile enables native HTTPS on port `443`, so install the certificate chain and matching private key before starting the service:
+
+```sh
+install -o root -g securityedge -m 0640 /path/to/fullchain.pem /etc/securityedge/tls/fullchain.pem
+install -o root -g securityedge -m 0640 /path/to/privkey.pem /etc/securityedge/tls/privkey.pem
+```
+
+Use certificate material issued for the hostname clients will use; do not commit private keys to the repository. Confirm the shared Route table is readable but not writable by SecurityEdge, then start the services. Startup validates each effective profile after applying its systemd environment overrides and loads the TLS key pair before binding the public generation:
 
 ```sh
 chown edgeproxy:edgeproxy /var/lib/edgeproxy/config.json
@@ -612,7 +663,7 @@ systemctl status securityedge.service
 journalctl -u securityedge.service -f
 ```
 
-The supplied systemd profile exposes public ingress on port `80` and keeps the Dashboard/Admin API loopback-only at `127.0.0.1:9191`. Change those values through the Dashboard/API or edit `/var/lib/securityedge/securityedge.json` before startup when a different network boundary is required. Dashboard/API changes persist atomically to that file; security events and bounded telemetry history survive restarts under `/var/log/securityedge` and `/var/lib/securityedge`.
+The supplied systemd profile terminates native HTTPS on public port `443` and keeps the Dashboard/Admin API loopback-only at `127.0.0.1:9191`. `CAP_NET_BIND_SERVICE` is retained only so the unprivileged SecurityEdge process can bind the privileged HTTPS port. Change the listener/TLS settings through the Dashboard/API or edit `/var/lib/securityedge/securityedge.json` before startup when a different network boundary is required. Dashboard/API changes persist atomically to that file; security events and bounded telemetry history survive restarts under `/var/log/securityedge` and `/var/lib/securityedge`. After renewing or replacing certificate files in place, restart `securityedge.service` to load the new key pair.
 
 The systemd environment template deliberately contains only `SECURITYEDGE_ADMIN_TOKEN` and the shared `EDGEPROXY_ADMIN_TOKEN`. Gateway, listener, Admin, WAF, DNS, logging, history, and EdgeProxy dependency settings remain file-backed so successful Control Plane updates remain authoritative after reload and restart. Defining their optional `SECURITYEDGE_*` environment overrides intentionally pins those fields. Dashboard/API and direct file reloads reject changes to environment-managed fields with a clear validation error; rotate the two systemd credentials in `/etc/securityedge/securityedge.env` and restart SecurityEdge instead of using the Dashboard token fields.
 
@@ -641,7 +692,7 @@ EdgeProxy route profile    /integration/edgeproxy-compose-behind-waf.json
 
 The `/app/config` and `/app/logs` paths are writable volumes owned by the non-root application user. This allows dashboard policy changes to be atomically persisted and allows rotated NDJSON logs to survive container recreation. Real credentials should be injected through `SECURITYEDGE_ADMIN_TOKEN` and `EDGEPROXY_ADMIN_TOKEN`.
 
-The image is designed to participate in a container network with services named `edgeproxy` and `origin`; running it alone will not provide a reachable upstream.
+The image is designed to participate in a container network with services named `edgeproxy` and `origin`; running it alone will not provide a reachable upstream. The checked-in Compose profile keeps ingress HTTP for a self-contained local demonstration. For an Internet-facing container deployment, either enable SecurityEdge native TLS and mount certificate/key material read-only at the configured paths, or terminate TLS at a trusted load balancer/CDN and configure `trusted_proxy_cidrs` to match that boundary.
 
 ### Run the complete platform
 
@@ -695,7 +746,7 @@ Generated files under `logs/` are runtime artifacts and must not be committed. K
 
 When that patch is applied, the EdgeProxy command independently discovers both application `.env` files. Set `SECURITYEDGE_CONFIG=configs/embedded.json` in `apps/securityedge/.env`; use `SECURITYEDGE_ENV_FILE` for an external file. EdgeProxy's `-no-env` flag disables both dotenv loaders, and `-validate` validates both configurations in the patched build.
 
-This mode is not required by the current deployment and the patch is not applied to the active EdgeProxy source tree. The supported demonstration path remains standalone non-embedded gateway mode.
+This mode is not required by the current deployment and the patch is not applied to the active EdgeProxy source tree. Because embedded mode has no independent SecurityEdge listener, `server.tls.enabled=true` is rejected there; TLS remains the responsibility of the outer EdgeProxy/server integration. The supported demonstration path remains standalone non-embedded gateway mode.
 
 ## Related documentation
 

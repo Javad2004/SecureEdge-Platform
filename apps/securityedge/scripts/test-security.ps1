@@ -4,7 +4,8 @@ param(
     [string]$AdminUrl = "",
     [string]$Token = "",
     [string]$EnvFile = "",
-    [switch]$NoEnv
+    [switch]$NoEnv,
+    [switch]$Insecure
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,12 +32,13 @@ if (-not $AdminUrl) {
 }
 if (-not $Token) { $Token = [string]$configObject.admin.auth_token }
 $Auth = "Authorization: Bearer $Token"
+$CurlArgs = if ($Insecure) { @("-k") } else { @() }
 
 Write-Host "Smoke test: $BaseUrl" -ForegroundColor Cyan
-curl.exe -i "$BaseUrl/api/products"
-curl.exe -i "$BaseUrl/api/products"
-curl.exe -i "$BaseUrl/search?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E"
-curl.exe -i "$BaseUrl/login?username=admin%27%20OR%201%3D1--"
+& curl.exe @CurlArgs -i "$BaseUrl/api/products"
+& curl.exe @CurlArgs -i "$BaseUrl/api/products"
+& curl.exe @CurlArgs -i "$BaseUrl/search?q=%3Cscript%3Ealert(1)%3C%2Fscript%3E"
+& curl.exe @CurlArgs -i "$BaseUrl/login?username=admin%27%20OR%201%3D1--"
 curl.exe -sS -H $Auth "$AdminUrl/api/v1/info"
 curl.exe -sS -H $Auth "$AdminUrl/api/v1/metrics"
 curl.exe -sS -H $Auth "$AdminUrl/api/v1/dashboard/overview"

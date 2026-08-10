@@ -71,6 +71,51 @@ func TestDefaultConfigurationValid(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsTLSInEmbeddedMode(t *testing.T) {
+	cfg := Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Server.TLS = TLSConfig{Enabled: true, CertFile: "server.crt", KeyFile: "server.key"}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "server.tls.enabled requires server.mode gateway") {
+		t.Fatalf("expected embedded TLS to be rejected, got %v", err)
+	}
+}
+
+func TestValidateRequiresTLSMaterialWhenEnabled(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cert string
+		key  string
+	}{
+		{name: "both missing"},
+		{name: "certificate missing", key: "server.key"},
+		{name: "key missing", cert: "server.crt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Server.Mode = "gateway"
+			cfg.EdgeProxy.ConfigPath = "edge.json"
+			cfg.Server.TLS.Enabled = true
+			cfg.Server.TLS.CertFile = tc.cert
+			cfg.Server.TLS.KeyFile = tc.key
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "server.tls.cert_file and key_file") {
+				t.Fatalf("expected incomplete TLS material to be rejected, got %v", err)
+			}
+		})
+	}
+
+	cfg := Default()
+	cfg.Server.Mode = "gateway"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Server.TLS = TLSConfig{Enabled: true, CertFile: " server.crt ", KeyFile: " server.key "}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected complete TLS paths to validate: %v", err)
+	}
+	if cfg.Server.TLS.CertFile != "server.crt" || cfg.Server.TLS.KeyFile != "server.key" {
+		t.Fatalf("TLS paths were not normalized: %#v", cfg.Server.TLS)
+	}
+}
+
 func TestRejectsInvalidConnectivityDNSConfiguration(t *testing.T) {
 	cfg := Default()
 	cfg.Server.Mode = "embedded"
@@ -498,6 +543,9 @@ func TestApplyEnvironmentOverridesCoversRuntimeEndpoints(t *testing.T) {
 	t.Setenv("SECURITYEDGE_ADMIN_LISTEN_ADDR", "127.0.0.1:9291")
 	t.Setenv("SECURITYEDGE_ADMIN_TOKEN", "security-runtime-token")
 	t.Setenv("SECURITYEDGE_TRUSTED_PROXY_CIDRS", "127.0.0.1/32,10.0.0.0/8")
+	t.Setenv("SECURITYEDGE_TLS_ENABLED", "true")
+	t.Setenv("SECURITYEDGE_TLS_CERT_FILE", "/run/securityedge/fullchain.pem")
+	t.Setenv("SECURITYEDGE_TLS_KEY_FILE", "/run/securityedge/privkey.pem")
 	t.Setenv("SECURITYEDGE_EDGEPROXY_CONFIG_PATH", "../../integration/edge.json")
 	t.Setenv("SECURITYEDGE_EDGEPROXY_ADMIN_URL", "http://127.0.0.1:9190")
 	t.Setenv("EDGEPROXY_ADMIN_TOKEN", "edge-runtime-token")
@@ -516,6 +564,9 @@ func TestApplyEnvironmentOverridesCoversRuntimeEndpoints(t *testing.T) {
 	if cfg.Server.ListenAddr != "0.0.0.0:8181" || cfg.Server.UpstreamProxyURL != "http://127.0.0.1:8180" {
 		t.Fatalf("gateway endpoint overrides were not applied: %#v", cfg.Server)
 	}
+	if !cfg.Server.TLS.Enabled || cfg.Server.TLS.CertFile != "/run/securityedge/fullchain.pem" || cfg.Server.TLS.KeyFile != "/run/securityedge/privkey.pem" {
+		t.Fatalf("gateway TLS overrides were not applied: %#v", cfg.Server.TLS)
+	}
 	if cfg.Admin.ListenAddr != "127.0.0.1:9291" || cfg.Admin.AuthToken != "security-runtime-token" {
 		t.Fatalf("admin overrides were not applied: %#v", cfg.Admin)
 	}
@@ -524,6 +575,14 @@ func TestApplyEnvironmentOverridesCoversRuntimeEndpoints(t *testing.T) {
 	}
 	if len(cfg.Server.TrustedProxyCIDRs) != 2 || len(cfg.Admin.Connectivity.DNS.Names) != 2 || len(cfg.Admin.Connectivity.DNS.ExpectedAddresses) != 1 {
 		t.Fatalf("list overrides were not applied: %#v", cfg)
+	}
+}
+
+func TestApplyEnvironmentOverridesRejectsInvalidTLSBoolean(t *testing.T) {
+	cfg := Default()
+	t.Setenv("SECURITYEDGE_TLS_ENABLED", "sometimes")
+	if err := ApplyEnvironmentOverrides(&cfg); err == nil || !strings.Contains(err.Error(), "SECURITYEDGE_TLS_ENABLED") {
+		t.Fatalf("expected invalid TLS boolean error, got %v", err)
 	}
 }
 

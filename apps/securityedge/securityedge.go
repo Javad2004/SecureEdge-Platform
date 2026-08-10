@@ -477,6 +477,46 @@ func (r *Runtime) Reload() error {
 	return nil
 }
 
+// ReloadEnvironment rebuilds the effective runtime view after a watched dotenv
+// revision without requiring the file-backed JSON to change. Unlike Reload, it
+// must not use the persisted-config no-op shortcut: environment-only listener,
+// TLS, dependency, and policy overrides can change while the JSON digest stays
+// identical. The dotenv loader owns environment rollback when this method
+// returns an error.
+func (r *Runtime) ReloadEnvironment() error {
+	r.configMu.Lock()
+	defer r.configMu.Unlock()
+
+	fileCfg, err := config.LoadFile(r.configPath)
+	if err != nil {
+		return err
+	}
+	runtimeCfg := cloneConfig(fileCfg)
+	if err := config.ApplyEnvironmentOverrides(&runtimeCfg); err != nil {
+		return err
+	}
+	if err := runtimeCfg.Validate(); err != nil {
+		return err
+	}
+	r.mu.RLock()
+	current := cloneConfig(r.cfg)
+	r.mu.RUnlock()
+	if reflect.DeepEqual(current, runtimeCfg) {
+		return nil
+	}
+	prepared, err := r.prepareReload(runtimeCfg)
+	if err != nil {
+		return err
+	}
+	if err := r.applyReload(prepared); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.healthyFileCfg = cloneConfig(fileCfg)
+	r.mu.Unlock()
+	return nil
+}
+
 // ValidateRestartConfig validates a configuration selected by a watched
 // SECURITYEDGE_CONFIG path before the healthy generation is drained.
 func (r *Runtime) ValidateRestartConfig(configPath string) error {
@@ -606,6 +646,7 @@ func restartRequiredChanges(current, next config.Config) []string {
 	// trust policy and could leave the newly configured custom header downstream.
 	add("server.forwarded_for_header", current.Server.ForwardedForHeader != next.Server.ForwardedForHeader)
 	add("server.preserve_host", current.Server.PreserveHost != next.Server.PreserveHost)
+	add("server.tls", !reflect.DeepEqual(current.Server.TLS, next.Server.TLS))
 	add("server.upstream_transport", !reflect.DeepEqual(current.Server.UpstreamTransport, next.Server.UpstreamTransport))
 	add("admin", !reflect.DeepEqual(current.Admin, next.Admin))
 	add("default_policy.rate_limit.cleanup_interval", current.DefaultPolicy.RateLimit.CleanupInterval != next.DefaultPolicy.RateLimit.CleanupInterval)

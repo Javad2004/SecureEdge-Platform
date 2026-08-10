@@ -150,6 +150,29 @@ func TestRepresentativeDataPlaneTargetBuildsWildcardHost(t *testing.T) {
 	}
 }
 
+func TestProbeGatewayListenerReportsTLSProtocol(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	cfg := config.Default()
+	cfg.Server.Mode = "gateway"
+	cfg.Server.ListenAddr = listener.Addr().String()
+	cfg.Server.TLS.Enabled = true
+	result := probeGatewayListener(context.Background(), cfg)
+	if result.status != StatusHealthy {
+		t.Fatalf("result=%#v", result)
+	}
+	if result.details["protocol"] != "https" || result.details["tls"] != true {
+		t.Fatalf("TLS details=%#v", result.details)
+	}
+	if result.message != "public HTTPS gateway listener is accepting TCP connections" {
+		t.Fatalf("message=%q", result.message)
+	}
+}
+
 func TestProbeDataPlaneHTTPUsesConfiguredWildcardRoute(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodHead || r.Host != "connectivity-probe.example.com" || r.URL.Path != "/api" {

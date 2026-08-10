@@ -230,6 +230,12 @@ function Apply-SecurityEdgeEnvironmentOverrides {
     if ($value) { $ConfigObject.server.upstream_proxy_url = $value }
     $value = Get-NonEmptyEnvironmentValue SECURITYEDGE_FORWARDED_FOR_HEADER
     if ($value) { $ConfigObject.server.forwarded_for_header = $value }
+    $tlsEnabled = Get-EnvironmentBoolean SECURITYEDGE_TLS_ENABLED
+    if ($null -ne $tlsEnabled) { $ConfigObject.server.tls.enabled = $tlsEnabled }
+    $value = Get-NonEmptyEnvironmentValue SECURITYEDGE_TLS_CERT_FILE
+    if ($value) { $ConfigObject.server.tls.cert_file = $value }
+    $value = Get-NonEmptyEnvironmentValue SECURITYEDGE_TLS_KEY_FILE
+    if ($value) { $ConfigObject.server.tls.key_file = $value }
     $value = Get-NonEmptyEnvironmentValue SECURITYEDGE_ADMIN_LISTEN_ADDR
     if ($value) { $ConfigObject.admin.listen_addr = $value }
     $value = Get-NonEmptyEnvironmentValue SECURITYEDGE_ADMIN_TOKEN
@@ -334,19 +340,25 @@ function Apply-EdgeProxyEnvironmentOverrides {
 function Get-SecurityEdgePublicBaseUrlFromConfig {
     param([Parameter(Mandatory = $true)]$ConfigObject)
 
+    $scheme = if ([bool]$ConfigObject.server.tls.enabled) { 'https' } else { 'http' }
     $dnsEnabled = [bool]$ConfigObject.admin.connectivity.dns.enabled
     $hostName = $null
     if ($dnsEnabled) {
         $hostName = @($ConfigObject.admin.connectivity.dns.names | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })[0]
     }
-    if (-not $hostName) {
-        return Get-LocalHttpUrlFromListenAddress -ListenAddress ([string]$ConfigObject.server.listen_addr)
-    }
 
-    $port = Get-PortFromEndpoint -Endpoint ([string]$ConfigObject.server.listen_addr)
-    if ($port -eq 0) {
+    $endpoint = Split-NetworkEndpoint -Endpoint ([string]$ConfigObject.server.listen_addr)
+    if ($endpoint.Port -eq 0) {
         throw "A SecurityEdge listener using port 0 has no predictable public URL; provide -BaseUrl explicitly."
     }
-    if ($port -eq 80) { return "http://$hostName" }
-    return "http://${hostName}:$port"
+    if (-not $hostName) {
+        $hostName = $endpoint.Host.Trim()
+        if ($hostName -eq '::') { $hostName = '::1' }
+        elseif (-not $hostName -or $hostName -eq '*' -or $hostName -eq '0.0.0.0') { $hostName = '127.0.0.1' }
+    }
+    $formattedHost = if ($hostName.Contains(':')) { "[$hostName]" } else { $hostName }
+    if (($scheme -eq 'http' -and $endpoint.Port -eq 80) -or ($scheme -eq 'https' -and $endpoint.Port -eq 443)) {
+        return "${scheme}://${formattedHost}"
+    }
+    return "${scheme}://${formattedHost}:$($endpoint.Port)"
 }

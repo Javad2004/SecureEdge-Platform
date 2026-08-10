@@ -17,6 +17,7 @@ import (
 
 	securityedge "github.com/Javad2004/SecureEdge-Platform/apps/securityedge"
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/envfile"
 )
 
 func TestStartSecurityGenerationClosesGatewayListenerWhenAdminBindFails(t *testing.T) {
@@ -385,6 +386,42 @@ func TestWatchedConfigPathFollowsDotenvOnlyWhenAllowed(t *testing.T) {
 	t.Setenv("SECURITYEDGE_CONFIG", "")
 	if got := watchedConfigPath(fallback, envPath, current, true); got != fallback {
 		t.Fatalf("empty dotenv path=%q, want %q", got, fallback)
+	}
+}
+
+func TestRestoreSecurityFallbackRestoresManagedEnvironment(t *testing.T) {
+	initial := envfile.SnapshotManagedEnvironment()
+	t.Cleanup(func() {
+		if err := envfile.RestoreManagedEnvironment(initial); err != nil {
+			t.Errorf("restore initial environment: %v", err)
+		}
+		_ = os.Unsetenv("SECURITYEDGE_RUNTIME_FALLBACK_TEST")
+	})
+	dir := t.TempDir()
+	healthyEnv := filepath.Join(dir, "healthy.env")
+	candidateEnv := filepath.Join(dir, "candidate.env")
+	if err := os.WriteFile(healthyEnv, []byte("SECURITYEDGE_RUNTIME_FALLBACK_TEST=healthy\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(candidateEnv, []byte("SECURITYEDGE_RUNTIME_FALLBACK_TEST=candidate\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := envfile.Load(healthyEnv); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := envfile.SnapshotManagedEnvironment()
+	if err := envfile.Reload(candidateEnv); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("SECURITYEDGE_RUNTIME_FALLBACK_TEST"); got != "candidate" {
+		t.Fatalf("candidate environment=%q", got)
+	}
+	fallback := securityRestartFallback{path: filepath.Join(dir, "healthy.json"), environment: &snapshot}
+	if err := restoreSecurityFallback(fallback, filepath.Join(dir, "different-candidate.json")); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("SECURITYEDGE_RUNTIME_FALLBACK_TEST"); got != "healthy" {
+		t.Fatalf("restored environment=%q", got)
 	}
 }
 

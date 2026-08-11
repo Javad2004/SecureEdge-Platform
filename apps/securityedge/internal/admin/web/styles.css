@@ -74,19 +74,38 @@ button,input,select {
   width:54px;
   height:54px;
   border-radius:16px;
-  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  background:linear-gradient(145deg,rgba(98,213,179,.16),rgba(103,166,255,.14));
+  border:1px solid rgba(112,206,220,.34);
   display:grid;
   place-items:center;
-  color:#07101b;
-  font-weight:900;
-  letter-spacing:-1px;
-  box-shadow:0 10px 30px rgba(98,213,179,.2)
+  flex:0 0 auto;
+  color:var(--accent);
+  box-shadow:0 10px 30px rgba(98,213,179,.14),inset 0 1px 0 rgba(255,255,255,.08)
 }
 .brand-mark.small {
-  width:40px;
-  height:40px;
-  border-radius:12px;
-  font-size:14px
+  width:42px;
+  height:42px;
+  border-radius:13px
+}
+.brand-shield {
+  display:block;
+  width:68%;
+  height:68%;
+  overflow:visible;
+  filter:drop-shadow(0 5px 10px rgba(38,132,154,.22))
+}
+.brand-shield-body {
+  fill:var(--accent);
+  stroke:var(--accent2);
+  stroke-width:.55;
+  stroke-linejoin:round
+}
+.brand-shield-check {
+  fill:none;
+  stroke:#07101b;
+  stroke-width:2;
+  stroke-linecap:round;
+  stroke-linejoin:round
 }
 .nav-item {
   width:100%;
@@ -1679,49 +1698,13 @@ canvas {
   }
 }
 
-/* SecurityEdge brand polish: shield mark and balanced brand lockups. */
-.brand-mark {
-  position:relative;
-  flex:0 0 auto;
-  overflow:hidden;
-  font-size:0;
-  line-height:0;
-  letter-spacing:0;
-  background:linear-gradient(145deg,rgba(98,213,179,.18),rgba(103,166,255,.18));
-  border:1px solid rgba(112,206,220,.34);
-  box-shadow:0 10px 30px rgba(98,213,179,.14),inset 0 1px 0 rgba(255,255,255,.08)
-}
-.brand-mark::before {
-  content:"";
-  width:58%;
-  height:66%;
-  background:linear-gradient(145deg,var(--accent),var(--accent2));
-  clip-path:polygon(50% 0,88% 14%,88% 48%,78% 70%,62% 87%,50% 100%,38% 87%,22% 70%,12% 48%,12% 14%);
-  filter:drop-shadow(0 5px 10px rgba(38,132,154,.24))
-}
-.brand-mark::after {
-  content:"";
-  position:absolute;
-  width:22%;
-  height:30%;
-  left:39%;
-  top:31%;
-  border:2px solid #07101b;
-  border-top-width:0;
-  border-radius:2px 2px 6px 6px;
-  opacity:.88
-}
-.brand-mark.small {
-  width:42px;
-  height:42px;
-  border-radius:13px
-}
+/* SecurityEdge brand lockups. */
 .brand {
   gap:14px;
   align-items:center;
   padding:0 8px 28px
 }
-.brand > div:last-child {
+.brand-copy {
   min-width:0
 }
 .brand strong {
@@ -1732,38 +1715,28 @@ canvas {
   line-height:1.45;
   margin-top:5px
 }
-
-/* Keep the sign-in identity centered as one visual lockup. */
 .login-card {
-  display:grid;
-  grid-template-columns:minmax(0,1fr) auto auto minmax(0,1fr);
-  column-gap:16px;
-  align-items:center
+  width:min(520px,calc(100vw - 32px))
 }
-.login-card > .brand-mark {
-  grid-column:2;
-  grid-row:1;
+.login-brand {
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:16px;
+  width:100%;
+  margin-bottom:22px
+}
+.login-brand .brand-mark {
   width:60px;
   height:60px;
   border-radius:18px
 }
-.login-card > h1 {
-  grid-column:3;
-  grid-row:1;
+.login-brand h1 {
   margin:0;
-  align-self:center;
-  line-height:1.12
+  font-size:clamp(28px,3vw,34px);
+  line-height:1.08;
+  white-space:nowrap
 }
-.login-card > p,
-.login-card > label,
-.login-card > button,
-.login-card > .error-text {
-  grid-column:1 / -1
-}
-.login-card > p {
-  margin-top:22px
-}
-
 @media(max-width:960px) {
   .brand {
     padding:0 4px 16px
@@ -1776,28 +1749,20 @@ canvas {
 }
 @media(max-width:480px) {
   .login-card {
-    grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);
-    row-gap:12px;
+    padding:26px
+  }
+  .login-brand {
+    flex-direction:column;
+    gap:12px;
+    margin-bottom:18px;
     text-align:center
   }
-  .login-card > .brand-mark {
-    grid-column:2;
-    grid-row:1;
+  .login-brand .brand-mark {
     width:56px;
     height:56px
   }
-  .login-card > h1 {
-    grid-column:1 / -1;
-    grid-row:2;
-    font-size:clamp(25px,8vw,32px)
-  }
-  .login-card > p,
-  .login-card > label,
-  .login-card > button,
-  .login-card > .error-text {
-    grid-column:1 / -1
-  }
-  .login-card > p {
-    margin-top:6px
+  .login-brand h1 {
+    font-size:clamp(25px,8vw,32px);
+    white-space:normal
   }
 }

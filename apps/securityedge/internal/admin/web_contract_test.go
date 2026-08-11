@@ -294,6 +294,47 @@ func TestDashboardAccessibilityLabelsContract(t *testing.T) {
 	}
 }
 
+func TestDashboardBrandingContract(t *testing.T) {
+	index, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles, err := webAssets.ReadFile("web/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(index)
+	css := string(styles)
+	for _, required := range []string{
+		`class="login-brand"`,
+		`class="brand-mark" aria-hidden="true"><svg class="brand-shield"`,
+		`class="brand-mark small" aria-hidden="true"><svg class="brand-shield"`,
+		`class="brand-copy"`,
+		`class="brand-shield-body"`,
+		`class="brand-shield-check"`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard branding markup contract is missing %q", required)
+		}
+	}
+	if strings.Contains(html, `class="brand-mark">SE</div>`) || strings.Contains(html, `class="brand-mark small">SE</div>`) {
+		t.Fatal("dashboard brand marks still expose the legacy SE text instead of the shield icon")
+	}
+	for _, required := range []string{
+		`.brand-shield {`,
+		`.brand-shield-body {`,
+		`.brand-shield-check {`,
+		`.login-brand {`,
+		`justify-content:center`,
+		`white-space:nowrap`,
+		`.brand-copy {`,
+	} {
+		if !strings.Contains(css, required) {
+			t.Fatalf("dashboard branding stylesheet contract is missing %q", required)
+		}
+	}
+}
+
 func TestDashboardResponsiveLayoutContract(t *testing.T) {
 	styles, err := webAssets.ReadFile("web/styles.css")
 	if err != nil {

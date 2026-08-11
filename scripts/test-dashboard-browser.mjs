@@ -281,8 +281,68 @@ try {
   }
   await eventually(async () => await cdp.evaluate('typeof login === "function"'), 'Dashboard application script');
 
+  let loginBrandLayout = null;
+  if (fixtureRoot) {
+    loginBrandLayout = await cdp.evaluate(`(() => {
+      const card = document.querySelector('#login .login-card');
+      const lockup = document.querySelector('#login .login-brand');
+      const mark = lockup?.querySelector('.brand-mark');
+      const shield = mark?.querySelector('svg.brand-shield');
+      const title = document.getElementById('login-title');
+      if (!card || !lockup || !mark || !shield || !title) return null;
+      const cardRect = card.getBoundingClientRect();
+      const lockupRect = lockup.getBoundingClientRect();
+      const markRect = mark.getBoundingClientRect();
+      const titleRect = title.getBoundingClientRect();
+      return {
+        hasShield:true,
+        markText:mark.textContent.trim(),
+        centerDelta:Math.abs((markRect.top + markRect.height / 2) - (titleRect.top + titleRect.height / 2)),
+        lockupCenterDelta:Math.abs((lockupRect.left + lockupRect.width / 2) - (cardRect.left + cardRect.width / 2)),
+        titleHeight:titleRect.height,
+        titleWhiteSpace:getComputedStyle(title).whiteSpace,
+        markWidth:markRect.width,
+        markHeight:markRect.height,
+        leftOverflow:Math.max(0, lockupRect.left - markRect.left),
+        rightOverflow:Math.max(0, titleRect.right - lockupRect.right)
+      };
+    })()`);
+    if (!loginBrandLayout || !loginBrandLayout.hasShield || loginBrandLayout.markText !== '' ||
+        loginBrandLayout.centerDelta > 1.5 || loginBrandLayout.lockupCenterDelta > 1.5 ||
+        loginBrandLayout.titleHeight > 42 || loginBrandLayout.titleWhiteSpace !== 'nowrap' ||
+        loginBrandLayout.leftOverflow > 1 || loginBrandLayout.rightOverflow > 1) {
+      throw new Error(`Login brand lockup is not centered, shield-only, and single-line on desktop: ${JSON.stringify(loginBrandLayout)}`);
+    }
+  }
+
   await cdp.evaluate(`login(${JSON.stringify(token)})`, true);
   await eventually(async () => await cdp.evaluate(`!document.getElementById('login').classList.contains('visible') && !!state.edgeConfig`), 'Authenticated Dashboard data');
+
+  let sidebarBrandLayout = null;
+  if (fixtureRoot) {
+    sidebarBrandLayout = await cdp.evaluate(`(() => {
+      const brand = document.querySelector('.sidebar .brand');
+      const mark = brand?.querySelector('.brand-mark.small');
+      const shield = mark?.querySelector('svg.brand-shield');
+      const copy = brand?.querySelector('.brand-copy');
+      if (!brand || !mark || !shield || !copy) return null;
+      const brandRect = brand.getBoundingClientRect();
+      const markRect = mark.getBoundingClientRect();
+      const copyRect = copy.getBoundingClientRect();
+      return {
+        hasShield:true, markText:mark.textContent.trim(),
+        markWidth:markRect.width, markHeight:markRect.height,
+        centerDelta:Math.abs((markRect.top + markRect.height / 2) - (copyRect.top + copyRect.height / 2)),
+        brandWidth:brandRect.width
+      };
+    })()`);
+    if (!sidebarBrandLayout || !sidebarBrandLayout.hasShield || sidebarBrandLayout.markText !== '' ||
+        sidebarBrandLayout.markWidth < 36 || sidebarBrandLayout.markWidth > 44 ||
+        Math.abs(sidebarBrandLayout.markWidth - sidebarBrandLayout.markHeight) > 1 ||
+        sidebarBrandLayout.centerDelta > 2) {
+      throw new Error(`Sidebar brand mark is not a balanced shield lockup: ${JSON.stringify(sidebarBrandLayout)}`);
+    }
+  }
 
   let sidebarLayout = null;
   if (fixtureRoot) {
@@ -641,6 +701,7 @@ try {
     refresh_coalescing:refreshCoalescing, responsive_layouts:responsiveLayouts, mobile_dialog_layouts:mobileDialogLayouts,
     route_editor_layout:routeEditorLayout, origin_dialog_layout:originDialogLayout, telemetry_detail_layout:telemetryDetailLayout,
     raw_config_layout:rawConfigLayout, system_header_layout:systemHeaderLayout,
+    login_brand_layout:loginBrandLayout, sidebar_brand_layout:sidebarBrandLayout,
     sidebar_layout:sidebarLayout, overview_topology_layout:overviewTopologyLayout
   }, null, 2));
 } catch (error) {

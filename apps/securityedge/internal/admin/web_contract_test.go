@@ -158,3 +158,30 @@ func TestDashboardCoalescesRefreshesAndTimesOutRequests(t *testing.T) {
 		t.Fatal("dashboard download creates a redundant second Blob")
 	}
 }
+
+func TestDashboardVisualControlStylesContract(t *testing.T) {
+	styles, err := webAssets.ReadFile("web/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(styles)
+	for _, required := range []string{
+		`.policy-form input:not([type="checkbox"])`,
+		`.editor-form input:not([type="checkbox"])`,
+		`.switch-row input[type="checkbox"]`,
+		`width:22px!important`,
+		`.wide-dialog .dialog-head {`,
+		`padding:18px 18px 17px`,
+		`.system-config-grid {`,
+		`align-items:start`,
+		`.system-config-card[open] {`,
+		`grid-column:1 / -1`,
+		`#reload-config {`,
+		`align-self:center`,
+		`.system-config-card > summary:focus-visible`,
+	} {
+		if !strings.Contains(css, required) {
+			t.Fatalf("dashboard visual-control stylesheet contract is missing %q", required)
+		}
+	}
+}

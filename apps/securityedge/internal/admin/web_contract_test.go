@@ -304,10 +304,19 @@ func TestDashboardResponsiveLayoutContract(t *testing.T) {
 		`scrollbar-width:none`,
 		`scroll-snap-type:x proximity`,
 		`.sidebar nav::-webkit-scrollbar`,
+		`.sidebar-foot {
+    display:grid;`,
+		`grid-template-columns:auto minmax(0,1fr) auto`,
+		`.sidebar-foot #connection-label {`,
+		`text-overflow:ellipsis`,
 	} {
 		if !strings.Contains(css, required) {
 			t.Fatalf("dashboard responsive stylesheet contract is missing %q", required)
 		}
+	}
+	if strings.Contains(css, `.sidebar-foot {
+    display:none`) {
+		t.Fatal("compact dashboard hides the connection status and Lock action")
 	}
 	if strings.Contains(css, "@media(max-width:900px)") || strings.Contains(css, "@media (max-width:900px)") {
 		t.Fatal("dashboard still contains the obsolete 900px responsive breakpoint")

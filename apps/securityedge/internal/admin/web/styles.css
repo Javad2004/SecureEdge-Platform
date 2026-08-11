@@ -676,7 +676,20 @@ canvas {
     scroll-snap-align:start
   }
   .sidebar-foot {
-    display:none
+    display:grid;
+    grid-template-columns:auto minmax(0,1fr) auto;
+    margin-top:8px;
+    padding:8px 4px 4px;
+    border-top:1px solid var(--border)
+  }
+  .sidebar-foot #connection-label {
+    min-width:0;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap
+  }
+  .sidebar-foot .link-button {
+    flex:0 0 auto
   }
   main {
     grid-column:1;

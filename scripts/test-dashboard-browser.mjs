@@ -431,6 +431,10 @@ try {
         const scrollableTables = wraps.filter(node => node.scrollWidth > node.clientWidth + 1).length;
         const originActions = document.querySelector('.origin-actions');
         const tableAction = document.querySelector('.table-actions-cell');
+        const footer = document.querySelector('.sidebar-foot');
+        const lock = document.getElementById('logout');
+        const footerRect = footer.getBoundingClientRect();
+        const lockRect = lock.getBoundingClientRect();
         const dialog = document.getElementById('route-dialog').getBoundingClientRect();
         return {
           horizontalScrollbarPx: window.innerHeight - root.clientHeight,
@@ -440,6 +444,11 @@ try {
           scrollableTables,
           originActionGap: originActions ? getComputedStyle(originActions).gap : '',
           tableActionAlign: tableAction ? getComputedStyle(tableAction).textAlign : '',
+          compactFooterDisplay: getComputedStyle(footer).display,
+          compactFooterWidth: footerRect.width,
+          compactLockVisible: lockRect.width > 0 && lockRect.height > 0,
+          compactLockLeft: lockRect.left,
+          compactLockRight: lockRect.right,
           dialogLeft: dialog.left,
           dialogRight: dialog.right,
           dialogWidth: dialog.width,
@@ -461,6 +470,11 @@ try {
       }
       if (layout.originActionGap !== '8px' || layout.tableActionAlign !== 'right') {
         throw new Error(`Responsive action alignment contract failed at ${width}px: ${JSON.stringify(layout)}`);
+      }
+      if (layout.compactFooterDisplay === 'none' || !layout.compactLockVisible ||
+          layout.compactLockLeft < -1 || layout.compactLockRight > layout.viewportWidth + 1 ||
+          layout.compactFooterWidth > layout.viewportWidth + 1) {
+        throw new Error(`Compact connection status or Lock action is unavailable at ${width}px: ${JSON.stringify(layout)}`);
       }
     }
     for (const width of [680, 390, 320]) {
@@ -496,6 +510,8 @@ try {
       const layout = await cdp.evaluate(`(() => {
         const root = document.documentElement;
         const sidebar = document.querySelector('.sidebar');
+        const footer = document.querySelector('.sidebar-foot');
+        const lock = document.getElementById('logout');
         const main = document.querySelector('main').getBoundingClientRect();
         const controls = [...document.querySelectorAll('#view-policies input,#view-policies select,#view-policies button')]
           .filter(node => { const rect=node.getBoundingClientRect(), style=getComputedStyle(node); return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0; });
@@ -504,6 +520,8 @@ try {
           viewportWidth: root.clientWidth,
           bodyScrollWidth: document.body.scrollWidth,
           sidebarPosition: getComputedStyle(sidebar).position,
+          footerDisplay: getComputedStyle(footer).display,
+          lockVisible: lock.getBoundingClientRect().width > 0 && lock.getBoundingClientRect().height > 0,
           mainLeft: main.left,
           outOfBounds
         };
@@ -512,6 +530,7 @@ try {
       breakpointLayouts.push(layout);
       const shouldBeDesktop = width > 960;
       if (layout.bodyScrollWidth > layout.viewportWidth + 1 || layout.outOfBounds !== 0 ||
+          layout.footerDisplay === 'none' || !layout.lockVisible ||
           (shouldBeDesktop && (layout.sidebarPosition !== 'fixed' || Math.abs(layout.mainLeft - 250) > 1)) ||
           (!shouldBeDesktop && (layout.sidebarPosition !== 'static' || Math.abs(layout.mainLeft) > 1))) {
         throw new Error(`Responsive breakpoint layout contract failed at ${width}px: ${JSON.stringify(layout)}`);

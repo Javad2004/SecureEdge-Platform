@@ -185,3 +185,24 @@ func TestDashboardVisualControlStylesContract(t *testing.T) {
 		}
 	}
 }
+
+func TestDashboardAccessibilityLabelsContract(t *testing.T) {
+	index, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(index)
+	for _, required := range []string{
+		`id="security-filters" class="filters" aria-label="Security event filters"`,
+		`name="q" placeholder="Search" aria-label="Search security events"`,
+		`name="action" aria-label="Filter by action"`,
+		`name="client_ip" placeholder="Client IP" aria-label="Filter by client IP"`,
+		`id="purge-form" class="filters" aria-label="Cache purge controls"`,
+		`id="purge-route" required aria-label="Route to purge"`,
+		`id="trend-chart" height="240" role="img" aria-label="Recent EdgeProxy request-rate and SecurityEdge rejection-rate trend"`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard accessibility contract is missing %q", required)
+		}
+	}
+}

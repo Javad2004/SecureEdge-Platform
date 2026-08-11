@@ -99,9 +99,22 @@ async function login(token) {
   await refreshAll();
 }
 
+function ensureActiveNavVisible() {
+  if (!window.matchMedia('(max-width: 960px)').matches) return;
+  const nav = $('nav');
+  const active = nav?.querySelector('.nav-item.active');
+  if (!nav || !active) return;
+  const navRect = nav.getBoundingClientRect();
+  const activeRect = active.getBoundingClientRect();
+  if (activeRect.left < navRect.left || activeRect.right > navRect.right) {
+    nav.scrollLeft += activeRect.left - navRect.left;
+  }
+}
+
 function setView(name) {
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `view-${name}`));
   document.querySelectorAll('.nav-item').forEach(v => v.classList.toggle('active', v.dataset.view === name));
+  ensureActiveNavVisible();
   $('page-title').textContent = ({overview:'Overview',security:'Security events',protection:'Traffic protection',traffic:'Traffic & cache',routes:'Routes & origins',policies:'Policies',system:'System'})[name];
   if (name === 'security') loadSecurity(true);
   if (name === 'protection') loadBans();
@@ -903,6 +916,11 @@ $('login-form').addEventListener('submit', async event => { event.preventDefault
 $('logout').onclick = lock;
 $('refresh').onclick = refreshAll;
 document.querySelectorAll('.nav-item').forEach(button => button.onclick = () => setView(button.dataset.view));
+window.addEventListener('resize', () => requestAnimationFrame(ensureActiveNavVisible));
+if (window.ResizeObserver) {
+  const navResizeObserver = new ResizeObserver(() => requestAnimationFrame(ensureActiveNavVisible));
+  navResizeObserver.observe($('nav'));
+}
 document.querySelectorAll('[data-go]').forEach(button => button.onclick = () => setView(button.dataset.go));
 $('security-filters').onsubmit = event => { event.preventDefault(); loadSecurity(true); };
 $('older-security').onclick = () => loadSecurity(false);

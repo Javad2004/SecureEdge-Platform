@@ -401,9 +401,28 @@ try {
   let responsiveLayouts = [];
   let mobileDialogLayouts = [];
   if (fixtureRoot) {
-    for (const width of [680, 390]) {
+    for (const width of [901, 680, 390, 320]) {
       await cdp.send('Emulation.setDeviceMetricsOverride', {width,height:900,deviceScaleFactor:1,mobile:false});
       await sleep(100);
+      await cdp.evaluate(`ensureActiveNavVisible()`);
+      await sleep(20);
+      const navState = await cdp.evaluate(`(() => {
+        const nav = document.getElementById('nav');
+        const active = nav?.querySelector('.nav-item.active');
+        const navRect = nav?.getBoundingClientRect();
+        const activeRect = active?.getBoundingClientRect();
+        return {
+          scrollbarWidth: nav ? getComputedStyle(nav).scrollbarWidth : '',
+          activeVisible: !navRect || !activeRect || (activeRect.left >= navRect.left - 1 && activeRect.right <= navRect.right + 1),
+          scrollLeft: nav?.scrollLeft, scrollWidth: nav?.scrollWidth, clientWidth: nav?.clientWidth,
+          navLeft: navRect?.left, navRight: navRect?.right,
+          activeLeft: activeRect?.left, activeRight: activeRect?.right,
+          activeOffsetLeft: active?.offsetLeft, activeOffsetWidth: active?.offsetWidth
+        };
+      })()`);
+      if (width <= 960 && (navState.scrollbarWidth !== 'none' || !navState.activeVisible)) {
+        throw new Error(`Compact navigation is not clean and active-visible at ${width}px: ${JSON.stringify(navState)}`);
+      }
       await cdp.evaluate(`document.querySelector('[data-route-edit]').click()`);
       await eventually(async () => await cdp.evaluate(`document.getElementById('route-dialog').open`), `Route dialog at ${width}px`);
       const layout = await cdp.evaluate(`(() => {
@@ -415,6 +434,7 @@ try {
         const dialog = document.getElementById('route-dialog').getBoundingClientRect();
         return {
           horizontalScrollbarPx: window.innerHeight - root.clientHeight,
+          bodyScrollWidth: document.body.scrollWidth,
           pageOverflowX: getComputedStyle(root).overflowX,
           bodyOverflowX: getComputedStyle(document.body).overflowX,
           scrollableTables,
@@ -429,8 +449,9 @@ try {
       await cdp.evaluate(`document.getElementById('route-dialog').close()`);
       layout.width = width;
       responsiveLayouts.push(layout);
-      if (layout.horizontalScrollbarPx > 1 || layout.pageOverflowX !== 'hidden' || layout.bodyOverflowX !== 'hidden') {
-        throw new Error(`Dashboard exposes a page-level horizontal scrollbar at ${width}px: ${JSON.stringify(layout)}`);
+      if (layout.horizontalScrollbarPx > 1 || layout.bodyScrollWidth > layout.viewportWidth + 1 ||
+          layout.pageOverflowX !== 'hidden' || layout.bodyOverflowX !== 'hidden') {
+        throw new Error(`Dashboard exposes page-level horizontal overflow at ${width}px: ${JSON.stringify(layout)}`);
       }
       if (layout.dialogLeft < -1 || layout.dialogRight > layout.viewportWidth + 1) {
         throw new Error(`Route dialog escapes the viewport at ${width}px: ${JSON.stringify(layout)}`);
@@ -442,7 +463,7 @@ try {
         throw new Error(`Responsive action alignment contract failed at ${width}px: ${JSON.stringify(layout)}`);
       }
     }
-    for (const width of [680, 390]) {
+    for (const width of [680, 390, 320]) {
       await cdp.send('Emulation.setDeviceMetricsOverride', {width,height:900,deviceScaleFactor:1,mobile:true});
       await sleep(100);
       await cdp.evaluate(`document.querySelector('[data-route-edit]').click()`);
@@ -467,6 +488,36 @@ try {
         throw new Error(`Mobile Route dialog leaks horizontal overflow internally at ${width}px: ${JSON.stringify(mobileLayout)}`);
       }
     }
+    const breakpointLayouts = [];
+    for (const width of [961, 901]) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', {width,height:900,deviceScaleFactor:1,mobile:false});
+      await sleep(100);
+      await cdp.evaluate(`document.querySelector('[data-view="policies"]').click()`);
+      const layout = await cdp.evaluate(`(() => {
+        const root = document.documentElement;
+        const sidebar = document.querySelector('.sidebar');
+        const main = document.querySelector('main').getBoundingClientRect();
+        const controls = [...document.querySelectorAll('#view-policies input,#view-policies select,#view-policies button')]
+          .filter(node => { const rect=node.getBoundingClientRect(), style=getComputedStyle(node); return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0; });
+        const outOfBounds = controls.filter(node => { const rect=node.getBoundingClientRect(); return rect.left < main.left - 1 || rect.right > main.right + 1; }).length;
+        return {
+          viewportWidth: root.clientWidth,
+          bodyScrollWidth: document.body.scrollWidth,
+          sidebarPosition: getComputedStyle(sidebar).position,
+          mainLeft: main.left,
+          outOfBounds
+        };
+      })()`);
+      layout.width = width;
+      breakpointLayouts.push(layout);
+      const shouldBeDesktop = width > 960;
+      if (layout.bodyScrollWidth > layout.viewportWidth + 1 || layout.outOfBounds !== 0 ||
+          (shouldBeDesktop && (layout.sidebarPosition !== 'fixed' || Math.abs(layout.mainLeft - 250) > 1)) ||
+          (!shouldBeDesktop && (layout.sidebarPosition !== 'static' || Math.abs(layout.mainLeft) > 1))) {
+        throw new Error(`Responsive breakpoint layout contract failed at ${width}px: ${JSON.stringify(layout)}`);
+      }
+    }
+    responsiveLayouts.push({breakpointLayouts});
     await cdp.send('Emulation.setDeviceMetricsOverride', {width:1365,height:900,deviceScaleFactor:1,mobile:false});
     await sleep(100);
   }

@@ -288,3 +288,46 @@ func TestDashboardAccessibilityLabelsContract(t *testing.T) {
 		}
 	}
 }
+
+func TestDashboardResponsiveLayoutContract(t *testing.T) {
+	styles, err := webAssets.ReadFile("web/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(styles)
+	for _, required := range []string{
+		`@media(max-width:960px)`,
+		`.route-card {
+  min-width:0;`,
+		`.route-grid {
+    grid-template-columns:minmax(0,1fr)`,
+		`scrollbar-width:none`,
+		`scroll-snap-type:x proximity`,
+		`.sidebar nav::-webkit-scrollbar`,
+	} {
+		if !strings.Contains(css, required) {
+			t.Fatalf("dashboard responsive stylesheet contract is missing %q", required)
+		}
+	}
+	if strings.Contains(css, "@media(max-width:900px)") || strings.Contains(css, "@media (max-width:900px)") {
+		t.Fatal("dashboard still contains the obsolete 900px responsive breakpoint")
+	}
+	app, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	javascript := string(app)
+	for _, required := range []string{
+		`const active = nav?.querySelector('.nav-item.active')`,
+		`const navRect = nav.getBoundingClientRect()`,
+		`const activeRect = active.getBoundingClientRect()`,
+		`nav.scrollLeft += activeRect.left - navRect.left`,
+		`window.addEventListener('resize', () => requestAnimationFrame(ensureActiveNavVisible))`,
+		`const navResizeObserver = new ResizeObserver(() => requestAnimationFrame(ensureActiveNavVisible))`,
+		`navResizeObserver.observe($('nav'))`,
+	} {
+		if !strings.Contains(javascript, required) {
+			t.Fatalf("compact navigation visibility contract is missing %q", required)
+		}
+	}
+}

@@ -409,6 +409,7 @@ td {
   margin-bottom:18px
 }
 .route-card {
+  min-width:0;
   background:var(--panel);
   border:1px solid var(--border);
   border-radius:16px;
@@ -638,7 +639,7 @@ canvas {
     grid-template-columns:repeat(3,1fr)
   }
 }
-@media(max-width:900px) {
+@media(max-width:960px) {
   .shell {
     grid-template-columns:1fr
   }
@@ -660,11 +661,19 @@ canvas {
     min-width:0;
     max-width:100%;
     overflow-x:auto;
-    overflow-y:hidden
+    overflow-y:hidden;
+    scrollbar-width:none;
+    -ms-overflow-style:none;
+    overscroll-behavior-inline:contain;
+    scroll-snap-type:x proximity
+  }
+  .sidebar nav::-webkit-scrollbar {
+    display:none
   }
   .nav-item {
     white-space:nowrap;
-    width:auto
+    width:auto;
+    scroll-snap-align:start
   }
   .sidebar-foot {
     display:none
@@ -695,6 +704,9 @@ canvas {
   .kpi-grid {
     grid-template-columns:1fr
   }
+  .route-grid {
+    grid-template-columns:minmax(0,1fr)
+  }
   .form-grid {
     grid-template-columns:1fr
   }
@@ -724,7 +736,7 @@ canvas {
 .top-actions {
   flex-wrap:wrap
 }
-@media (max-width:900px) {
+@media (max-width:960px) {
   .form-grid { grid-template-columns:1fr }
 }
 
@@ -1393,7 +1405,7 @@ canvas {
   white-space:pre-wrap;
   overflow-wrap:anywhere
 }
-@media (max-width:900px) {
+@media (max-width:960px) {
   .switch-grid,.route-facts,.telemetry-detail-grid {
     grid-template-columns:1fr
   }
@@ -1587,7 +1599,7 @@ canvas {
   white-space:nowrap!important;
   border:0!important
 }
-@media(max-width:900px) {
+@media(max-width:960px) {
   .origin-row {
     grid-template-columns:1fr
   }

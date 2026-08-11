@@ -18,11 +18,16 @@
 * {
   box-sizing:border-box
 }
+/* Wide telemetry tables scroll inside .table-wrap; never leak a page-level horizontal scrollbar. */
+html {
+  overflow-x:hidden
+}
 body {
   margin:0;
   background:radial-gradient(circle at 80% 0,#17294b 0,transparent 30%),var(--bg);
   color:var(--text);
-  min-height:100vh
+  min-height:100vh;
+  overflow-x:hidden
 }
 button,input,select {
   font:inherit
@@ -1166,6 +1171,13 @@ canvas {
 }
 .code-editor:focus { border-color:var(--accent2); box-shadow:0 0 0 3px rgba(103,166,255,.1) }
 .editor-dialog {
+  position:fixed;
+  top:50vh;
+  right:auto;
+  bottom:auto;
+  left:50vw;
+  transform:translate(-50%,-50%);
+  margin:0;
   width:min(760px,calc(100vw - 32px));
   max-height:calc(100vh - 40px);
   border:1px solid var(--border);

@@ -84,7 +84,8 @@ function fixturePayload(root) {
   const securityPath = join(root, 'apps', 'securityedge', 'configs', 'local-dev.json');
   const htmlPath = join(root, 'apps', 'securityedge', 'internal', 'admin', 'web', 'index.html');
   const appPath = join(root, 'apps', 'securityedge', 'internal', 'admin', 'web', 'app.js');
-  for (const path of [edgePath, securityPath, htmlPath, appPath]) {
+  const stylesPath = join(root, 'apps', 'securityedge', 'internal', 'admin', 'web', 'styles.css');
+  for (const path of [edgePath, securityPath, htmlPath, appPath, stylesPath]) {
     if (!existsSync(path)) throw new Error(`Fixture file not found: ${path}`);
   }
   const edge = JSON.parse(readFileSync(edgePath, 'utf8'));
@@ -160,7 +161,9 @@ function fixturePayload(root) {
     [`/api/v1/edgeproxy/routes/${encodeURIComponent(route.name)}/cache`]:route.cache
   };
   let html = readFileSync(htmlPath, 'utf8');
+  const styles = readFileSync(stylesPath, 'utf8');
   html = html.replace(/<link\b[^>]*>/gi, '').replace(/<script\b[^>]*src=["'][^"']+["'][^>]*><\/script>/gi, '');
+  html = html.replace('</head>', `<style>${styles}</style></head>`);
   return {html, app:readFileSync(appPath, 'utf8'), responses, routeName:route.name};
 }
 
@@ -218,6 +221,9 @@ try {
     if (event.entry?.level === 'error') exceptions.push(event.entry.text || 'browser log error');
   });
   await Promise.all([cdp.send('Page.enable'), cdp.send('Runtime.enable'), cdp.send('Log.enable')]);
+  if (fixtureRoot) {
+    await cdp.send('Emulation.setDeviceMetricsOverride', {width:1365,height:900,deviceScaleFactor:1,mobile:false});
+  }
 
   let expectedRoute = '';
   if (fixtureRoot) {
@@ -296,6 +302,32 @@ try {
   if (!hasRoute) throw new Error('No managed route card was rendered.');
   await cdp.evaluate(`document.querySelector('[data-route-edit]').click()`);
   await eventually(async () => await cdp.evaluate(`document.getElementById('route-dialog').open`), 'Complete Route editor');
+  let routeEditorLayout = null;
+  if (fixtureRoot) {
+    routeEditorLayout = await cdp.evaluate(`(() => {
+      const compact = document.getElementById('route-health-enabled').closest('.switch-row.compact').getBoundingClientRect();
+      const probe = document.getElementById('route-health-path').getBoundingClientRect();
+      const cacheCompact = document.getElementById('route-cache-enabled').closest('.switch-row.compact').getBoundingClientRect();
+      const cacheTTL = document.getElementById('route-cache-ttl').getBoundingClientRect();
+      const close = document.querySelector('#route-dialog .icon-button');
+      const closeStyle = getComputedStyle(close);
+      return {
+        compactTopDelta: Math.abs(compact.top - probe.top),
+        compactBottomDelta: Math.abs(compact.bottom - probe.bottom),
+        cacheTopDelta: Math.abs(cacheCompact.top - cacheTTL.top),
+        cacheBottomDelta: Math.abs(cacheCompact.bottom - cacheTTL.bottom),
+        closeDisplay: closeStyle.display,
+        closePlaceItems: closeStyle.placeItems
+      };
+    })()`);
+    if (routeEditorLayout.compactTopDelta > 1 || routeEditorLayout.compactBottomDelta > 1 ||
+        routeEditorLayout.cacheTopDelta > 1 || routeEditorLayout.cacheBottomDelta > 1) {
+      throw new Error(`Compact Route controls are not aligned with their adjacent inputs: ${JSON.stringify(routeEditorLayout)}`);
+    }
+    if (routeEditorLayout.closeDisplay !== 'grid' || !routeEditorLayout.closePlaceItems.includes('center')) {
+      throw new Error(`Dialog close control is not geometrically centered: ${JSON.stringify(routeEditorLayout)}`);
+    }
+  }
   const routeEditor = await cdp.evaluate(`({
     name: document.getElementById('route-name').value,
     algorithm: document.getElementById('route-algorithm').value,
@@ -307,6 +339,95 @@ try {
   }
   if (expectedRoute && routeEditor.name !== expectedRoute) throw new Error(`Unexpected fixture Route: ${routeEditor.name}`);
   await cdp.evaluate(`document.getElementById('route-dialog').close()`);
+
+  let rawConfigLayout = null;
+  if (fixtureRoot) {
+    rawConfigLayout = await cdp.evaluate(`(() => {
+      const panel = document.querySelector('.config-editor-grid .panel');
+      const actions = panel?.querySelector('.panel-head .top-actions');
+      if (!panel || !actions) return null;
+      const panelRect = panel.getBoundingClientRect();
+      const actionsRect = actions.getBoundingClientRect();
+      const paddingRight = parseFloat(getComputedStyle(panel).paddingRight) || 0;
+      return {rightDelta: Math.abs((panelRect.right - paddingRight) - actionsRect.right)};
+    })()`);
+    if (!rawConfigLayout || rawConfigLayout.rightDelta > 1) {
+      throw new Error(`Raw configuration actions are not anchored to the card's right content edge: ${JSON.stringify(rawConfigLayout)}`);
+    }
+  }
+
+  let responsiveLayouts = [];
+  let mobileDialogLayouts = [];
+  if (fixtureRoot) {
+    for (const width of [680, 390]) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', {width,height:900,deviceScaleFactor:1,mobile:false});
+      await sleep(100);
+      await cdp.evaluate(`document.querySelector('[data-route-edit]').click()`);
+      await eventually(async () => await cdp.evaluate(`document.getElementById('route-dialog').open`), `Route dialog at ${width}px`);
+      const layout = await cdp.evaluate(`(() => {
+        const root = document.documentElement;
+        const wraps = [...document.querySelectorAll('#view-routes .table-wrap')];
+        const scrollableTables = wraps.filter(node => node.scrollWidth > node.clientWidth + 1).length;
+        const originActions = document.querySelector('.origin-actions');
+        const tableAction = document.querySelector('.table-actions-cell');
+        const dialog = document.getElementById('route-dialog').getBoundingClientRect();
+        return {
+          horizontalScrollbarPx: window.innerHeight - root.clientHeight,
+          pageOverflowX: getComputedStyle(root).overflowX,
+          bodyOverflowX: getComputedStyle(document.body).overflowX,
+          scrollableTables,
+          originActionGap: originActions ? getComputedStyle(originActions).gap : '',
+          tableActionAlign: tableAction ? getComputedStyle(tableAction).textAlign : '',
+          dialogLeft: dialog.left,
+          dialogRight: dialog.right,
+          dialogWidth: dialog.width,
+          viewportWidth: root.clientWidth
+        };
+      })()`);
+      await cdp.evaluate(`document.getElementById('route-dialog').close()`);
+      layout.width = width;
+      responsiveLayouts.push(layout);
+      if (layout.horizontalScrollbarPx > 1 || layout.pageOverflowX !== 'hidden' || layout.bodyOverflowX !== 'hidden') {
+        throw new Error(`Dashboard exposes a page-level horizontal scrollbar at ${width}px: ${JSON.stringify(layout)}`);
+      }
+      if (layout.dialogLeft < -1 || layout.dialogRight > layout.viewportWidth + 1) {
+        throw new Error(`Route dialog escapes the viewport at ${width}px: ${JSON.stringify(layout)}`);
+      }
+      if (layout.scrollableTables < 1) {
+        throw new Error(`Responsive telemetry tables lost their internal horizontal scrolling at ${width}px: ${JSON.stringify(layout)}`);
+      }
+      if (layout.originActionGap !== '8px' || layout.tableActionAlign !== 'right') {
+        throw new Error(`Responsive action alignment contract failed at ${width}px: ${JSON.stringify(layout)}`);
+      }
+    }
+    for (const width of [680, 390]) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', {width,height:900,deviceScaleFactor:1,mobile:true});
+      await sleep(100);
+      await cdp.evaluate(`document.querySelector('[data-route-edit]').click()`);
+      await eventually(async () => await cdp.evaluate(`document.getElementById('route-dialog').open`), `Mobile Route dialog at ${width}px`);
+      const mobileLayout = await cdp.evaluate(`(() => {
+        const root = document.documentElement;
+        const dialogNode = document.getElementById('route-dialog');
+        const dialog = dialogNode.getBoundingClientRect();
+        const form = dialogNode.querySelector('.editor-form');
+        return {dialogLeft:dialog.left, dialogRight:dialog.right, dialogWidth:dialog.width, viewportWidth:root.clientWidth,
+          dialogClientWidth:dialogNode.clientWidth, dialogScrollWidth:dialogNode.scrollWidth,
+          formClientWidth:form.clientWidth, formScrollWidth:form.scrollWidth};
+      })()`);
+      mobileLayout.width = width;
+      mobileDialogLayouts.push(mobileLayout);
+      await cdp.evaluate(`document.getElementById('route-dialog').close()`);
+      if (mobileLayout.dialogLeft < -1 || mobileLayout.dialogRight > mobileLayout.viewportWidth + 1) {
+        throw new Error(`Mobile Route dialog escapes the viewport at ${width}px: ${JSON.stringify(mobileLayout)}`);
+      }
+      if (mobileLayout.dialogScrollWidth > mobileLayout.dialogClientWidth + 1 ||
+          mobileLayout.formScrollWidth > mobileLayout.formClientWidth + 1) {
+        throw new Error(`Mobile Route dialog leaks horizontal overflow internally at ${width}px: ${JSON.stringify(mobileLayout)}`);
+      }
+    }
+    await cdp.send('Emulation.setDeviceMetricsOverride', {width:1365,height:900,deviceScaleFactor:1,mobile:false});
+    await sleep(100);
+  }
 
   await cdp.evaluate(`document.querySelector('[data-view="traffic"]').click()`);
   await eventually(async () => await cdp.evaluate(`document.getElementById('view-traffic').classList.contains('active')`), 'Traffic and cache view');
@@ -326,6 +447,17 @@ try {
   if (Object.values(systemForms).some(value => !String(value).trim())) {
     throw new Error(`Structured System forms were not populated: ${JSON.stringify(systemForms)}`);
   }
+  let systemHeaderLayout = null;
+  if (fixtureRoot) {
+    systemHeaderLayout = await cdp.evaluate(`(() => {
+      const head = document.querySelector('.system-control-intro .panel-head').getBoundingClientRect();
+      const button = document.getElementById('reload-config').getBoundingClientRect();
+      return {centerDelta:Math.abs((head.top + head.height / 2) - (button.top + button.height / 2))};
+    })()`);
+    if (systemHeaderLayout.centerDelta > 1) {
+      throw new Error(`Reload configuration action is not vertically centered: ${JSON.stringify(systemHeaderLayout)}`);
+    }
+  }
   let systemFormSubmission = false;
   if (fixtureRoot) {
     await cdp.evaluate(`(() => {
@@ -344,7 +476,8 @@ try {
     ok:true, mode, browser, url:fixtureRoot ? 'fixture://dashboard' : url,
     title:contract.title, route:routeEditor.name, algorithm:routeEditor.algorithm,
     cache_route_options:cacheOptions, system_forms_populated:true, system_form_submission:systemFormSubmission, live_mutations_skipped:!fixtureRoot,
-    refresh_coalescing:refreshCoalescing
+    refresh_coalescing:refreshCoalescing, responsive_layouts:responsiveLayouts, mobile_dialog_layouts:mobileDialogLayouts,
+    route_editor_layout:routeEditorLayout, raw_config_layout:rawConfigLayout, system_header_layout:systemHeaderLayout
   }, null, 2));
 } catch (error) {
   console.error(error.stack || error.message);

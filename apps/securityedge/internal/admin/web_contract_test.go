@@ -166,12 +166,20 @@ func TestDashboardVisualControlStylesContract(t *testing.T) {
 	}
 	css := string(styles)
 	for _, required := range []string{
+		`overflow-x:hidden`,
+		`.table-wrap {`,
+		`overflow:auto`,
 		`.policy-form input:not([type="checkbox"])`,
 		`.editor-form input:not([type="checkbox"])`,
 		`.switch-row input[type="checkbox"]`,
 		`width:22px!important`,
 		`.switch-row.compact {`,
 		`height:40px`,
+		`.editor-dialog {`,
+		`position:fixed`,
+		`top:50vh`,
+		`left:50vw`,
+		`transform:translate(-50%,-50%)`,
 		`.wide-dialog .dialog-head {`,
 		`padding:18px 18px 17px`,
 		`.icon-button::before,.icon-button::after`,

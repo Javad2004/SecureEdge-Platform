@@ -216,6 +216,11 @@ func TestDashboardVisualControlStylesContract(t *testing.T) {
 		`.config-editor-grid .panel-head .top-actions {`,
 		`justify-self:end`,
 		`min-width:138px`,
+		`.telemetry-detail-grid + .subsection {`,
+		`padding:16px 18px 18px`,
+		`.telemetry-detail-grid + .subsection .bar-list,`,
+		`.editor-form > .form-grid + .switch-row {`,
+		`margin-top:14px`,
 	} {
 		if !strings.Contains(css, required) {
 			t.Fatalf("dashboard visual-control stylesheet contract is missing %q", required)

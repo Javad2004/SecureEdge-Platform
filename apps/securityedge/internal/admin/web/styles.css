@@ -1396,6 +1396,22 @@ canvas {
   margin-top:8px;
   overflow-wrap:anywhere
 }
+.telemetry-detail-grid + .subsection {
+  padding:16px 18px 18px;
+  border:1px solid var(--border);
+  border-radius:11px;
+  background:rgba(7,12,24,.22)
+}
+.telemetry-detail-grid + .subsection h3 {
+  margin:0 0 14px
+}
+.telemetry-detail-grid + .subsection .bar-list,
+.telemetry-detail-grid + .subsection .bar-row {
+  width:100%
+}
+.editor-form > .form-grid + .switch-row {
+  margin-top:14px
+}
 .raw-details {
   margin-top:16px;
   border:1px solid var(--border);

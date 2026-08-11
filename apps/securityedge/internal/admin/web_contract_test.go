@@ -170,8 +170,20 @@ func TestDashboardVisualControlStylesContract(t *testing.T) {
 		`.editor-form input:not([type="checkbox"])`,
 		`.switch-row input[type="checkbox"]`,
 		`width:22px!important`,
+		`.switch-row.compact {`,
+		`height:40px`,
 		`.wide-dialog .dialog-head {`,
 		`padding:18px 18px 17px`,
+		`.icon-button::before,.icon-button::after`,
+		`place-items:center`,
+		`.grid > .panel {`,
+		`margin-bottom:0`,
+		`.route-grid {`,
+		`margin-bottom:18px`,
+		`.origin-row {`,
+		`.origin-actions,.table-actions {`,
+		`.table-actions-heading,.table-actions-cell {`,
+		`text-align:right`,
 		`.system-config-grid {`,
 		`align-items:start`,
 		`.system-config-card[open] {`,
@@ -187,6 +199,30 @@ func TestDashboardVisualControlStylesContract(t *testing.T) {
 	} {
 		if !strings.Contains(css, required) {
 			t.Fatalf("dashboard visual-control stylesheet contract is missing %q", required)
+		}
+	}
+}
+
+func TestDashboardRouteAndTableActionLayoutContract(t *testing.T) {
+	index, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(index) + "\n" + string(app)
+	for _, required := range []string{
+		`class="origin-identity"`,
+		`class="origin-actions"`,
+		`class="table-actions"`,
+		`class="table-actions-cell"`,
+		`class="table-actions-heading"`,
+		`<span class="sr-only">Actions</span>`,
+	} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("dashboard route/table action layout contract is missing %q", required)
 		}
 	}
 }

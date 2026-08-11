@@ -122,7 +122,7 @@
           <article class="panel"><div class="panel-head"><div><h2>Security latency</h2><p>Bounded histogram percentiles for the full security decision path.</p></div></div><div id="security-latency" class="metric-list"></div></article>
           <article class="panel"><div class="panel-head"><div><h2>Rejection reasons</h2><p>Breakdown of rate, capacity, protocol, and WAF decisions.</p></div></div><div id="reason-bars" class="bar-list empty">No rejections yet.</div></article>
         </div>
-        <article class="panel"><div class="panel-head"><div><h2>Temporary bans</h2><p>Clients automatically banned after repeated policy violations.</p></div><button id="clear-bans" class="danger ghost">Clear all bans</button></div><div class="table-wrap"><table><thead><tr><th>Client</th><th>Banned until</th><th>Pending violations</th><th></th></tr></thead><tbody id="ban-table"></tbody></table></div></article>
+        <article class="panel"><div class="panel-head"><div><h2>Temporary bans</h2><p>Clients automatically banned after repeated policy violations.</p></div><button id="clear-bans" class="danger ghost">Clear all bans</button></div><div class="table-wrap"><table><thead><tr><th>Client</th><th>Banned until</th><th>Pending violations</th><th class="table-actions-heading"><span class="sr-only">Actions</span></th></tr></thead><tbody id="ban-table"></tbody></table></div></article>
       </section>
 
       <section id="view-traffic" class="view">
@@ -157,11 +157,11 @@
         <div id="route-cards" class="route-grid"></div>
         <article class="panel telemetry-panel">
           <div class="panel-head"><div><h2>Route telemetry</h2><p>Request volume, cache efficiency, response latency, retries, errors, and traffic for each route.</p></div></div>
-          <div class="table-wrap"><table><thead><tr><th>Route</th><th>Algorithm</th><th>Requests</th><th>Success / error</th><th>Cache</th><th>Min / avg / max</th><th>P50 / P95 / P99</th><th>Upstream</th><th>Traffic</th><th></th></tr></thead><tbody id="route-telemetry-table"></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>Route</th><th>Algorithm</th><th>Requests</th><th>Success / error</th><th>Cache</th><th>Min / avg / max</th><th>P50 / P95 / P99</th><th>Upstream</th><th>Traffic</th><th class="table-actions-heading"><span class="sr-only">Actions</span></th></tr></thead><tbody id="route-telemetry-table"></tbody></table></div>
         </article>
         <article class="panel telemetry-panel">
           <div class="panel-head"><div><h2>Origin telemetry</h2><p>Health, weight, priority, active work, EWMA response time, calls, success rate, and latency by origin.</p></div></div>
-          <div class="table-wrap"><table><thead><tr><th>Route / origin</th><th>Endpoint</th><th>Health</th><th>Weight / priority</th><th>Calls</th><th>Success / failures</th><th>Timeouts / retries</th><th>P50 / P95 / P99</th><th>Active / EWMA</th><th>Selections / health events</th><th></th></tr></thead><tbody id="origin-telemetry-table"></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>Route / origin</th><th>Endpoint</th><th>Health</th><th>Weight / priority</th><th>Calls</th><th>Success / failures</th><th>Timeouts / retries</th><th>P50 / P95 / P99</th><th>Active / EWMA</th><th>Selections / health events</th><th class="table-actions-heading"><span class="sr-only">Actions</span></th></tr></thead><tbody id="origin-telemetry-table"></tbody></table></div>
         </article>
         <div class="grid two config-editor-grid">
           <article class="panel"><div class="panel-head"><div><h2>EdgeProxy raw configuration</h2><p>Full validated JSON editor with secret redaction and automatic hot reload or restart.</p></div><div class="top-actions"><button id="reload-edge-config" class="ghost">Reload file</button><button id="save-edge-config">Validate & save</button></div></div><textarea id="edge-config-editor" class="code-editor" spellcheck="false" aria-label="EdgeProxy JSON configuration"></textarea><p id="edge-config-result" class="result-text"></p></article>

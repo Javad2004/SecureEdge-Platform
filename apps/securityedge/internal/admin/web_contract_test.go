@@ -167,6 +167,18 @@ func TestDashboardVisualControlStylesContract(t *testing.T) {
 	css := string(styles)
 	for _, required := range []string{
 		`overflow-x:hidden`,
+		`.shell {`,
+		`grid-template-columns:250px minmax(0,1fr)`,
+		`min-height:100dvh`,
+		`.sidebar {`,
+		`position:fixed`,
+		`inset:0 auto 0 0`,
+		`height:100dvh`,
+		`overflow-y:auto`,
+		`main {`,
+		`grid-column:2`,
+		`.sidebar-foot {`,
+		`flex:0 0 auto`,
 		`.table-wrap {`,
 		`overflow:auto`,
 		`.policy-form input:not([type="checkbox"])`,

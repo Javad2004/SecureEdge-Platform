@@ -273,6 +273,35 @@ try {
   await cdp.evaluate(`login(${JSON.stringify(token)})`, true);
   await eventually(async () => await cdp.evaluate(`!document.getElementById('login').classList.contains('visible') && !!state.edgeConfig`), 'Authenticated Dashboard data');
 
+  let sidebarLayout = null;
+  if (fixtureRoot) {
+    sidebarLayout = await cdp.evaluate(`(async () => {
+      const sidebar = document.querySelector('.sidebar');
+      const footer = document.querySelector('.sidebar-foot');
+      const before = sidebar.getBoundingClientRect();
+      const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      window.scrollTo(0, Math.min(480, maxScroll));
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const after = sidebar.getBoundingClientRect();
+      const footerRect = footer.getBoundingClientRect();
+      const style = getComputedStyle(sidebar);
+      window.scrollTo(0, 0);
+      return {
+        viewportHeight: window.innerHeight,
+        beforeTop: before.top, beforeBottom: before.bottom, beforeHeight: before.height,
+        afterTop: after.top, afterBottom: after.bottom, afterHeight: after.height,
+        footerBottom: footerRect.bottom, position: style.position, overflowY: style.overflowY
+      };
+    })()`, true);
+    if (Math.abs(sidebarLayout.beforeTop) > 1 || Math.abs(sidebarLayout.beforeBottom - sidebarLayout.viewportHeight) > 1 ||
+        Math.abs(sidebarLayout.afterTop) > 1 || Math.abs(sidebarLayout.afterBottom - sidebarLayout.viewportHeight) > 1) {
+      throw new Error(`Desktop sidebar does not span the full viewport while scrolling: ${JSON.stringify(sidebarLayout)}`);
+    }
+    if (sidebarLayout.position !== 'fixed' || !['auto','scroll'].includes(sidebarLayout.overflowY)) {
+      throw new Error(`Desktop sidebar rail is not configured as a stable full-height region: ${JSON.stringify(sidebarLayout)}`);
+    }
+  }
+
   let overviewTopologyLayout = null;
   if (fixtureRoot) {
     overviewTopologyLayout = await cdp.evaluate(`(() => {
@@ -490,7 +519,8 @@ try {
     title:contract.title, route:routeEditor.name, algorithm:routeEditor.algorithm,
     cache_route_options:cacheOptions, system_forms_populated:true, system_form_submission:systemFormSubmission, live_mutations_skipped:!fixtureRoot,
     refresh_coalescing:refreshCoalescing, responsive_layouts:responsiveLayouts, mobile_dialog_layouts:mobileDialogLayouts,
-    route_editor_layout:routeEditorLayout, raw_config_layout:rawConfigLayout, system_header_layout:systemHeaderLayout, overview_topology_layout:overviewTopologyLayout
+    route_editor_layout:routeEditorLayout, raw_config_layout:rawConfigLayout, system_header_layout:systemHeaderLayout,
+    sidebar_layout:sidebarLayout, overview_topology_layout:overviewTopologyLayout
   }, null, 2));
 } catch (error) {
   console.error(error.stack || error.message);

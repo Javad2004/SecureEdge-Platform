@@ -143,6 +143,15 @@ function fixturePayload(root) {
     routes:edge.routes.map(item => ({name:item.name}))
   };
   const watch = {revision:1,applied_revision:1,restart_scheduled:false,last_source:'fixture',last_changed_file:'fixture'};
+  const originTelemetryMetrics = {
+    ...upstream,
+    calls:999,
+    success:321,
+    failures:678,
+    success_rate:321 / 999,
+    error_rate:678 / 999,
+    status_codes:{'502':678,'200':321}
+  };
   const responses = {
     '/api/v1/session':{},
     '/api/v1/dashboard/overview':overview,
@@ -151,6 +160,8 @@ function fixturePayload(root) {
     '/api/v1/bans':{bans:[]},
     '/api/v1/edgeproxy/config':edge,
     '/api/v1/edgeproxy/config/watch':watch,
+    [`/api/v1/edgeproxy/routes/${encodeURIComponent(route.name)}/telemetry`]:{route,runtime:routeRuntime,metrics:routeMetric},
+    [`/api/v1/edgeproxy/routes/${encodeURIComponent(route.name)}/origins/${encodeURIComponent(origin.name)}/telemetry`]:{route,origin,runtime:routeRuntime.upstreams[0],metrics:originTelemetryMetrics},
     '/api/v1/config':security,
     '/api/v1/config/watch':watch,
     '/api/v1/server':security.server,
@@ -382,6 +393,45 @@ try {
   if (expectedRoute && routeEditor.name !== expectedRoute) throw new Error(`Unexpected fixture Route: ${routeEditor.name}`);
   await cdp.evaluate(`document.getElementById('route-dialog').close()`);
 
+  let originDialogLayout = null;
+  let telemetryDetailLayout = null;
+  if (fixtureRoot) {
+    await cdp.evaluate(`document.querySelector('[data-origin-edit]').click()`);
+    await eventually(async () => await cdp.evaluate(`document.getElementById('origin-dialog').open`), 'Origin editor');
+    originDialogLayout = await cdp.evaluate(`(() => {
+      const dialog = document.getElementById('origin-dialog');
+      const fields = dialog.querySelector('.form-grid').getBoundingClientRect();
+      const tlsSwitch = dialog.querySelector('.switch-row').getBoundingClientRect();
+      return {switchGap:tlsSwitch.top-fields.bottom};
+    })()`);
+    if (originDialogLayout.switchGap < 12 || originDialogLayout.switchGap > 20) {
+      throw new Error(`Origin TLS verification control spacing is inconsistent: ${JSON.stringify(originDialogLayout)}`);
+    }
+    await cdp.evaluate(`document.getElementById('origin-dialog').close()`);
+
+    await cdp.evaluate(`document.querySelector('[data-origin-telemetry]').click()`);
+    await eventually(async () => await cdp.evaluate(`document.getElementById('telemetry-dialog').open`), 'Origin telemetry dialog');
+    telemetryDetailLayout = await cdp.evaluate(`(() => {
+      const dialog = document.getElementById('telemetry-dialog');
+      const statusPanel = dialog.querySelector('.telemetry-detail-grid + .subsection').getBoundingClientRect();
+      const rawPanel = dialog.querySelector('.raw-details').getBoundingClientRect();
+      const barList = dialog.querySelector('.bar-list').getBoundingClientRect();
+      const barRowWidths = [...dialog.querySelectorAll('.bar-row')].map(row => row.getBoundingClientRect().width);
+      return {
+        leftDelta:Math.abs(statusPanel.left-rawPanel.left),
+        rightDelta:Math.abs(statusPanel.right-rawPanel.right),
+        barListWidth:barList.width,
+        barRowWidths
+      };
+    })()`);
+    if (telemetryDetailLayout.leftDelta > 1 || telemetryDetailLayout.rightDelta > 1 ||
+        telemetryDetailLayout.barRowWidths.length < 1 ||
+        telemetryDetailLayout.barRowWidths.some(width => Math.abs(width-telemetryDetailLayout.barListWidth) > 1)) {
+      throw new Error(`Telemetry status distribution is not aligned with the raw telemetry panel: ${JSON.stringify(telemetryDetailLayout)}`);
+    }
+    await cdp.evaluate(`document.getElementById('telemetry-dialog').close()`);
+  }
+
   let rawConfigLayout = null;
   if (fixtureRoot) {
     rawConfigLayout = await cdp.evaluate(`(() => {
@@ -589,7 +639,8 @@ try {
     title:contract.title, route:routeEditor.name, algorithm:routeEditor.algorithm,
     cache_route_options:cacheOptions, system_forms_populated:true, system_form_submission:systemFormSubmission, live_mutations_skipped:!fixtureRoot,
     refresh_coalescing:refreshCoalescing, responsive_layouts:responsiveLayouts, mobile_dialog_layouts:mobileDialogLayouts,
-    route_editor_layout:routeEditorLayout, raw_config_layout:rawConfigLayout, system_header_layout:systemHeaderLayout,
+    route_editor_layout:routeEditorLayout, origin_dialog_layout:originDialogLayout, telemetry_detail_layout:telemetryDetailLayout,
+    raw_config_layout:rawConfigLayout, system_header_layout:systemHeaderLayout,
     sidebar_layout:sidebarLayout, overview_topology_layout:overviewTopologyLayout
   }, null, 2));
 } catch (error) {

@@ -179,6 +179,11 @@ func TestDashboardVisualControlStylesContract(t *testing.T) {
 		`#reload-config {`,
 		`align-self:center`,
 		`.system-config-card > summary:focus-visible`,
+		`.config-editor-grid .panel-head {`,
+		`grid-template-columns:minmax(0,1fr) max-content`,
+		`.config-editor-grid .panel-head .top-actions {`,
+		`justify-self:end`,
+		`min-width:138px`,
 	} {
 		if !strings.Contains(css, required) {
 			t.Fatalf("dashboard visual-control stylesheet contract is missing %q", required)

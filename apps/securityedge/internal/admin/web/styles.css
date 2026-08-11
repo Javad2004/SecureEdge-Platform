@@ -1442,3 +1442,45 @@ canvas {
     min-width:0
   }
 }
+
+/* Raw configuration editors: keep card actions anchored to the far edge. */
+.config-editor-grid .panel-head {
+  display:grid;
+  grid-template-columns:minmax(0,1fr) max-content;
+  align-items:start;
+  column-gap:24px
+}
+.config-editor-grid .panel-head > div:first-child {
+  min-width:0
+}
+.config-editor-grid .panel-head .top-actions {
+  display:grid;
+  grid-template-columns:1fr;
+  justify-self:end;
+  align-items:stretch;
+  width:max-content;
+  min-width:138px;
+  margin-left:auto
+}
+.config-editor-grid .panel-head .top-actions button {
+  width:100%;
+  white-space:nowrap
+}
+@media(max-width:700px) {
+  .config-editor-grid .panel-head {
+    grid-template-columns:1fr;
+    row-gap:14px
+  }
+  .config-editor-grid .panel-head .top-actions {
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    justify-self:stretch;
+    width:100%;
+    min-width:0;
+    margin-left:0
+  }
+}
+@media(max-width:520px) {
+  .config-editor-grid .panel-head .top-actions {
+    grid-template-columns:1fr
+  }
+}

@@ -1,9 +1,11 @@
 package connectivity
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -152,15 +154,14 @@ func TestRepresentativeDataPlaneTargetBuildsWildcardHost(t *testing.T) {
 }
 
 func TestProbeGatewayListenerReportsTLSProtocol(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
+	var serverErrors bytes.Buffer
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	server.Config.ErrorLog = log.New(&serverErrors, "", 0)
+	server.StartTLS()
 
 	cfg := config.Default()
 	cfg.Server.Mode = "gateway"
-	cfg.Server.ListenAddr = listener.Addr().String()
+	cfg.Server.ListenAddr = server.Listener.Addr().String()
 	cfg.Server.TLS.Enabled = true
 	result := probeGatewayListener(context.Background(), cfg)
 	if result.status != StatusHealthy {
@@ -169,7 +170,45 @@ func TestProbeGatewayListenerReportsTLSProtocol(t *testing.T) {
 	if result.details["protocol"] != "https" || result.details["tls"] != true {
 		t.Fatalf("TLS details=%#v", result.details)
 	}
-	if result.message != "public HTTPS gateway listener is accepting TCP connections" {
+	if result.details["tls_version"] == "" {
+		t.Fatalf("TLS version missing from details=%#v", result.details)
+	}
+	if result.message != "public HTTPS gateway listener completed a local TLS handshake" {
+		t.Fatalf("message=%q", result.message)
+	}
+	server.Close()
+	if strings.Contains(serverErrors.String(), "TLS handshake error") {
+		t.Fatalf("TLS listener probe polluted server logs: %s", serverErrors.String())
+	}
+}
+
+func TestProbeGatewayListenerRejectsPlainTCPWhenTLSConfigured(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan struct{})
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			_ = conn.Close()
+		}
+		close(accepted)
+	}()
+
+	cfg := config.Default()
+	cfg.Server.Mode = "gateway"
+	cfg.Server.ListenAddr = listener.Addr().String()
+	cfg.Server.TLS.Enabled = true
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result := probeGatewayListener(ctx, cfg)
+	<-accepted
+	if result.status != StatusDown {
+		t.Fatalf("result=%#v", result)
+	}
+	if !strings.Contains(result.message, "TLS handshake") {
 		t.Fatalf("message=%q", result.message)
 	}
 }
@@ -207,21 +246,60 @@ func TestProbeDataPlaneHTTPUsesConfiguredWildcardRoute(t *testing.T) {
 }
 
 func TestProbeDataPlaneTCPReportsHTTPSProtocol(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
+	var serverErrors bytes.Buffer
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	server.Config.ErrorLog = log.New(&serverErrors, "", 0)
+	server.StartTLS()
 
 	cfg := config.Default()
 	cfg.Server.Mode = "gateway"
-	cfg.Server.UpstreamProxyURL = "https://" + listener.Addr().String()
+	cfg.Server.UpstreamProxyURL = server.URL
 	result := probeDataPlaneTCP(context.Background(), cfg)
 	if result.status != StatusHealthy {
 		t.Fatalf("result=%#v", result)
 	}
 	if result.details["protocol"] != "https" || result.details["tls"] != true {
 		t.Fatalf("TLS protocol details=%#v", result.details)
+	}
+	if result.details["tls_version"] == "" {
+		t.Fatalf("TLS version missing from details=%#v", result.details)
+	}
+	if result.message != "SecurityEdge can complete a TLS handshake with EdgeProxy" {
+		t.Fatalf("message=%q", result.message)
+	}
+	server.Close()
+	if strings.Contains(serverErrors.String(), "TLS handshake error") {
+		t.Fatalf("TLS data-plane probe polluted server logs: %s", serverErrors.String())
+	}
+}
+
+func TestProbeDataPlaneTCPRejectsPlainTCPWhenHTTPSConfigured(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan struct{})
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			_ = conn.Close()
+		}
+		close(accepted)
+	}()
+
+	cfg := config.Default()
+	cfg.Server.Mode = "gateway"
+	cfg.Server.UpstreamProxyURL = "https://" + listener.Addr().String()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result := probeDataPlaneTCP(ctx, cfg)
+	<-accepted
+	if result.status != StatusDown {
+		t.Fatalf("result=%#v", result)
+	}
+	if !strings.Contains(result.message, "TLS handshake") {
+		t.Fatalf("message=%q", result.message)
 	}
 }
 

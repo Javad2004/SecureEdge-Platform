@@ -1,6 +1,7 @@
 package connectivity
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -257,18 +258,26 @@ func probeGatewayListener(ctx context.Context, cfg config.Config) probeResult {
 	endpoint := cfg.Server.ListenAddr
 	started := time.Now()
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", loopbackDialAddress(endpoint))
-	latency := time.Since(started)
 	if err != nil {
-		return probeResult{id: "securityedge_ingress", name: "SecurityEdge public ingress", layer: "securityedge", status: StatusDown, critical: true, endpoint: endpoint, message: "configured public listener is not accepting local TCP connections", err: err.Error(), latency: latency}
+		return probeResult{id: "securityedge_ingress", name: "SecurityEdge public ingress", layer: "securityedge", status: StatusDown, critical: true, endpoint: endpoint, message: "configured public listener is not accepting local TCP connections", err: err.Error(), latency: time.Since(started)}
 	}
-	_ = conn.Close()
+	defer conn.Close()
+
 	protocol := "http"
 	message := "public HTTP gateway listener is accepting TCP connections"
+	details := map[string]any{"external_firewall_verified": false, "protocol": protocol, "tls": false}
 	if cfg.Server.TLS.Enabled {
 		protocol = "https"
-		message = "public HTTPS gateway listener is accepting TCP connections"
+		details["protocol"] = protocol
+		details["tls"] = true
+		state, handshakeErr := probeTLSHTTPServer(ctx, conn)
+		if handshakeErr != nil {
+			return probeResult{id: "securityedge_ingress", name: "SecurityEdge public ingress", layer: "securityedge", status: StatusDown, critical: true, endpoint: endpoint, message: "configured public HTTPS listener did not complete a local TLS handshake", err: handshakeErr.Error(), latency: time.Since(started), details: details}
+		}
+		details["tls_version"] = tlsVersionName(state.Version)
+		message = "public HTTPS gateway listener completed a local TLS handshake"
 	}
-	return probeResult{id: "securityedge_ingress", name: "SecurityEdge public ingress", layer: "securityedge", status: StatusHealthy, critical: true, endpoint: endpoint, message: message, latency: latency, details: map[string]any{"external_firewall_verified": false, "protocol": protocol, "tls": cfg.Server.TLS.Enabled}}
+	return probeResult{id: "securityedge_ingress", name: "SecurityEdge public ingress", layer: "securityedge", status: StatusHealthy, critical: true, endpoint: endpoint, message: message, latency: time.Since(started), details: details}
 }
 
 func probeDataPlaneTCP(ctx context.Context, cfg config.Config) probeResult {
@@ -286,12 +295,67 @@ func probeDataPlaneTCP(ctx context.Context, cfg config.Config) probeResult {
 	details := map[string]any{"protocol": protocol, "tls": protocol == "https"}
 	started := time.Now()
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", hostPort(u))
-	latency := time.Since(started)
 	if err != nil {
-		return probeResult{id: "edgeproxy_data_tcp", name: "EdgeProxy data-plane TCP", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: cfg.Server.UpstreamProxyURL, message: "SecurityEdge cannot establish a TCP connection to EdgeProxy", err: err.Error(), latency: latency, details: details}
+		return probeResult{id: "edgeproxy_data_tcp", name: "EdgeProxy data-plane TCP", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: cfg.Server.UpstreamProxyURL, message: "SecurityEdge cannot establish a TCP connection to EdgeProxy", err: err.Error(), latency: time.Since(started), details: details}
 	}
-	_ = conn.Close()
-	return probeResult{id: "edgeproxy_data_tcp", name: "EdgeProxy data-plane TCP", layer: "edgeproxy", status: StatusHealthy, critical: true, endpoint: cfg.Server.UpstreamProxyURL, message: "SecurityEdge can establish a TCP connection to EdgeProxy", latency: latency, details: details}
+	defer conn.Close()
+
+	message := "SecurityEdge can establish a TCP connection to EdgeProxy"
+	if protocol == "https" {
+		state, handshakeErr := probeTLSHTTPServer(ctx, conn)
+		if handshakeErr != nil {
+			return probeResult{id: "edgeproxy_data_tcp", name: "EdgeProxy data-plane TCP", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: cfg.Server.UpstreamProxyURL, message: "SecurityEdge cannot complete a TLS handshake with EdgeProxy", err: handshakeErr.Error(), latency: time.Since(started), details: details}
+		}
+		details["tls_version"] = tlsVersionName(state.Version)
+		message = "SecurityEdge can complete a TLS handshake with EdgeProxy"
+	}
+	return probeResult{id: "edgeproxy_data_tcp", name: "EdgeProxy data-plane TCP", layer: "edgeproxy", status: StatusHealthy, critical: true, endpoint: cfg.Server.UpstreamProxyURL, message: message, latency: time.Since(started), details: details}
+}
+
+func probeTLSHTTPServer(ctx context.Context, conn net.Conn) (tls.ConnectionState, error) {
+	// These transport-layer connectivity checks validate that the configured
+	// endpoint actually speaks TLS instead of merely accepting a socket.
+	// Certificate-chain and hostname verification are intentionally left to the
+	// HTTPS data-plane probe, which uses the normal system trust store. The public
+	// ingress check is a loopback self-probe, where the deployed certificate
+	// commonly identifies an external hostname rather than 127.0.0.1.
+	client := tls.Client(conn, &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}) //nolint:gosec -- protocol-only local/connectivity probe; identity is verified by the HTTPS probe where applicable
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = client.SetDeadline(deadline)
+	}
+	if err := client.HandshakeContext(ctx); err != nil {
+		return tls.ConnectionState{}, err
+	}
+	state := client.ConnectionState()
+
+	// Complete a minimal HTTP exchange after the handshake. Go's HTTP server
+	// handles "OPTIONS *" before invoking the application handler, so this proves
+	// the TLS listener is an HTTP server without proxying a synthetic request to an
+	// Origin. It also lets the server finish the connection normally instead of
+	// logging a health-check socket close as a TLS handshake error.
+	if _, err := io.WriteString(client, "OPTIONS * HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"); err != nil {
+		_ = client.Close()
+		return tls.ConnectionState{}, err
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(client), &http.Request{Method: http.MethodOptions})
+	if err != nil {
+		_ = client.Close()
+		return tls.ConnectionState{}, err
+	}
+	_ = resp.Body.Close()
+	_ = client.Close()
+	return state, nil
+}
+
+func tlsVersionName(version uint16) string {
+	switch version {
+	case tls.VersionTLS13:
+		return "TLS 1.3"
+	case tls.VersionTLS12:
+		return "TLS 1.2"
+	default:
+		return fmt.Sprintf("0x%04x", version)
+	}
 }
 
 func probeDataPlaneHTTP(ctx context.Context, cfg config.Config, configuredRoutes []routes.Route) probeResult {

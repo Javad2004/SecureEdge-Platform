@@ -116,9 +116,10 @@ function fixturePayload(root) {
     traffic_path_status:'healthy', edgeproxy_connection_status:'healthy', observability_status:'healthy',
     counts:{ready_routes:1,total_routes:1,healthy_origins:1,total_origins:1,components_healthy:4,components_degraded:0,components_down:0},
     components:[
-      {id:'securityedge_ingress',status:'healthy',endpoint:'http://127.0.0.1:8081',latency_ms:1},
-      {id:'edgeproxy_data_http',status:'healthy',endpoint:'http://127.0.0.1:8080',latency_ms:2},
-      {id:'edgeproxy_admin_health',status:'healthy',endpoint:'http://127.0.0.1:9090',latency_ms:2}
+      {id:'securityedge_ingress',name:'SecurityEdge public ingress',layer:'securityedge',status:'healthy',critical:true,endpoint:'http://127.0.0.1:8081',message:'Public gateway listener is reachable.',latency_ms:1,checks:20,successful_checks:20,availability_percent:100},
+      {id:'edgeproxy_data_http',name:'EdgeProxy data plane',layer:'edgeproxy',status:'healthy',critical:true,endpoint:'http://127.0.0.1:8080',message:'Configured Route probe is healthy.',latency_ms:2,checks:20,successful_checks:20,availability_percent:100},
+      {id:'edgeproxy_admin_health',name:'EdgeProxy Admin API',layer:'observability',status:'healthy',critical:true,endpoint:'http://127.0.0.1:9090',message:'Admin health endpoint is healthy.',latency_ms:2,checks:20,successful_checks:20,availability_percent:100},
+      {id:'edgeproxy_metrics',name:'EdgeProxy metrics & cache',layer:'observability',status:'healthy',critical:false,endpoint:'http://127.0.0.1:9090/api/v1/metrics',message:'Metrics endpoint is available.',latency_ms:2,checks:20,successful_checks:20,availability_percent:100}
     ], history:[]
   };
   const overview = {
@@ -271,6 +272,18 @@ try {
 
   await cdp.evaluate(`login(${JSON.stringify(token)})`, true);
   await eventually(async () => await cdp.evaluate(`!document.getElementById('login').classList.contains('visible') && !!state.edgeConfig`), 'Authenticated Dashboard data');
+
+  let overviewTopologyLayout = null;
+  if (fixtureRoot) {
+    overviewTopologyLayout = await cdp.evaluate(`(() => {
+      const topology = document.querySelector('.connectivity-topology');
+      if (!topology) return null;
+      return {clientWidth:topology.clientWidth, scrollWidth:topology.scrollWidth};
+    })()`);
+    if (!overviewTopologyLayout || overviewTopologyLayout.scrollWidth > overviewTopologyLayout.clientWidth + 1) {
+      throw new Error(`Overview dependency topology should fit without a desktop scrollbar: ${JSON.stringify(overviewTopologyLayout)}`);
+    }
+  }
 
   let refreshCoalescing = null;
   if (fixtureRoot) {
@@ -477,7 +490,7 @@ try {
     title:contract.title, route:routeEditor.name, algorithm:routeEditor.algorithm,
     cache_route_options:cacheOptions, system_forms_populated:true, system_form_submission:systemFormSubmission, live_mutations_skipped:!fixtureRoot,
     refresh_coalescing:refreshCoalescing, responsive_layouts:responsiveLayouts, mobile_dialog_layouts:mobileDialogLayouts,
-    route_editor_layout:routeEditorLayout, raw_config_layout:rawConfigLayout, system_header_layout:systemHeaderLayout
+    route_editor_layout:routeEditorLayout, raw_config_layout:rawConfigLayout, system_header_layout:systemHeaderLayout, overview_topology_layout:overviewTopologyLayout
   }, null, 2));
 } catch (error) {
   console.error(error.stack || error.message);

@@ -211,6 +211,27 @@ func TestDashboardVisualControlStylesContract(t *testing.T) {
 	}
 }
 
+func TestDashboardOverviewTopologyFitsStandardDesktop(t *testing.T) {
+	styles, err := webAssets.ReadFile("web/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(styles)
+	for _, required := range []string{
+		`.connectivity-topology {`,
+		`gap:8px`,
+		`.topology-node {`,
+		`min-width:150px`,
+		`flex:1 1 168px`,
+		`.topology-arrow {`,
+		`flex:0 0 18px`,
+	} {
+		if !strings.Contains(css, required) {
+			t.Fatalf("dashboard topology stylesheet contract is missing %q", required)
+		}
+	}
+}
+
 func TestDashboardRouteAndTableActionLayoutContract(t *testing.T) {
 	index, err := webAssets.ReadFile("web/index.html")
 	if err != nil {

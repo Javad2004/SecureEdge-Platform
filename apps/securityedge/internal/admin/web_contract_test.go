@@ -289,6 +289,32 @@ func TestDashboardCoalescesRefreshesAndTimesOutRequests(t *testing.T) {
 	}
 }
 
+func TestDashboardPreservesAuthAndTelemetryTruthfulness(t *testing.T) {
+	app, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	javascript := string(app)
+	for _, required := range []string{
+		"if (!state.token) continue;",
+		"Operations API unavailable",
+		"edgeproxy_metrics_status_code",
+		"return status >= 200 && status < 300 && typeof metrics?.schema_version === 'string'",
+		"edgeMetricsAvailable ? `${ms(edgeTotal.upstream?.latency_ms?.average)} upstream avg` : 'EdgeProxy metrics unavailable'",
+		"edgeStatusAvailable ? `${healthy}/${origins.length}` : '—'",
+		"edgeStatusAvailable ? `${routes.filter(route => route.ready).length}/${routes.length} routes ready` : 'EdgeProxy status unavailable'",
+		"return key ? routes[key] : null;",
+		"routeReadyKnown ? (status.ready ? 'READY' : 'NOT READY') : 'UNKNOWN'",
+		"healthKnown ? (live.healthy ? 'healthy' : 'unhealthy') : 'unknown'",
+		"EdgeProxy telemetry unavailable.",
+		"Runtime health unavailable.",
+	} {
+		if !strings.Contains(javascript, required) {
+			t.Fatalf("dashboard authentication/telemetry truthfulness contract is missing %q", required)
+		}
+	}
+}
+
 func TestDashboardVisualControlStylesContract(t *testing.T) {
 	styles, err := webAssets.ReadFile("web/styles.css")
 	if err != nil {

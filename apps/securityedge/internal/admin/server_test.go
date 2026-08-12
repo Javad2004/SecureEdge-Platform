@@ -806,3 +806,52 @@ func TestSecurityLogsRejectOversizedTextFilters(t *testing.T) {
 		}
 	}
 }
+
+func TestOverviewTreatsNon2xxEdgeProxyResponsesAsUnavailable(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.Admin.Connectivity.Enabled = false
+	inspector, err := waf.NewInspector(nil, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &fakeRuntime{
+		cfg:        cfg,
+		edgeRaw:    json.RawMessage(`{"error":{"message":"unauthorized"}}`),
+		edgeStatus: http.StatusUnauthorized,
+	}
+	server, err := New(cfg.Admin, runtime, metrics.New(), securitylog.New(32), traffic.New(32, time.Minute), inspector)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	server.overview(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/dashboard/overview", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("overview status=%d, want %d", recorder.Code, http.StatusOK)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := payload["edgeproxy_status"]; ok {
+		t.Fatal("non-2xx EdgeProxy status response must not be exposed as a valid status payload")
+	}
+	if _, ok := payload["edgeproxy_metrics"]; ok {
+		t.Fatal("non-2xx EdgeProxy metrics response must not be exposed as valid telemetry")
+	}
+	if got := payload["edgeproxy_status_error"]; got != "EdgeProxy status returned HTTP 401" {
+		t.Fatalf("edgeproxy_status_error=%v", got)
+	}
+	if got := payload["edgeproxy_metrics_error"]; got != "EdgeProxy metrics returned HTTP 401" {
+		t.Fatalf("edgeproxy_metrics_error=%v", got)
+	}
+
+	history := server.history.snapshot(120)
+	if len(history.Samples) != 1 {
+		t.Fatalf("history samples=%d, want 1", len(history.Samples))
+	}
+	if history.Samples[0].EdgeProxy.Available {
+		t.Fatal("non-2xx EdgeProxy metrics response must be recorded as unavailable, not zero-valued telemetry")
+	}
+}

@@ -449,22 +449,28 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	connection := <-connectionCh
 	edgeStatus, ss, se := statusResult.raw, statusResult.status, statusResult.err
 	edgeMetrics, ms, me := metricsResult.raw, metricsResult.status, metricsResult.err
+	statusOK := se == nil && ss >= http.StatusOK && ss < http.StatusMultipleChoices
+	metricsOK := me == nil && ms >= http.StatusOK && ms < http.StatusMultipleChoices
 	securityMetrics := s.registry.Snapshot()
-	if me == nil {
+	if metricsOK {
 		s.history.observe(securityMetrics, edgeMetrics)
 	} else {
 		s.history.observe(securityMetrics, nil)
 	}
 	out := map[string]any{"generated_at": now(), "build": version.Info(), "connectivity": connection, "recent_client_traffic": s.trafficSnapshot(), "security_metrics": securityMetrics, "telemetry_history": s.history.snapshot(120), "security_logs": s.logs.Query(securitylog.Filter{Limit: 10}), "security_status": map[string]any{"rate_limit_buckets": s.runtime.LimiterSize(), "active_bans": s.runtime.ActiveBanCount(), "admission": s.runtime.AdmissionSnapshot()}, "edgeproxy_status_code": ss, "edgeproxy_metrics_status_code": ms}
-	if se != nil {
+	if statusOK {
+		out["edgeproxy_status"] = json.RawMessage(edgeStatus)
+	} else if se != nil {
 		out["edgeproxy_status_error"] = se.Error()
 	} else {
-		out["edgeproxy_status"] = json.RawMessage(edgeStatus)
+		out["edgeproxy_status_error"] = fmt.Sprintf("EdgeProxy status returned HTTP %d", ss)
 	}
-	if me != nil {
+	if metricsOK {
+		out["edgeproxy_metrics"] = json.RawMessage(edgeMetrics)
+	} else if me != nil {
 		out["edgeproxy_metrics_error"] = me.Error()
 	} else {
-		out["edgeproxy_metrics"] = json.RawMessage(edgeMetrics)
+		out["edgeproxy_metrics_error"] = fmt.Sprintf("EdgeProxy metrics returned HTTP %d", ms)
 	}
 	writeJSON(w, 200, out)
 }

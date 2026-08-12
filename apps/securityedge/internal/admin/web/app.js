@@ -199,10 +199,13 @@ async function refreshAll() {
         renderAll();
         await loadEdgeLogs();
         $('last-updated').textContent = `Updated ${new Date().toLocaleTimeString()}`;
-        $('live-dot').classList.add('live');
       } catch (error) {
         toast(error.message);
-        $('live-dot').classList.remove('live','degraded');
+        // api() locks and clears the token on authentication failures. Preserve
+        // that authoritative state instead of misreporting auth expiry as an
+        // Operations API outage.
+        if (!state.token) continue;
+        $('live-dot').classList.remove('live','degraded','down');
         $('live-dot').classList.add('down');
         $('connection-label').textContent = 'Operations API unavailable';
       }
@@ -343,31 +346,44 @@ function renderRecentTraffic() {
   $('recent-traffic-clients').textContent = `${fmt(traffic.unique_clients)} unique clients · ${fmt(traffic.allowed)} allowed · ${fmt(traffic.rejected)} rejected`;
 }
 
+function edgeMetricsSnapshot(overview = state.overview || {}) {
+  const status = Number(overview.edgeproxy_metrics_status_code || 0);
+  const metrics = overview.edgeproxy_metrics;
+  return status >= 200 && status < 300 && typeof metrics?.schema_version === 'string' && metrics.schema_version.trim() ? metrics : null;
+}
+
+function edgeStatusSnapshot(overview = state.overview || {}) {
+  const status = Number(overview.edgeproxy_status_code || 0);
+  const runtime = overview.edgeproxy_status;
+  return status >= 200 && status < 300 && Array.isArray(runtime?.routes) ? runtime : null;
+}
+
 function renderOverview() {
   renderConnectivity();
   renderRecentTraffic();
   const overview = state.overview || {};
   const security = overview.security_metrics || {};
   const total = security.total || {};
-  const edgeMetrics = overview.edgeproxy_metrics || {};
-  const edgeTotal = edgeMetrics.total || {};
-  const edgeStatus = overview.edgeproxy_status || {};
-  const edgeConnected = normalizedStatus(overview.connectivity?.edgeproxy_connection_status) !== 'down' && Boolean(overview.edgeproxy_metrics);
-  $('kpi-requests').textContent = edgeConnected ? fmt(edgeTotal.requests) : '—';
-  $('kpi-rps').textContent = edgeConnected ? `${Number(edgeMetrics.requests_per_second || 0).toFixed(2)} req/s` : 'EdgeProxy unavailable';
+  const edgeMetrics = edgeMetricsSnapshot(overview);
+  const edgeMetricsAvailable = Boolean(edgeMetrics);
+  const edgeTotal = edgeMetrics?.total || {};
+  const edgeStatus = edgeStatusSnapshot(overview);
+  const edgeStatusAvailable = Boolean(edgeStatus);
+  $('kpi-requests').textContent = edgeMetricsAvailable ? fmt(edgeTotal.requests) : '—';
+  $('kpi-rps').textContent = edgeMetricsAvailable ? `${Number(edgeMetrics.requests_per_second || 0).toFixed(2)} req/s` : 'EdgeProxy metrics unavailable';
   $('kpi-blocked').textContent = fmt(rejectedCount(total));
   $('kpi-block-rate').textContent = `${pct(total.block_rate)} rejection rate`;
   $('kpi-detections').textContent = fmt(total.detections);
   $('kpi-detection-rate').textContent = `${pct(total.detection_rate)} detection rate`;
-  $('kpi-cache').textContent = edgeConnected ? pct(edgeTotal.cache_hit_ratio) : '—';
-  $('kpi-cache-counts').textContent = edgeConnected ? `${fmt(edgeTotal.cache_hits)} hits · ${fmt(edgeTotal.cache_misses)} misses` : 'No cache telemetry';
+  $('kpi-cache').textContent = edgeMetricsAvailable ? pct(edgeTotal.cache_hit_ratio) : '—';
+  $('kpi-cache-counts').textContent = edgeMetricsAvailable ? `${fmt(edgeTotal.cache_hits)} hits · ${fmt(edgeTotal.cache_misses)} misses` : 'No cache telemetry';
   $('kpi-p95').textContent = ms(total.latency?.p95_ms);
-  $('kpi-upstream').textContent = `${ms(edgeTotal.upstream?.latency_ms?.average)} upstream avg`;
-  const routes = edgeStatus.routes || [];
+  $('kpi-upstream').textContent = edgeMetricsAvailable ? `${ms(edgeTotal.upstream?.latency_ms?.average)} upstream avg` : 'EdgeProxy metrics unavailable';
+  const routes = edgeStatus?.routes || [];
   const origins = routes.flatMap(route => route.upstreams || []);
   const healthy = origins.filter(origin => origin.healthy).length;
-  $('kpi-origins').textContent = `${healthy}/${origins.length}`;
-  $('kpi-routes').textContent = `${routes.filter(route => route.ready).length}/${routes.length} routes ready`;
+  $('kpi-origins').textContent = edgeStatusAvailable ? `${healthy}/${origins.length}` : '—';
+  $('kpi-routes').textContent = edgeStatusAvailable ? `${routes.filter(route => route.ready).length}/${routes.length} routes ready` : 'EdgeProxy status unavailable';
   const history = overview.telemetry_history?.samples || [];
   if (history.length) {
     state.trend = history.map(point => ({
@@ -375,7 +391,7 @@ function renderOverview() {
       blocked: Number(point.security?.rejected_per_second || 0),
       time: Date.parse(point.generated_at) || Date.now()
     }));
-  } else if (overview.edgeproxy_metrics) {
+  } else if (edgeMetrics) {
     state.trend = [{requests: Number(edgeMetrics.requests_per_second || 0), blocked: Number(security.requests_per_second || 0) * Number(total.block_rate || 0), time: Date.now()}];
   }
   drawTrend();
@@ -509,12 +525,13 @@ function renderBans() {
 }
 
 function renderTraffic() {
-  if (!state.overview?.edgeproxy_metrics) {
+  const edgeMetrics = edgeMetricsSnapshot();
+  if (!edgeMetrics) {
     $('cache-stats').innerHTML = '<div class="empty-state">EdgeProxy metrics are unavailable. Check the connectivity panel.</div>';
     $('latency-stats').innerHTML = '<div class="empty-state">No EdgeProxy latency telemetry is available.</div>';
     return;
   }
-  const total = state.overview.edgeproxy_metrics.total || {};
+  const total = edgeMetrics.total || {};
   $('cache-stats').innerHTML = metricRows([
     ['Hits', fmt(total.cache_hits)], ['Misses', fmt(total.cache_misses)], ['Stale', fmt(total.cache_stale)],
     ['Bypasses', fmt(total.cache_bypasses)], ['Stores', fmt(total.cache_stores)], ['Hit ratio', pct(total.cache_hit_ratio)]
@@ -658,12 +675,16 @@ function watchSummary(status) {
 }
 
 function routeStatus(name) {
-  return (state.overview?.edgeproxy_status?.routes || []).find(route => String(route.name).toLowerCase() === String(name).toLowerCase()) || null;
+  return (edgeStatusSnapshot()?.routes || []).find(route => String(route.name).toLowerCase() === String(name).toLowerCase()) || null;
 }
-function routeMetrics(name) { const routes = state.overview?.edgeproxy_metrics?.routes || {}; const key = Object.keys(routes).find(item => item.toLowerCase() === String(name).toLowerCase()); return key ? routes[key] : {}; }
+function routeMetrics(name) {
+  const routes = edgeMetricsSnapshot()?.routes || {};
+  const key = Object.keys(routes).find(item => item.toLowerCase() === String(name).toLowerCase());
+  return key ? routes[key] : null;
+}
 function statusOrigin(status, origin) {
   return (status?.upstreams || []).find(item => String(item.name || '').toLowerCase() === String(origin.name || '').toLowerCase()) ||
-    (status?.upstreams || []).find(item => (item.url || item.upstream) === origin.url) || {};
+    (status?.upstreams || []).find(item => (item.url || item.upstream) === origin.url) || null;
 }
 function bytes(value) {
   const n = Number(value || 0); if (n < 1024) return `${n} B`; if (n < 1048576) return `${(n/1024).toFixed(1)} KiB`;
@@ -714,17 +735,28 @@ function renderRoutes() {
 
   $('route-cards').innerHTML = routes.length ? routes.map(route => {
     const status = routeStatus(route.name), telemetry = routeMetrics(route.name);
+    const routeReadyKnown = typeof status?.ready === 'boolean';
     const origins = (route.upstreams || []).map(origin => {
-      const live = statusOrigin(status, origin), om = telemetry.upstreams?.[origin.url] || {};
-      return `<div class="origin-row"><div class="origin-identity"><strong>${esc(origin.name || origin.url)}</strong><span>${esc(origin.url)}</span></div><div class="origin-badges"><span class="badge ${live.healthy ? 'ready':'error'}">${live.healthy ? 'healthy':'unhealthy'}</span><span class="badge">w${fmt(origin.weight)} · p${fmt(origin.priority)}</span><span class="badge">${fmt(om.calls)} calls</span><span class="badge">${ms(live.ewma_latency_ms)}</span></div><div class="origin-actions"><button class="ghost compact-button" data-origin-edit="${esc(route.name)}" data-origin="${esc(origin.name)}">Edit</button><button class="ghost compact-button" data-origin-telemetry="${esc(route.name)}" data-origin="${esc(origin.name)}">Telemetry</button></div></div>`;
+      const live = statusOrigin(status, origin), om = telemetry?.upstreams?.[origin.url] || null;
+      const healthKnown = typeof live?.healthy === 'boolean';
+      const healthClass = healthKnown ? (live.healthy ? 'ready' : 'error') : '';
+      const healthText = healthKnown ? (live.healthy ? 'healthy' : 'unhealthy') : 'unknown';
+      const callsText = om ? `${fmt(om.calls)} calls` : 'telemetry unavailable';
+      const latencyText = live ? ms(live.ewma_latency_ms) : '—';
+      return `<div class="origin-row"><div class="origin-identity"><strong>${esc(origin.name || origin.url)}</strong><span>${esc(origin.url)}</span></div><div class="origin-badges"><span class="badge ${healthClass}">${healthText}</span><span class="badge">w${fmt(origin.weight)} · p${fmt(origin.priority)}</span><span class="badge">${callsText}</span><span class="badge">${latencyText}</span></div><div class="origin-actions"><button class="ghost compact-button" data-origin-edit="${esc(route.name)}" data-origin="${esc(origin.name)}">Edit</button><button class="ghost compact-button" data-origin-telemetry="${esc(route.name)}" data-origin="${esc(origin.name)}">Telemetry</button></div></div>`;
     }).join('');
     const algorithm = route.load_balancing?.algorithm || 'round_robin';
     const cache = route.cache || {}, health = route.health_check || {};
-    return `<article class="route-card managed-route"><div class="route-head"><div><h2>${esc(route.name)}</h2><p>${esc((route.hosts || []).join(', '))} · ${esc(route.path_prefix || '/')}</p></div><span class="badge ${status?.ready ? 'ready' : 'error'}">${status?.ready ? 'READY' : 'NOT READY'}</span></div><div class="scheduler-banner"><span>Scheduler</span><strong>${esc(algorithm)}</strong><small>${fmt(telemetry.requests)} requests · ${pct(telemetry.cache_hit_ratio)}</small></div><div class="route-facts"><span>Cache <strong>${cache.enabled ? 'enabled':'disabled'}</strong> · ${esc(cache.default_ttl || '—')}</span><span>Health checks <strong>${health.enabled ? 'enabled':'disabled'}</strong> · ${esc(health.interval || '—')}</span><span>Retries <strong>${fmt(route.proxy?.retry_count)}</strong> · ${esc(route.proxy?.request_timeout || '—')} timeout</span></div><div class="route-actions"><button class="ghost" data-route-edit="${esc(route.name)}">Edit all settings</button><button class="ghost" data-origin-add="${esc(route.name)}">Add origin</button><button class="ghost" data-route-telemetry="${esc(route.name)}">Telemetry</button><button class="danger ghost" data-route-delete="${esc(route.name)}">Delete</button></div><h3>Origins</h3>${origins || '<p class="muted">No origins configured.</p>'}</article>`;
+    const routeClass = routeReadyKnown ? (status.ready ? 'ready' : 'error') : '';
+    const routeLabel = routeReadyKnown ? (status.ready ? 'READY' : 'NOT READY') : 'UNKNOWN';
+    const telemetrySummary = telemetry ? `${fmt(telemetry.requests)} requests · ${pct(telemetry.cache_hit_ratio)}` : 'Telemetry unavailable';
+    return `<article class="route-card managed-route"><div class="route-head"><div><h2>${esc(route.name)}</h2><p>${esc((route.hosts || []).join(', '))} · ${esc(route.path_prefix || '/')}</p></div><span class="badge ${routeClass}">${routeLabel}</span></div><div class="scheduler-banner"><span>Scheduler</span><strong>${esc(algorithm)}</strong><small>${telemetrySummary}</small></div><div class="route-facts"><span>Cache <strong>${cache.enabled ? 'enabled':'disabled'}</strong> · ${esc(cache.default_ttl || '—')}</span><span>Health checks <strong>${health.enabled ? 'enabled':'disabled'}</strong> · ${esc(health.interval || '—')}</span><span>Retries <strong>${fmt(route.proxy?.retry_count)}</strong> · ${esc(route.proxy?.request_timeout || '—')} timeout</span></div><div class="route-actions"><button class="ghost" data-route-edit="${esc(route.name)}">Edit all settings</button><button class="ghost" data-origin-add="${esc(route.name)}">Add origin</button><button class="ghost" data-route-telemetry="${esc(route.name)}">Telemetry</button><button class="danger ghost" data-route-delete="${esc(route.name)}">Delete</button></div><h3>Origins</h3>${origins || '<p class="muted">No origins configured.</p>'}</article>`;
   }).join('') : '<article class="panel empty-state">No routes are configured. Create the first route with the validated form.</article>';
 
   $('route-telemetry-table').innerHTML = routes.length ? routes.map(route => {
-    const m = routeMetrics(route.name), latency = m.response_latency_ms || {}, upstream = m.upstream || {};
+    const m = routeMetrics(route.name);
+    if (!m) return `<tr><td><strong>${esc(route.name)}</strong><small class="table-subline">${esc(route.load_balancing?.algorithm || 'round_robin')}</small></td><td>${esc(route.load_balancing?.algorithm || 'round_robin')}</td><td colspan="7" class="muted">EdgeProxy telemetry unavailable.</td><td class="table-actions-cell"><div class="table-actions"><button class="ghost compact-button" data-route-telemetry="${esc(route.name)}">Details</button></div></td></tr>`;
+    const latency = m.response_latency_ms || {}, upstream = m.upstream || {};
     const errors = Number(m.client_errors||0)+Number(m.server_errors||0)+Number(m.proxy_errors||0);
     return `<tr><td><strong>${esc(route.name)}</strong><small class="table-subline">${esc(route.load_balancing?.algorithm || 'round_robin')}</small></td><td>${esc(route.load_balancing?.algorithm || 'round_robin')}</td><td>${fmt(m.requests)}</td><td>${pct(m.success_rate)} / ${pct(m.error_rate)}<small class="table-subline">${fmt(errors)} client-facing errors</small></td><td>${pct(m.cache_hit_ratio)}<small class="table-subline">${fmt(m.cache_hits)} hit · ${fmt(m.cache_misses)} miss · ${fmt(m.cache_stale)} stale</small></td><td>${ms(latency.minimum)} / ${ms(latency.average)} / ${ms(latency.maximum)}</td><td>${ms(latency.p50)} / ${ms(latency.p95)} / ${ms(latency.p99)}</td><td>${fmt(m.upstream_calls)} calls<small class="table-subline">${fmt(upstream.failures)} fail · ${fmt(upstream.timeouts)} timeout · ${fmt(m.retries)} retry</small></td><td>${bytes(m.bytes_in)} / ${bytes(m.bytes_out)}</td><td class="table-actions-cell"><div class="table-actions"><button class="ghost compact-button" data-route-telemetry="${esc(route.name)}">Details</button></div></td></tr>`;
   }).join('') : '<tr><td colspan="10" class="muted">No routes configured.</td></tr>';
@@ -733,8 +765,17 @@ function renderRoutes() {
   routes.forEach(route => {
     const status = routeStatus(route.name), m = routeMetrics(route.name);
     (route.upstreams || []).forEach(origin => {
-      const live = statusOrigin(status, origin), om = m.upstreams?.[origin.url] || {}, latency = om.latency_ms || {};
-      originRows.push(`<tr><td><strong>${esc(route.name)}</strong><small class="table-subline">${esc(origin.name)}</small></td><td>${esc(origin.url)}</td><td><span class="badge ${live.healthy ? 'ready':'error'}">${live.healthy ? 'healthy':'unhealthy'}</span></td><td>${fmt(origin.weight)} / ${fmt(origin.priority)}</td><td>${fmt(om.calls)}</td><td>${pct(om.success_rate)}<small class="table-subline">${fmt(om.failures)} failures</small></td><td>${fmt(om.timeouts)} / ${fmt(om.retries)}</td><td>${ms(latency.p50)} / ${ms(latency.p95)} / ${ms(latency.p99)}</td><td>${fmt(live.active_requests)} / ${ms(live.ewma_latency_ms)}</td><td>${fmt(live.scheduler_selections)}<small class="table-subline">${fmt(live.health_failures)} fail · ${fmt(live.health_recoveries)} recovery</small></td><td class="table-actions-cell"><div class="table-actions"><button class="ghost compact-button" data-origin-edit="${esc(route.name)}" data-origin="${esc(origin.name)}">Edit</button><button class="ghost compact-button" data-origin-telemetry="${esc(route.name)}" data-origin="${esc(origin.name)}">Details</button></div></td></tr>`);
+      const live = statusOrigin(status, origin), om = m?.upstreams?.[origin.url] || null, latency = om?.latency_ms || {};
+      const healthKnown = typeof live?.healthy === 'boolean';
+      const healthClass = healthKnown ? (live.healthy ? 'ready' : 'error') : '';
+      const healthText = healthKnown ? (live.healthy ? 'healthy' : 'unhealthy') : 'unknown';
+      const metricsCells = om
+        ? `<td>${fmt(om.calls)}</td><td>${pct(om.success_rate)}<small class="table-subline">${fmt(om.failures)} failures</small></td><td>${fmt(om.timeouts)} / ${fmt(om.retries)}</td><td>${ms(latency.p50)} / ${ms(latency.p95)} / ${ms(latency.p99)}</td>`
+        : '<td colspan="4" class="muted">EdgeProxy telemetry unavailable.</td>';
+      const runtimeCells = live
+        ? `<td>${fmt(live.active_requests)} / ${ms(live.ewma_latency_ms)}</td><td>${fmt(live.scheduler_selections)}<small class="table-subline">${fmt(live.health_failures)} fail · ${fmt(live.health_recoveries)} recovery</small></td>`
+        : '<td colspan="2" class="muted">Runtime health unavailable.</td>';
+      originRows.push(`<tr><td><strong>${esc(route.name)}</strong><small class="table-subline">${esc(origin.name)}</small></td><td>${esc(origin.url)}</td><td><span class="badge ${healthClass}">${healthText}</span></td><td>${fmt(origin.weight)} / ${fmt(origin.priority)}</td>${metricsCells}${runtimeCells}<td class="table-actions-cell"><div class="table-actions"><button class="ghost compact-button" data-origin-edit="${esc(route.name)}" data-origin="${esc(origin.name)}">Edit</button><button class="ghost compact-button" data-origin-telemetry="${esc(route.name)}" data-origin="${esc(origin.name)}">Details</button></div></td></tr>`);
     });
   });
   $('origin-telemetry-table').innerHTML = originRows.join('') || '<tr><td colspan="11" class="muted">No origins configured.</td></tr>';
@@ -989,7 +1030,9 @@ function renderSystem() {
     ['Telemetry history',history.enabled ? `${fmt(history.samples?.length)} / ${fmt(history.capacity)} samples` : 'Disabled'],['History persistence',history.persistent ? (history.last_error ? `Degraded: ${history.last_error}` : 'Healthy') : 'Memory only']
   ]);
   const edgeStatus = state.overview?.edgeproxy_status_code;
-  const routes = state.overview?.edgeproxy_status?.routes || [];
+  const edgeRuntime = edgeStatusSnapshot();
+  const edgeMetrics = edgeMetricsSnapshot();
+  const routes = edgeRuntime?.routes || [];
   const connection = state.overview?.connectivity || {};
   const edgeAdmin = componentByID(connection, 'edgeproxy_admin_health');
   const edgeData = componentByID(connection, 'edgeproxy_data_http');
@@ -1000,8 +1043,8 @@ function renderSystem() {
     ['Data-plane protocol',edgeProtocol],['Data-plane listener',edgeServer.listen_addr||'—'],
     ['Admin API',statusLabel(edgeAdmin?.status)],['Admin HTTP status',edgeStatus||'unavailable'],
     ['Last connectivity check',dateText(connection.generated_at)],['Data-plane latency',compactLatency(edgeData?.latency_ms)],
-    ['Metrics schema',state.overview?.edgeproxy_metrics?.schema_version||'—'],['Uptime',`${fmt(state.overview?.edgeproxy_metrics?.uptime_seconds)} s`],
-    ['In flight',fmt(state.overview?.edgeproxy_metrics?.inflight)],['Ready routes',`${routes.filter(route=>route.ready).length}/${routes.length}`]
+    ['Metrics schema',edgeMetrics?.schema_version||'—'],['Uptime',edgeMetrics ? `${fmt(edgeMetrics.uptime_seconds)} s` : '—'],
+    ['In flight',edgeMetrics ? fmt(edgeMetrics.inflight) : '—'],['Ready routes',edgeRuntime ? `${routes.filter(route=>route.ready).length}/${routes.length}` : '—']
   ]);
   renderSystemForms();
 }

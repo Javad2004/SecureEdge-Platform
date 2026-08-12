@@ -70,9 +70,10 @@ type telemetryOriginHistory struct {
 }
 
 type edgeMetricsHistoryInput struct {
-	Inflight int64                            `json:"inflight"`
-	Total    edgeCounterHistoryInput          `json:"total"`
-	Routes   map[string]edgeRouteHistoryInput `json:"routes"`
+	SchemaVersion string                           `json:"schema_version"`
+	Inflight      int64                            `json:"inflight"`
+	Total         edgeCounterHistoryInput          `json:"total"`
+	Routes        map[string]edgeRouteHistoryInput `json:"routes"`
 }
 
 type edgeCounterHistoryInput struct {
@@ -166,7 +167,7 @@ func (s *telemetryHistoryStore) observe(security metrics.Snapshot, edgeRaw json.
 	}
 
 	var edge edgeMetricsHistoryInput
-	if len(edgeRaw) > 0 && json.Unmarshal(edgeRaw, &edge) == nil {
+	if len(edgeRaw) > 0 && json.Unmarshal(edgeRaw, &edge) == nil && strings.TrimSpace(edge.SchemaVersion) != "" {
 		point.EdgeProxy = telemetryEdgeHistoryPoint{
 			Available:     true,
 			Requests:      edge.Total.Requests,

@@ -132,7 +132,7 @@ function fixturePayload(root) {
     }},
     security_logs:{entries:[],retained:0,dropped:0,file_bytes:0,file_errors:0},
     security_status:{rate_limit_buckets:0,active_bans:0,admission:{global_active:0,tracked_clients:0}},
-    edgeproxy_status_code:200,
+    edgeproxy_status_code:200, edgeproxy_metrics_status_code:200,
     edgeproxy_status:{routes:[routeRuntime]},
     edgeproxy_metrics:{schema_version:'1',uptime_seconds:60,inflight:0,requests_per_second:1,total:routeMetric,routes:{[route.name]:routeMetric}},
     build:{version:'fixture',commit:'fixture',go_version:'fixture',os:'fixture',arch:'fixture'}
@@ -339,13 +339,27 @@ try {
       try { await download('/api/v1/logs/export?format=csv', 'fixture.csv'); } catch (error) { expiredDownloadError = error.message; }
       await frame();
       const expiredDownload = snapshot();
+
+      state.token = 'refresh-expired-secret';
+      sessionSet('securityedge_token', state.token);
+      setConsoleLocked(false);
+      document.getElementById('live-dot').className = 'dot live';
+      document.getElementById('connection-label').textContent = 'System healthy';
+      window.fetch = async () => new Response(JSON.stringify({error:{message:'expired'}}), {status:401,headers:{'Content-Type':'application/json'}});
+      await refreshAll();
+      await frame();
+      const expiredRefresh = {
+        ...snapshot(),
+        connectionLabel:document.getElementById('connection-label').textContent,
+        liveClasses:[...document.getElementById('live-dot').classList]
+      };
       window.fetch = originalFetch;
 
       const dialogsNamed = [...document.querySelectorAll('dialog')].every(dialog => {
         const labelledBy = dialog.getAttribute('aria-labelledby');
         return Boolean(labelledBy && document.getElementById(labelledBy));
       });
-      return {initial, backgroundFocusBlocked, explicitLock, failedLogin, failedLoginError, expiredDownload, expiredDownloadError, dialogsNamed};
+      return {initial, backgroundFocusBlocked, explicitLock, failedLogin, failedLoginError, expiredDownload, expiredDownloadError, expiredRefresh, dialogsNamed};
     })()`, true);
     if (!authenticationUIContract.initial.shellInert || !authenticationUIContract.initial.loginVisible ||
         authenticationUIContract.initial.activeElement !== 'token' || !authenticationUIContract.backgroundFocusBlocked) {
@@ -365,6 +379,12 @@ try {
         authenticationUIContract.expiredDownload.storedToken || authenticationUIContract.expiredDownload.inputValue ||
         authenticationUIContract.expiredDownloadError !== 'Invalid or expired admin token.') {
       throw new Error(`Expired export authentication does not lock and clear the console: ${JSON.stringify(authenticationUIContract)}`);
+    }
+    if (!authenticationUIContract.expiredRefresh.shellInert || authenticationUIContract.expiredRefresh.stateToken ||
+        authenticationUIContract.expiredRefresh.storedToken || authenticationUIContract.expiredRefresh.inputValue ||
+        authenticationUIContract.expiredRefresh.connectionLabel !== 'Console locked' ||
+        authenticationUIContract.expiredRefresh.liveClasses.some(name => ['live','degraded','down'].includes(name))) {
+      throw new Error(`Expired periodic refresh misreports authentication loss as an operations outage: ${JSON.stringify(authenticationUIContract)}`);
     }
     if (!authenticationUIContract.dialogsNamed) {
       throw new Error(`Editor dialogs must expose accessible names: ${JSON.stringify(authenticationUIContract)}`);
@@ -526,6 +546,90 @@ try {
       throw new Error(`Authenticated Dashboard did not release modal isolation or clear the credential input: ${JSON.stringify(authenticatedUI)}`);
     }
     authenticationUIContract.authenticated = authenticatedUI;
+  }
+
+  let telemetryAvailabilityContract = null;
+  if (fixtureRoot) {
+    telemetryAvailabilityContract = await cdp.evaluate(`(() => {
+      const previous = state.overview;
+      const overviewKpis = () => ({
+        requests:document.getElementById('kpi-requests').textContent,
+        rps:document.getElementById('kpi-rps').textContent,
+        cache:document.getElementById('kpi-cache').textContent,
+        cacheCounts:document.getElementById('kpi-cache-counts').textContent,
+        upstream:document.getElementById('kpi-upstream').textContent,
+        origins:document.getElementById('kpi-origins').textContent,
+        routes:document.getElementById('kpi-routes').textContent
+      });
+      const unavailable = structuredClone(previous);
+      unavailable.edgeproxy_metrics = null;
+      unavailable.edgeproxy_status = null;
+      unavailable.edgeproxy_status_code = 0;
+      unavailable.edgeproxy_metrics_status_code = 0;
+      unavailable.connectivity = {...unavailable.connectivity, edgeproxy_connection_status:'down'};
+      state.overview = unavailable;
+      renderOverview();
+      renderRoutes();
+      renderSystem();
+      const metricValue = (id, label) => {
+        const row = [...document.querySelectorAll('#' + id + ' .metric-row')].find(item => item.querySelector('span')?.textContent === label);
+        return row?.querySelector('strong')?.textContent || '';
+      };
+      const snapshot = {
+        ...overviewKpis(),
+        routeState:document.querySelector('#route-cards .route-head .badge')?.textContent || '',
+        originState:document.querySelector('#route-cards .origin-badges .badge')?.textContent || '',
+        routeSummary:document.querySelector('#route-cards .scheduler-banner small')?.textContent || '',
+        routeTelemetry:document.getElementById('route-telemetry-table').textContent,
+        originTelemetry:document.getElementById('origin-telemetry-table').textContent,
+        edgeUptime:metricValue('edge-system','Uptime'),
+        edgeInflight:metricValue('edge-system','In flight'),
+        edgeReadyRoutes:metricValue('edge-system','Ready routes')
+      };
+
+      const metricsOnly = structuredClone(previous);
+      metricsOnly.edgeproxy_status = null;
+      metricsOnly.edgeproxy_status_code = 0;
+      metricsOnly.connectivity = {...metricsOnly.connectivity, edgeproxy_connection_status:'down'};
+      state.overview = metricsOnly;
+      renderOverview();
+      const metricsOnlyKpis = overviewKpis();
+
+      const statusOnly = structuredClone(previous);
+      statusOnly.edgeproxy_metrics = null;
+      statusOnly.edgeproxy_metrics_status_code = 0;
+      statusOnly.connectivity = {...statusOnly.connectivity, edgeproxy_connection_status:'down'};
+      state.overview = statusOnly;
+      renderOverview();
+      const statusOnlyKpis = overviewKpis();
+
+      state.overview = previous;
+      renderAll();
+      return {unavailable:snapshot, metricsOnly:metricsOnlyKpis, statusOnly:statusOnlyKpis};
+    })()`);
+    const unavailable = telemetryAvailabilityContract.unavailable;
+    if (unavailable.requests !== '—' || unavailable.rps !== 'EdgeProxy metrics unavailable' ||
+        unavailable.cache !== '—' || unavailable.cacheCounts !== 'No cache telemetry' ||
+        unavailable.upstream !== 'EdgeProxy metrics unavailable' || unavailable.origins !== '—' ||
+        unavailable.routes !== 'EdgeProxy status unavailable' || unavailable.routeState !== 'UNKNOWN' ||
+        unavailable.originState !== 'unknown' || unavailable.routeSummary !== 'Telemetry unavailable' ||
+        !unavailable.routeTelemetry.includes('EdgeProxy telemetry unavailable.') ||
+        !unavailable.originTelemetry.includes('EdgeProxy telemetry unavailable.') ||
+        !unavailable.originTelemetry.includes('Runtime health unavailable.') ||
+        unavailable.edgeUptime !== '—' || unavailable.edgeInflight !== '—' ||
+        unavailable.edgeReadyRoutes !== '—') {
+      throw new Error(`Unavailable EdgeProxy telemetry is rendered as real zero-valued or unhealthy data: ${JSON.stringify(telemetryAvailabilityContract)}`);
+    }
+    const metricsOnly = telemetryAvailabilityContract.metricsOnly;
+    if (metricsOnly.requests === '—' || metricsOnly.rps === 'EdgeProxy metrics unavailable' || metricsOnly.cache === '—' ||
+        metricsOnly.upstream === 'EdgeProxy metrics unavailable' || metricsOnly.origins !== '—' || metricsOnly.routes !== 'EdgeProxy status unavailable') {
+      throw new Error(`Independent EdgeProxy metrics availability is coupled incorrectly to runtime status/connectivity: ${JSON.stringify(telemetryAvailabilityContract)}`);
+    }
+    const statusOnly = telemetryAvailabilityContract.statusOnly;
+    if (statusOnly.requests !== '—' || statusOnly.rps !== 'EdgeProxy metrics unavailable' || statusOnly.cache !== '—' ||
+        statusOnly.upstream !== 'EdgeProxy metrics unavailable' || statusOnly.origins !== '1/1' || statusOnly.routes !== '1/1 routes ready') {
+      throw new Error(`Independent EdgeProxy runtime status availability is coupled incorrectly to metrics availability: ${JSON.stringify(telemetryAvailabilityContract)}`);
+    }
   }
 
   let mobileNavLayouts = [];
@@ -1503,8 +1607,8 @@ try {
     semantic_color_contract:semanticColorContract, topbar_layouts:topbarLayouts, security_explorer_layouts:securityExplorerLayouts,
     connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
-    authentication_ui_contract:authenticationUIContract, editor_state_contract:editorStateContract,
-    action_error_contract:actionErrorContract
+    authentication_ui_contract:authenticationUIContract, telemetry_availability_contract:telemetryAvailabilityContract,
+    editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
   }, null, 2));
 } catch (error) {
   console.error(error.stack || error.message);

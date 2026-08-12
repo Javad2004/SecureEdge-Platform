@@ -37,7 +37,7 @@ func TestTelemetryHistoryPersistsBoundsAndReloads(t *testing.T) {
 				Latency:  metrics.LatencySnapshot{P95MS: 2.5},
 			},
 		}
-		edge := json.RawMessage(`{"inflight":1,"total":{"requests":` + uintString(requestCount) + `,"cache_hit_ratio":0.5,"response_latency_ms":{"p95":4.5}},"routes":{"demo":{"requests":` + uintString(requestCount) + `,"cache_hit_ratio":0.5,"response_latency_ms":{"p95":4.5},"upstreams":{"origin-a":{"calls":` + uintString(requestCount) + `,"success_rate":1,"latency_ms":{"p95":3.5}}}}}}`)
+		edge := json.RawMessage(`{"schema_version":"2.0","inflight":1,"total":{"requests":` + uintString(requestCount) + `,"cache_hit_ratio":0.5,"response_latency_ms":{"p95":4.5}},"routes":{"demo":{"requests":` + uintString(requestCount) + `,"cache_hit_ratio":0.5,"response_latency_ms":{"p95":4.5},"upstreams":{"origin-a":{"calls":` + uintString(requestCount) + `,"success_rate":1,"latency_ms":{"p95":3.5}}}}}}`)
 		store.observe(security, edge)
 	}
 
@@ -59,6 +59,27 @@ func TestTelemetryHistoryPersistsBoundsAndReloads(t *testing.T) {
 	}
 	if got := reloadedSnapshot.Samples[1].Routes["demo"].Origins["origin-a"].Calls; got != 3 {
 		t.Fatalf("unexpected reloaded origin calls: %d", got)
+	}
+}
+
+func TestTelemetryHistoryRejectsEdgeProxyPayloadWithoutMetricsSchema(t *testing.T) {
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled:        true,
+		Capacity:       10,
+		SampleInterval: config.Duration{Duration: time.Second},
+	})
+
+	store.observe(
+		metrics.Snapshot{Total: metrics.CounterSnapshot{Requests: 1}},
+		json.RawMessage(`{"total":{"requests":0},"error":{"message":"unauthorized"}}`),
+	)
+
+	snapshot := store.snapshot(10)
+	if len(snapshot.Samples) != 1 {
+		t.Fatalf("history samples=%d, want 1", len(snapshot.Samples))
+	}
+	if snapshot.Samples[0].EdgeProxy.Available {
+		t.Fatal("EdgeProxy payload without metrics schema must remain unavailable")
 	}
 }
 

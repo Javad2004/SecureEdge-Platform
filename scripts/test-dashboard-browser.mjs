@@ -459,20 +459,40 @@ try {
             return {label:item.textContent.trim(),left:rect.left,right:rect.right};
           });
           const partialLeft=items.filter(item => item.left < navRect.left - 1 && item.right > navRect.left + 1).map(item => item.label);
+          const root=document.documentElement;
+          const activeView=document.querySelector('.view.active');
+          const escaped=activeView ? [...activeView.querySelectorAll('*')].filter(node => {
+            const style=getComputedStyle(node);
+            if (style.display === 'none' || style.visibility === 'hidden') return false;
+            const rect=node.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return false;
+            const scrollContainer=node.closest('.table-wrap,.connectivity-topology');
+            if (scrollContainer && scrollContainer !== node) return false;
+            return rect.left < -1 || rect.right > root.clientWidth + 1;
+          }).map(node => ({
+            tag:node.tagName.toLowerCase(),
+            id:node.id || '',
+            className:typeof node.className === 'string' ? node.className : '',
+            left:Math.round(node.getBoundingClientRect().left * 10) / 10,
+            right:Math.round(node.getBoundingClientRect().right * 10) / 10
+          })).slice(0,8) : [];
           return {
             navLeft:navRect.left, navRight:navRect.right, scrollLeft:nav.scrollLeft,
             scrollWidth:nav.scrollWidth, clientWidth:nav.clientWidth,
             active:active.textContent.trim(), activeLeft:activeRect.left, activeRight:activeRect.right,
             activeVisible:activeRect.left >= navRect.left - 1 && activeRect.right <= navRect.right + 1,
-            partialLeft
+            viewportWidth:root.clientWidth, bodyScrollWidth:document.body.scrollWidth,
+            partialLeft, escaped
           };
         })()`);
         if (!layout) throw new Error(`Compact navigation layout is missing at ${width}px for ${view}`);
         layout.width=width;
         layout.view=view;
         mobileNavLayouts.push(layout);
-        if (!layout.activeVisible || layout.partialLeft.length) {
-          throw new Error(`Compact navigation clips an item at the leading edge at ${width}px for ${view}: ${JSON.stringify(layout)}`);
+        if (!layout.activeVisible || layout.partialLeft.length ||
+            layout.bodyScrollWidth > layout.viewportWidth + 1 ||
+            layout.escaped.length) {
+          throw new Error(`Compact navigation or page layout escapes the viewport at ${width}px for ${view}: ${JSON.stringify(layout)}`);
         }
       }
     }
@@ -1075,6 +1095,42 @@ try {
     await eventually(async () => await cdp.evaluate(`window.__fixtureRequests.some(request => request.method === 'PUT' && request.key === '/api/v1/waf' && request.body?.maximum_matches_per_request === 48)`), 'Structured WAF form submission');
     systemFormSubmission = true;
   }
+  let accessibilityContract = null;
+  if (fixtureRoot) {
+    accessibilityContract = await cdp.evaluate(`(() => {
+      const selectors='button,input:not([type="hidden"]),select,textarea,a[href]';
+      const controls=[...document.querySelectorAll(selectors)];
+      const visibleControls=controls.filter(node => {
+        const style=getComputedStyle(node);
+        const rect=node.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+      });
+      const missing=controls.filter(node => {
+        const aria=(node.getAttribute('aria-label') || '').trim();
+        if (aria) return false;
+        const labelledBy=(node.getAttribute('aria-labelledby') || '').trim();
+        if (labelledBy) {
+          const text=labelledBy.split(/\s+/).map(id => document.getElementById(id)?.textContent?.trim() || '').join(' ').trim();
+          if (text) return false;
+        }
+        const labels=node.labels ? [...node.labels].map(label => label.textContent.trim()).join(' ').trim() : '';
+        if (labels) return false;
+        const title=(node.getAttribute('title') || '').trim();
+        if (title) return false;
+        if (node.matches('button,a[href]') && node.textContent.trim()) return false;
+        if (node.matches('input[type="button"],input[type="submit"],input[type="reset"]') && node.value.trim()) return false;
+        return true;
+      }).map(node => ({
+        tag:node.tagName.toLowerCase(), id:node.id || '', type:node.getAttribute('type') || '',
+        name:node.getAttribute('name') || '', className:typeof node.className === 'string' ? node.className : ''
+      }));
+      return {total:controls.length, visible:visibleControls.length, missing};
+    })()`);
+    if (accessibilityContract.missing.length) {
+      throw new Error(`Interactive controls without accessible names: ${JSON.stringify(accessibilityContract)}`);
+    }
+  }
+
   await sleep(500);
   if (exceptions.length) throw new Error(`Browser console/runtime errors: ${exceptions.join(' | ')}`);
 
@@ -1088,7 +1144,7 @@ try {
     login_brand_layout:loginBrandLayout, sidebar_brand_layout:sidebarBrandLayout,
     sidebar_layout:sidebarLayout, overview_topology_layout:overviewTopologyLayout, theme_contract:themeContract,
     semantic_color_contract:semanticColorContract, topbar_layouts:topbarLayouts, connectivity_action_layout:connectivityActionLayout,
-    connectivity_responsive_layouts:connectivityResponsiveLayouts
+    connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract
   }, null, 2));
 } catch (error) {
   console.error(error.stack || error.message);

@@ -1251,6 +1251,172 @@ try {
   const cacheOptions = await cdp.evaluate(`document.getElementById('cache-route-select').options.length`);
   if (cacheOptions < 1) throw new Error('Per-route cache editor has no Route options.');
 
+  let editorStateContract = null;
+  if (fixtureRoot) {
+    editorStateContract = await cdp.evaluate(`(() => {
+      const originalEdgeConfig = structuredClone(state.edgeConfig);
+      const originalPolicies = structuredClone(state.policies);
+      const originalSelectedPolicy = state.selectedPolicy;
+      const originalPolicyDirty = state.policyDirty;
+      const originalCacheDirty = state.cacheEditorDirty;
+      const routeName = ${JSON.stringify(expectedRoute)};
+      try {
+        state.selectedPolicy = routeName;
+        state.policyDirty = false;
+        renderPolicies();
+        const policyField = document.querySelector('#policy-form [name="anomaly_threshold"]');
+        policyField.value = '17';
+        policyField.dispatchEvent(new Event('input', {bubbles:true}));
+        renderPolicies();
+        const policyPreserved = {
+          selected:state.selectedPolicy, dirty:state.policyDirty, value:policyField.value
+        };
+
+        state.policies = {...structuredClone(originalPolicies), routes:[], route_policies:{}, effective_policies:{}};
+        renderPolicies();
+        const policyResynchronized = {
+          selected:state.selectedPolicy, dirty:state.policyDirty, title:document.getElementById('policy-title').textContent, value:policyField.value
+        };
+
+        state.policies = structuredClone(originalPolicies);
+        const firstRoute = structuredClone(originalEdgeConfig.routes.find(route => route.name === routeName) || originalEdgeConfig.routes[0]);
+        const backupRoute = structuredClone(firstRoute);
+        backupRoute.name = 'backup-app';
+        backupRoute.cache = {...(backupRoute.cache || {}), default_ttl:'77s'};
+        state.edgeConfig = {...structuredClone(originalEdgeConfig), routes:[firstRoute, backupRoute]};
+        state.cacheEditorDirty = false;
+        renderRoutes();
+        loadCacheEditor(firstRoute.name);
+        const cacheSelect = document.getElementById('cache-route-select');
+        const cacheTTL = document.getElementById('cache-editor-ttl');
+        cacheSelect.value = backupRoute.name;
+        cacheSelect.dispatchEvent(new Event('change', {bubbles:true}));
+        const cacheRouteSwitch = {
+          selected:cacheSelect.value, loaded:cacheSelect.dataset.loaded || '', dirty:state.cacheEditorDirty, ttl:cacheTTL.value
+        };
+        cacheSelect.value = firstRoute.name;
+        cacheSelect.dispatchEvent(new Event('change', {bubbles:true}));
+        cacheTTL.value = '999s';
+        cacheTTL.dispatchEvent(new Event('input', {bubbles:true}));
+        renderRoutes();
+        const cachePreserved = {
+          selected:document.getElementById('cache-route-select').value,
+          loaded:document.getElementById('cache-route-select').dataset.loaded || '',
+          dirty:state.cacheEditorDirty,
+          ttl:cacheTTL.value
+        };
+
+        state.edgeConfig = {...structuredClone(originalEdgeConfig), routes:[backupRoute]};
+        renderRoutes();
+        const cacheResynchronized = {
+          selected:document.getElementById('cache-route-select').value,
+          loaded:document.getElementById('cache-route-select').dataset.loaded || '',
+          dirty:state.cacheEditorDirty,
+          ttl:cacheTTL.value
+        };
+
+        state.edgeConfig = {...structuredClone(originalEdgeConfig), routes:[]};
+        renderRoutes();
+        const emptyRoutes = {
+          loaded:document.getElementById('cache-route-select').dataset.loaded || '',
+          editorDisabled:[...document.querySelectorAll('#cache-config-form input, #cache-config-form select')].every(control => control.disabled),
+          saveDisabled:document.getElementById('save-cache-config').disabled,
+          purgeDisabled:document.querySelector('#purge-form button[type="submit"]').disabled,
+          message:document.getElementById('cache-config-result').textContent
+        };
+        return {policyPreserved, policyResynchronized, cacheRouteSwitch, cachePreserved, cacheResynchronized, emptyRoutes};
+      } finally {
+        state.edgeConfig = originalEdgeConfig;
+        state.policies = originalPolicies;
+        state.selectedPolicy = originalSelectedPolicy;
+        state.policyDirty = originalPolicyDirty;
+        state.cacheEditorDirty = originalCacheDirty;
+        renderRoutes();
+        renderPolicies();
+      }
+    })()`);
+    if (editorStateContract.policyPreserved.selected !== expectedRoute || !editorStateContract.policyPreserved.dirty ||
+        editorStateContract.policyPreserved.value !== '17') {
+      throw new Error(`Unsaved Policy edits are not preserved across dashboard renders: ${JSON.stringify(editorStateContract)}`);
+    }
+    if (editorStateContract.policyResynchronized.selected !== 'default' || editorStateContract.policyResynchronized.dirty ||
+        editorStateContract.policyResynchronized.title !== 'Default policy') {
+      throw new Error(`Policy editor does not safely resynchronize when its Route disappears: ${JSON.stringify(editorStateContract)}`);
+    }
+    if (editorStateContract.cacheRouteSwitch.selected !== 'backup-app' || editorStateContract.cacheRouteSwitch.loaded !== 'backup-app' ||
+        editorStateContract.cacheRouteSwitch.dirty || editorStateContract.cacheRouteSwitch.ttl !== '77s') {
+      throw new Error(`Changing the cache Route must load a clean editor state: ${JSON.stringify(editorStateContract)}`);
+    }
+    if (editorStateContract.cachePreserved.selected !== expectedRoute || editorStateContract.cachePreserved.loaded !== expectedRoute ||
+        !editorStateContract.cachePreserved.dirty || editorStateContract.cachePreserved.ttl !== '999s') {
+      throw new Error(`Unsaved cache edits are not preserved for the active Route: ${JSON.stringify(editorStateContract)}`);
+    }
+    if (editorStateContract.cacheResynchronized.selected !== 'backup-app' || editorStateContract.cacheResynchronized.loaded !== 'backup-app' ||
+        editorStateContract.cacheResynchronized.dirty || editorStateContract.cacheResynchronized.ttl !== '77s') {
+      throw new Error(`Cache editor does not resynchronize after its selected Route is removed: ${JSON.stringify(editorStateContract)}`);
+    }
+    if (editorStateContract.emptyRoutes.loaded || !editorStateContract.emptyRoutes.editorDisabled ||
+        !editorStateContract.emptyRoutes.saveDisabled || !editorStateContract.emptyRoutes.purgeDisabled ||
+        editorStateContract.emptyRoutes.message !== 'No routes are configured.') {
+      throw new Error(`Route-dependent cache controls are not safely disabled without Routes: ${JSON.stringify(editorStateContract)}`);
+    }
+  }
+
+  let actionErrorContract = null;
+  if (fixtureRoot) {
+    actionErrorContract = await cdp.evaluate(`(async () => {
+      const originalFetch = window.fetch;
+      const originalPolicies = state.policies;
+      const originalSelectedPolicy = state.selectedPolicy;
+      const originalBans = state.bans;
+      const failureMessage = 'fixture action failure';
+      const waitForToast = async () => {
+        const deadline = performance.now() + 1000;
+        while (performance.now() < deadline) {
+          if (document.getElementById('toast').textContent === failureMessage) return failureMessage;
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        return document.getElementById('toast').textContent;
+      };
+      const resetToast = () => { document.getElementById('toast').textContent = ''; };
+      const results = {};
+      window.fetch = async () => new Response(JSON.stringify({error:{message:failureMessage}}), {status:500,headers:{'Content-Type':'application/json'}});
+      try {
+        state.bans = [{client:'203.0.113.7', banned_until:new Date(Date.now()+60000).toISOString(), violations:3}];
+        renderBans();
+        resetToast(); document.querySelector('[data-unban]').click(); results.unban = await waitForToast();
+
+        resetToast(); document.getElementById('clear-security').click(); results.clearSecurity = await waitForToast();
+        resetToast(); document.getElementById('clear-bans').click(); results.clearBans = await waitForToast();
+
+        state.policies = structuredClone(originalPolicies);
+        state.selectedPolicy = ${JSON.stringify(expectedRoute)};
+        state.policyDirty = false;
+        renderPolicies();
+        resetToast(); document.getElementById('delete-override').click(); results.deletePolicy = await waitForToast();
+
+        resetToast(); document.getElementById('reload-config').click(); results.reloadConfig = await waitForToast();
+        resetToast(); document.getElementById('refresh-control').click(); results.refreshControl = await waitForToast();
+
+        state.policies = null;
+        resetToast(); setView('policies'); results.loadPolicies = await waitForToast();
+        return results;
+      } finally {
+        window.fetch = originalFetch;
+        state.policies = originalPolicies;
+        state.selectedPolicy = originalSelectedPolicy;
+        state.policyDirty = false;
+        state.bans = originalBans;
+        renderPolicies();
+        renderBans();
+      }
+    })()`, true);
+    const failedActions = Object.entries(actionErrorContract).filter(([, message]) => message !== 'fixture action failure');
+    if (failedActions.length) {
+      throw new Error(`Control-plane action failures are not consistently surfaced to the operator: ${JSON.stringify(actionErrorContract)}`);
+    }
+  }
+
   await cdp.evaluate(`document.querySelector('[data-view="system"]').click()`);
   await eventually(async () => await cdp.evaluate(`document.getElementById('view-system').classList.contains('active')`), 'System view');
   const systemForms = await cdp.evaluate(`(() => ({
@@ -1337,7 +1503,8 @@ try {
     semantic_color_contract:semanticColorContract, topbar_layouts:topbarLayouts, security_explorer_layouts:securityExplorerLayouts,
     connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
-    authentication_ui_contract:authenticationUIContract
+    authentication_ui_contract:authenticationUIContract, editor_state_contract:editorStateContract,
+    action_error_contract:actionErrorContract
   }, null, 2));
 } catch (error) {
   console.error(error.stack || error.message);

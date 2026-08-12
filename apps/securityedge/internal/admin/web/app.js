@@ -20,6 +20,8 @@ const state = {
   securityWatch: null,
   edgeEditorDirty: false,
   securityEditorDirty: false,
+  policyDirty: false,
+  cacheEditorDirty: false,
   systemDirty: {},
   refreshPromise: null,
   refreshQueued: false
@@ -171,7 +173,7 @@ function setView(name) {
   $('page-title').textContent = ({overview:'Overview',security:'Security events',protection:'Traffic protection',traffic:'Traffic & cache',routes:'Routes & origins',policies:'Policies',system:'System'})[name];
   if (name === 'security') loadSecurity(true);
   if (name === 'protection') loadBans();
-  if (name === 'policies' && !state.policies) loadPolicies();
+  if (name === 'policies' && !state.policies) loadPolicies().catch(error => toast(error.message));
 }
 
 async function refreshAll() {
@@ -499,8 +501,10 @@ function renderBans() {
   if (!state.bans.length) { element.innerHTML = '<tr><td colspan="4" class="muted">No active temporary bans.</td></tr>'; return; }
   element.innerHTML = state.bans.map(ban => `<tr><td>${esc(ban.client)}</td><td>${esc(new Date(ban.banned_until).toLocaleString())}</td><td>${fmt(ban.violations)}</td><td class="table-actions-cell"><div class="table-actions"><button class="danger ghost" data-unban="${esc(ban.client)}">Remove</button></div></td></tr>`).join('');
   element.querySelectorAll('[data-unban]').forEach(button => button.onclick = async () => {
-    await api(`/api/v1/bans/${encodeURIComponent(button.dataset.unban)}`, {method:'DELETE'});
-    await loadBans(); toast('Temporary ban removed');
+    try {
+      await api(`/api/v1/bans/${encodeURIComponent(button.dataset.unban)}`, {method:'DELETE'});
+      await loadBans(); toast('Temporary ban removed');
+    } catch (error) { toast(error.message); }
   });
 }
 
@@ -535,11 +539,16 @@ async function loadControlData() {
     api('/api/v1/edgeproxy/config'), api('/api/v1/edgeproxy/config/watch'),
     api('/api/v1/config'), api('/api/v1/config/watch')
   ];
-  const [edgeConfig, edgeWatch, securityConfig, securityWatch] = await Promise.allSettled(requests);
+  const results = await Promise.allSettled(requests);
+  const [edgeConfig, edgeWatch, securityConfig, securityWatch] = results;
   if (edgeConfig.status === 'fulfilled') state.edgeConfig = edgeConfig.value;
   if (edgeWatch.status === 'fulfilled') state.edgeWatch = edgeWatch.value;
   if (securityConfig.status === 'fulfilled') state.securityConfig = securityConfig.value;
   if (securityWatch.status === 'fulfilled') state.securityWatch = securityWatch.value;
+  return {
+    successful: results.filter(result => result.status === 'fulfilled').length,
+    failures: results.filter(result => result.status === 'rejected').map(result => result.reason?.message || 'Control-plane request failed.')
+  };
 }
 
 const systemFormDefinitions = {
@@ -681,8 +690,27 @@ function renderRoutes() {
     if (values.some(route => route.name === selected)) select.value = selected;
   };
   preserveSelect('purge-route', routes);
+  const cacheSelect = $('cache-route-select');
+  const loadedCacheRoute = cacheSelect.dataset.loaded || '';
   preserveSelect('cache-route-select', routes);
-  if (routes.length && !$('cache-route-select').dataset.loaded) loadCacheEditor(routes[0].name);
+  const cacheForm = $('cache-config-form');
+  const cacheAvailable = routes.length > 0;
+  cacheForm.querySelectorAll('input,select').forEach(control => { control.disabled = !cacheAvailable; });
+  $('save-cache-config').disabled = !cacheAvailable;
+  $('purge-form').querySelector('button[type="submit"]').disabled = !cacheAvailable;
+  if (!cacheAvailable) {
+    cacheForm.reset();
+    cacheSelect.dataset.loaded = '';
+    state.cacheEditorDirty = false;
+    $('cache-config-result').textContent = 'No routes are configured.';
+  } else {
+    const selectedCacheRoute = cacheSelect.value || routes[0].name;
+    const loadedStillExists = routes.some(route => route.name === loadedCacheRoute);
+    if (!loadedStillExists || loadedCacheRoute !== selectedCacheRoute) {
+      state.cacheEditorDirty = false;
+      loadCacheEditor(selectedCacheRoute);
+    } else if (!state.cacheEditorDirty) loadCacheEditor(selectedCacheRoute);
+  }
 
   $('route-cards').innerHTML = routes.length ? routes.map(route => {
     const status = routeStatus(route.name), telemetry = routeMetrics(route.name);
@@ -814,6 +842,7 @@ function loadCacheEditor(routeName) {
   $('cache-editor-entries').value = cache.max_entries ?? 1000; $('cache-editor-max-mib').value = bytesToMiB(cache.max_bytes || 67108864); $('cache-editor-object-mib').value = bytesToMiB(cache.max_object_bytes || 4194304);
   $('cache-editor-statuses').value = (cache.cacheable_status_codes || []).join(', '); $('cache-editor-vary').value = (cache.vary_request_headers || []).join(', ');
   $('cache-editor-respect-origin').checked = Boolean(cache.respect_origin_headers); $('cache-editor-authorized').checked = Boolean(cache.cache_authorized_requests); $('cache-editor-cookie').checked = Boolean(cache.cache_cookie_requests); $('cache-editor-set-cookie').checked = Boolean(cache.cache_set_cookie_responses);
+  state.cacheEditorDirty = false;
   $('cache-config-result').textContent = '';
 }
 
@@ -830,6 +859,7 @@ async function saveCacheEditor() {
   };
   try {
     await api(`/api/v1/edgeproxy/routes/${encodeURIComponent(route)}/cache`, {method:'PUT', body:JSON.stringify(candidate)});
+    state.cacheEditorDirty = false;
     $('cache-config-result').textContent = 'Cache policy validated, persisted atomically, and hot-applied.';
     await refreshAll(); loadCacheEditor(route); toast('Route cache policy updated');
   } catch(error) { $('cache-config-result').textContent = error.message; }
@@ -882,13 +912,23 @@ function renderPolicies() {
   if (!state.policies) return;
   const scopes = $('policy-scopes');
   const routes = state.policies.routes || [];
+  if (state.selectedPolicy !== 'default') {
+    const selectedRoute = routes.find(route => String(route.name).toLowerCase() === String(state.selectedPolicy).toLowerCase());
+    if (selectedRoute) state.selectedPolicy = selectedRoute.name;
+    else { state.selectedPolicy = 'default'; state.policyDirty = false; }
+  }
   scopes.innerHTML = `<button data-policy="default" class="${state.selectedPolicy === 'default' ? 'active' : ''}">Default policy</button>` + routes.map(route => `<button data-policy="${esc(route.name)}" class="${state.selectedPolicy === route.name ? 'active' : ''}">${esc(route.name)}${state.policies.route_policies?.[route.name] ? ' · override' : ''}</button>`).join('');
-  scopes.querySelectorAll('button').forEach(button => button.onclick = () => { state.selectedPolicy = button.dataset.policy; renderPolicies(); });
+  scopes.querySelectorAll('button').forEach(button => button.onclick = () => {
+    state.selectedPolicy = button.dataset.policy;
+    state.policyDirty = false;
+    renderPolicies();
+  });
   const isDefault = state.selectedPolicy === 'default';
   const policy = isDefault ? state.policies.default_policy : (state.policies.effective_policies?.[state.selectedPolicy] || state.policies.default_policy);
   const form = $('policy-form');
   $('policy-title').textContent = isDefault ? 'Default policy' : `${state.selectedPolicy} policy`;
   $('delete-override').classList.toggle('hidden', isDefault || !state.policies.route_policies?.[state.selectedPolicy]);
+  if (state.policyDirty) return;
   setChecked(form,'enabled',policy.enabled); setField(form,'mode',policy.mode); setField(form,'anomaly_threshold',policy.anomaly_threshold);
   setField(form,'max_inspection_body_bytes',policy.max_inspection_body_bytes); setChecked(form,'inspect_request_body',policy.inspect_request_body);
   setChecked(form,'reject_encoded_request_bodies',policy.reject_encoded_request_bodies);
@@ -925,6 +965,7 @@ async function savePolicy(event) {
   try {
     const path = state.selectedPolicy === 'default' ? '/api/v1/policies/default' : `/api/v1/policies/${encodeURIComponent(state.selectedPolicy)}`;
     await api(path, {method:'PUT', body:JSON.stringify(policy)});
+    state.policyDirty = false;
     $('policy-result').textContent = 'Policy validated, saved, audited, and reloaded.';
     await loadPolicies(); toast('Policy saved');
   } catch (error) { $('policy-result').textContent = error.message; }
@@ -981,13 +1022,29 @@ if (window.ResizeObserver) {
 document.querySelectorAll('[data-go]').forEach(button => button.onclick = () => setView(button.dataset.go));
 $('security-filters').onsubmit = event => { event.preventDefault(); loadSecurity(true); };
 $('older-security').onclick = () => loadSecurity(false);
-$('clear-security').onclick = async () => { if (!confirm('Clear all retained SecurityEdge events, the active NDJSON log, and rotated backups?')) return; await api('/api/v1/logs',{method:'DELETE'}); await loadSecurity(true); toast('Security events and persistent log files cleared'); };
+$('clear-security').onclick = async () => {
+  if (!confirm('Clear all retained SecurityEdge events, the active NDJSON log, and rotated backups?')) return;
+  try { await api('/api/v1/logs',{method:'DELETE'}); await loadSecurity(true); toast('Security events and persistent log files cleared'); }
+  catch (error) { toast(error.message); }
+};
 $('export-ndjson').onclick = () => download('/api/v1/logs/export?format=ndjson','security-events.ndjson').catch(error=>toast(error.message));
 $('export-csv').onclick = () => download('/api/v1/logs/export?format=csv','security-events.csv').catch(error=>toast(error.message));
 $('export-prometheus').onclick = () => download('/api/v1/metrics/prometheus','securityedge.prom').catch(error=>toast(error.message));
-$('clear-bans').onclick = async () => { if (!confirm('Clear all active temporary bans?')) return; await api('/api/v1/bans',{method:'DELETE'}); await loadBans(); toast('Temporary bans cleared'); };
+$('clear-bans').onclick = async () => {
+  if (!confirm('Clear all active temporary bans?')) return;
+  try { await api('/api/v1/bans',{method:'DELETE'}); await loadBans(); toast('Temporary bans cleared'); }
+  catch (error) { toast(error.message); }
+};
 $('policy-form').onsubmit = savePolicy;
-$('delete-override').onclick = async () => { await api(`/api/v1/policies/${encodeURIComponent(state.selectedPolicy)}`,{method:'DELETE'}); await loadPolicies(); toast('Route override deleted'); };
+$('policy-form').addEventListener('input', () => { state.policyDirty = true; });
+$('policy-form').addEventListener('change', () => { state.policyDirty = true; });
+$('delete-override').onclick = async () => {
+  try {
+    await api(`/api/v1/policies/${encodeURIComponent(state.selectedPolicy)}`,{method:'DELETE'});
+    state.policyDirty = false;
+    await loadPolicies(); toast('Route override deleted');
+  } catch (error) { toast(error.message); }
+};
 $('purge-form').onsubmit = async event => { event.preventDefault(); const route=$('purge-route').value; const query=new URLSearchParams(); if($('purge-host').value.trim())query.set('host',$('purge-host').value.trim()); if($('purge-path').value.trim())query.set('path_prefix',$('purge-path').value.trim()); try { const suffix=query.toString()?`?${query}`:''; const data=await api(`/api/v1/edgeproxy/routes/${encodeURIComponent(route)}/cache/purge${suffix}`,{method:'POST'}); $('purge-result').textContent=`Purged ${data.purged} entries from ${route}.`; toast('Cache purged'); await refreshAll(); } catch(error) { $('purge-result').textContent=error.message; } };
 $('check-connectivity').onclick = async () => {
   const button = $('check-connectivity');
@@ -1001,16 +1058,28 @@ $('check-connectivity').onclick = async () => {
   } catch (error) { toast(error.message); }
   finally { button.disabled = false; button.textContent = 'Run checks'; }
 };
-$('reload-config').onclick = async () => { await api('/api/v1/reload',{method:'POST'}); await refreshAll(); toast('Configuration reloaded'); };
+$('reload-config').onclick = async () => {
+  try { await api('/api/v1/reload',{method:'POST'}); await refreshAll(); toast('Configuration reloaded'); }
+  catch (error) { toast(error.message); }
+};
 document.querySelectorAll('[data-system-form]').forEach(form => {
   const key = form.dataset.systemForm;
   form.addEventListener('input', () => { state.systemDirty[key] = true; });
   form.addEventListener('change', () => { state.systemDirty[key] = true; });
   form.addEventListener('submit', saveSystemForm);
 });
-$('refresh-control').onclick = async () => { await loadControlData(); renderRoutes(); toast('Control-plane data refreshed'); };
+$('refresh-control').onclick = async () => {
+  const result = await loadControlData();
+  renderRoutes();
+  if (!result.failures.length) toast('Control-plane data refreshed');
+  else if (result.successful) toast(`Control-plane data partially refreshed · ${result.failures.length} request${result.failures.length === 1 ? '' : 's'} unavailable`);
+  else toast(result.failures[0]);
+};
 $('add-route').onclick = () => openRouteDialog();
-$('cache-route-select').onchange = event => loadCacheEditor(event.currentTarget.value); $('save-cache-config').onclick = saveCacheEditor;
+$('cache-config-form').addEventListener('input', event => { if (event.target !== $('cache-route-select')) state.cacheEditorDirty = true; });
+$('cache-config-form').addEventListener('change', event => { if (event.target !== $('cache-route-select')) state.cacheEditorDirty = true; });
+$('cache-route-select').onchange = event => { state.cacheEditorDirty = false; loadCacheEditor(event.currentTarget.value); };
+$('save-cache-config').onclick = saveCacheEditor;
 $('route-form').onsubmit = saveRoute; $('origin-form').onsubmit = saveOrigin;
 document.querySelectorAll('[data-close-dialog]').forEach(button => button.onclick = () => $(button.dataset.closeDialog).close());
 $('edge-config-editor').addEventListener('input', () => { state.edgeEditorDirty = true; });

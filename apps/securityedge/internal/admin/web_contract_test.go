@@ -564,3 +564,36 @@ func TestDashboardAuthenticationModalIsolationContract(t *testing.T) {
 		}
 	}
 }
+
+func TestDashboardPreservesControlPlaneEditorState(t *testing.T) {
+	app, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	javascript := string(app)
+
+	for _, required := range []string{
+		"policyDirty: false",
+		"cacheEditorDirty: false",
+		"if (state.policyDirty) return;",
+		"state.policyDirty = true",
+		"else { state.selectedPolicy = 'default'; state.policyDirty = false; }",
+		"const loadedCacheRoute = cacheSelect.dataset.loaded || '';",
+		"const loadedStillExists = routes.some(route => route.name === loadedCacheRoute);",
+		"if (!loadedStillExists || loadedCacheRoute !== selectedCacheRoute)",
+		"else if (!state.cacheEditorDirty) loadCacheEditor(selectedCacheRoute);",
+		"state.cacheEditorDirty = true",
+		"state.cacheEditorDirty = false; loadCacheEditor(event.currentTarget.value);",
+		"cacheForm.reset();",
+		"$('save-cache-config').disabled = !cacheAvailable;",
+		"loadPolicies().catch(error => toast(error.message))",
+		"const results = await Promise.allSettled(requests);",
+		"failures: results.filter(result => result.status === 'rejected')",
+		"else toast(result.failures[0]);",
+		"catch (error) { toast(error.message); }",
+	} {
+		if !strings.Contains(javascript, required) {
+			t.Fatalf("dashboard control-plane editor resilience contract is missing %q", required)
+		}
+	}
+}

@@ -183,6 +183,43 @@ func TestDashboardThemeContract(t *testing.T) {
 	}
 }
 
+func TestDashboardTopbarKeepsPrimaryActionsBesideTitle(t *testing.T) {
+	index, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles, err := webAssets.ReadFile("web/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(index)
+	css := string(styles)
+
+	for _, required := range []string{
+		`class="eyebrow topbar-eyebrow"`,
+		`class="topbar-row"`,
+		`class="topbar-title-group"`,
+		`id="last-updated" class="topbar-updated"`,
+		`class="topbar-actions"`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard topbar markup contract is missing %q", required)
+		}
+	}
+	for _, required := range []string{
+		`.topbar-row {`,
+		`.topbar-title-group {`,
+		`.topbar-actions {`,
+		`.topbar-actions #refresh {`,
+		`flex:0 0 auto`,
+		`flex-direction:column`,
+	} {
+		if !strings.Contains(css, required) {
+			t.Fatalf("dashboard topbar responsive contract is missing %q", required)
+		}
+	}
+}
+
 func TestDashboardResourceInputsMatchBackendSafetyLimits(t *testing.T) {
 	index, err := webAssets.ReadFile("web/index.html")
 	if err != nil {

@@ -164,14 +164,43 @@ main {
   padding:30px 34px 70px
 }
 .topbar {
-  display:flex;
-  justify-content:space-between;
-  align-items:flex-end;
   margin-bottom:28px
 }
+.topbar-eyebrow {
+  margin-bottom:5px
+}
+.topbar-row {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:20px;
+  min-width:0
+}
+.topbar-title-group {
+  display:flex;
+  align-items:baseline;
+  gap:16px;
+  min-width:0;
+  flex-wrap:wrap
+}
 .topbar h1 {
-  margin:3px 0 0;
+  margin:0;
   font-size:30px
+}
+.topbar-updated {
+  color:var(--muted);
+  font-size:12px;
+  white-space:nowrap
+}
+.topbar-actions {
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:9px;
+  flex:0 0 auto
+}
+.topbar-actions #refresh {
+  min-height:40px
 }
 .eyebrow {
   margin:0;
@@ -727,10 +756,6 @@ canvas {
   .kpi-grid {
     grid-template-columns:repeat(2,1fr)
   }
-  .topbar {
-    align-items:flex-start;
-    gap:15px
-  }
   .top-actions {
     flex-direction:column;
     align-items:flex-end
@@ -747,7 +772,22 @@ canvas {
     grid-template-columns:1fr
   }
   .topbar {
-    display:block
+    margin-bottom:22px
+  }
+  .topbar-row {
+    align-items:flex-start;
+    gap:10px
+  }
+  .topbar-title-group {
+    align-items:flex-start;
+    flex-direction:column;
+    gap:8px
+  }
+  .topbar-actions {
+    gap:8px
+  }
+  .topbar-actions #refresh {
+    padding-inline:12px
   }
   .top-actions {
     margin-top:14px;

@@ -439,6 +439,59 @@ try {
   await cdp.evaluate(`login(${JSON.stringify(token)})`, true);
   await eventually(async () => await cdp.evaluate(`!document.getElementById('login').classList.contains('visible') && !!state.edgeConfig`), 'Authenticated Dashboard data');
 
+  let topbarLayouts = [];
+  if (fixtureRoot) {
+    for (const width of [1365,960,700,520,390,360,320]) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', {width,height:900,deviceScaleFactor:1,mobile:width <= 520});
+      await sleep(80);
+      const layout = await cdp.evaluate(`(() => {
+        const root=document.documentElement;
+        const topbar=document.querySelector('.topbar');
+        const row=document.querySelector('.topbar-row');
+        const titleGroup=document.querySelector('.topbar-title-group');
+        const title=document.getElementById('page-title');
+        const updated=document.getElementById('last-updated');
+        const actions=document.querySelector('.topbar-actions');
+        const toggle=actions?.querySelector('[data-theme-toggle]');
+        const refresh=document.getElementById('refresh');
+        if (!topbar || !row || !titleGroup || !title || !updated || !actions || !toggle || !refresh) return null;
+        const rect = node => { const value=node.getBoundingClientRect(); return {left:value.left,right:value.right,top:value.top,bottom:value.bottom,width:value.width,height:value.height}; };
+        const topbarRect=rect(topbar), rowRect=rect(row), titleRect=rect(title), updatedRect=rect(updated), actionsRect=rect(actions), toggleRect=rect(toggle), refreshRect=rect(refresh);
+        return {
+          viewportWidth:root.clientWidth, bodyScrollWidth:document.body.scrollWidth,
+          topbar:topbarRect, row:rowRect, title:titleRect, updated:updatedRect, actions:actionsRect, toggle:toggleRect, refresh:refreshRect,
+          titleDirection:getComputedStyle(titleGroup).flexDirection,
+          actionDirection:getComputedStyle(actions).flexDirection,
+          actionWrap:getComputedStyle(actions).flexWrap,
+          actionGap:parseFloat(getComputedStyle(actions).columnGap || getComputedStyle(actions).gap || '0'),
+          buttonCenterDelta:Math.abs((toggleRect.top+toggleRect.height/2)-(refreshRect.top+refreshRect.height/2)),
+          titleActionCenterDelta:Math.abs((titleRect.top+titleRect.height/2)-(actionsRect.top+actionsRect.height/2))
+        };
+      })()`);
+      if (!layout) throw new Error(`Topbar layout nodes are missing at ${width}px`);
+      layout.width=width;
+      topbarLayouts.push(layout);
+      const outOfBounds = layout.row.left < layout.topbar.left - 1 || layout.row.right > layout.topbar.right + 1 ||
+        layout.actions.right > layout.row.right + 1 || layout.title.left < layout.row.left - 1;
+      const buttonsNotInline = layout.actionDirection !== 'row' || layout.actionWrap !== 'nowrap' ||
+        layout.toggle.right > layout.refresh.left + 1 || layout.buttonCenterDelta > 1.5 ||
+        layout.actionGap < 6 || layout.actionGap > 12;
+      if (layout.bodyScrollWidth > layout.viewportWidth + 1 || outOfBounds || buttonsNotInline) {
+        throw new Error(`Topbar action layout failed at ${width}px: ${JSON.stringify(layout)}`);
+      }
+      if (width <= 520) {
+        const compactMismatch = layout.titleDirection !== 'column' ||
+          layout.updated.top < layout.title.bottom - 1 ||
+          layout.title.right > layout.actions.left - 4 ||
+          layout.titleActionCenterDelta > 4 ||
+          layout.topbar.height > 105;
+        if (compactMismatch) throw new Error(`Compact Overview header is not balanced at ${width}px: ${JSON.stringify(layout)}`);
+      }
+    }
+    await cdp.send('Emulation.setDeviceMetricsOverride', {width:1365,height:900,deviceScaleFactor:1,mobile:false});
+    await sleep(80);
+  }
+
   let semanticColorContract = null;
   let connectivityActionLayout = null;
   let connectivityResponsiveLayouts = [];
@@ -992,7 +1045,7 @@ try {
     raw_config_layout:rawConfigLayout, system_header_layout:systemHeaderLayout,
     login_brand_layout:loginBrandLayout, sidebar_brand_layout:sidebarBrandLayout,
     sidebar_layout:sidebarLayout, overview_topology_layout:overviewTopologyLayout, theme_contract:themeContract,
-    semantic_color_contract:semanticColorContract, connectivity_action_layout:connectivityActionLayout,
+    semantic_color_contract:semanticColorContract, topbar_layouts:topbarLayouts, connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts
   }, null, 2));
 } catch (error) {

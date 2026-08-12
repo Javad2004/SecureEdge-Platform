@@ -90,6 +90,93 @@ func TestDashboardAdvancedControlPlaneContract(t *testing.T) {
 	}
 }
 
+func TestDashboardThemeContract(t *testing.T) {
+	index, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	theme, err := webAssets.ReadFile("web/theme.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles, err := webAssets.ReadFile("web/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(index)
+	javascript := string(theme)
+	css := string(styles)
+
+	if strings.Count(html, `data-theme-toggle`) != 2 {
+		t.Fatalf("dashboard must expose synchronized theme toggles on the login and authenticated views")
+	}
+	for _, required := range []string{
+		`<meta name="color-scheme" content="light dark">`,
+		`<meta name="theme-color" content="#0b1020">`,
+		`<script src="/assets/theme.js"></script>`,
+		`class="theme-toggle"`,
+		`class="theme-icon theme-icon-sun"`,
+		`class="theme-icon theme-icon-moon"`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard theme markup contract is missing %q", required)
+		}
+	}
+	if themeIndex, stylesheetIndex := strings.Index(html, `/assets/theme.js`), strings.Index(html, `/assets/styles.css`); themeIndex < 0 || stylesheetIndex < 0 || themeIndex > stylesheetIndex {
+		t.Fatal("theme bootstrap must execute before the stylesheet to avoid an incorrect first-paint theme")
+	}
+
+	for _, required := range []string{
+		`securityedge.ui.theme`,
+		`localStorage.getItem(storageKey)`,
+		`localStorage.setItem(storageKey, theme)`,
+		`matchMedia('(prefers-color-scheme: dark)')`,
+		`systemPreference.addEventListener('change'`,
+		`window.addEventListener('storage'`,
+		`root.dataset.theme = currentTheme`,
+		`hasUserPreference = true`,
+		`data-theme-toggle`,
+		`securityedge:themechange`,
+	} {
+		if !strings.Contains(javascript, required) {
+			t.Fatalf("theme persistence/system-default contract is missing %q", required)
+		}
+	}
+	for _, required := range []string{
+		`:root {`,
+		`color-scheme:dark`,
+		`html[data-theme="light"] {`,
+		`color-scheme:light`,
+		`--bg:#f4f7fb`,
+		`--text:#182235`,
+		`--muted:#5f6f85`,
+		`--chart-grid:#d3dce8`,
+		`.theme-toggle {`,
+		`html[data-theme="light"] .editor-dialog`,
+		`html[data-theme="light"] .telemetry-raw`,
+		`html[data-theme="light"] .system-config-card[open] > summary`,
+	} {
+		if !strings.Contains(css, required) {
+			t.Fatalf("dashboard light-theme stylesheet contract is missing %q", required)
+		}
+	}
+	for _, required := range []string{
+		`function cssColor(name, fallback)`,
+		`cssColor('--chart-grid'`,
+		`cssColor('--chart-requests'`,
+		`cssColor('--chart-blocked'`,
+		`window.addEventListener('securityedge:themechange'`,
+	} {
+		if !strings.Contains(string(app), required) {
+			t.Fatalf("theme-aware chart contract is missing %q", required)
+		}
+	}
+}
+
 func TestDashboardResourceInputsMatchBackendSafetyLimits(t *testing.T) {
 	index, err := webAssets.ReadFile("web/index.html")
 	if err != nil {

@@ -84,8 +84,9 @@ function fixturePayload(root) {
   const securityPath = join(root, 'apps', 'securityedge', 'configs', 'local-dev.json');
   const htmlPath = join(root, 'apps', 'securityedge', 'internal', 'admin', 'web', 'index.html');
   const appPath = join(root, 'apps', 'securityedge', 'internal', 'admin', 'web', 'app.js');
+  const themePath = join(root, 'apps', 'securityedge', 'internal', 'admin', 'web', 'theme.js');
   const stylesPath = join(root, 'apps', 'securityedge', 'internal', 'admin', 'web', 'styles.css');
-  for (const path of [edgePath, securityPath, htmlPath, appPath, stylesPath]) {
+  for (const path of [edgePath, securityPath, htmlPath, appPath, themePath, stylesPath]) {
     if (!existsSync(path)) throw new Error(`Fixture file not found: ${path}`);
   }
   const edge = JSON.parse(readFileSync(edgePath, 'utf8'));
@@ -176,7 +177,7 @@ function fixturePayload(root) {
   const styles = readFileSync(stylesPath, 'utf8');
   html = html.replace(/<link\b[^>]*>/gi, '').replace(/<script\b[^>]*src=["'][^"']+["'][^>]*><\/script>/gi, '');
   html = html.replace('</head>', `<style>${styles}</style></head>`);
-  return {html, app:readFileSync(appPath, 'utf8'), responses, routeName:route.name};
+  return {html, app:readFileSync(appPath, 'utf8'), theme:readFileSync(themePath, 'utf8'), responses, routeName:route.name};
 }
 
 async function stopBrowser(processHandle) {
@@ -235,6 +236,7 @@ try {
   await Promise.all([cdp.send('Page.enable'), cdp.send('Runtime.enable'), cdp.send('Log.enable')]);
   if (fixtureRoot) {
     await cdp.send('Emulation.setDeviceMetricsOverride', {width:1365,height:900,deviceScaleFactor:1,mobile:false});
+    await cdp.send('Emulation.setEmulatedMedia', {features:[{name:'prefers-color-scheme',value:'light'}]});
   }
 
   let expectedRoute = '';
@@ -244,6 +246,17 @@ try {
     const {frameTree} = await cdp.send('Page.getFrameTree');
     await cdp.send('Page.setDocumentContent', {frameId:frameTree.frame.id, html:fixture.html});
     await eventually(async () => await cdp.evaluate(`document.readyState === 'complete'`), 'Fixture Dashboard document');
+    await cdp.evaluate(`(() => {
+      const values = new Map();
+      Object.defineProperty(window, 'localStorage', {configurable:true, value:{
+        getItem:key => values.has(String(key)) ? values.get(String(key)) : null,
+        setItem:(key,value) => values.set(String(key), String(value)),
+        removeItem:key => values.delete(String(key)),
+        clear:() => values.clear()
+      }});
+    })()`);
+    await cdp.evaluate(`(() => { const script=document.createElement('script'); script.textContent=${JSON.stringify(fixture.theme)}; document.head.appendChild(script); })()`);
+    await eventually(async () => await cdp.evaluate(`!!window.SecurityEdgeTheme`), 'Fixture Dashboard theme bootstrap');
     const mockScript = `(() => {
       const payloads = ${JSON.stringify(fixture.responses)};
       window.__fixtureRequests = [];
@@ -280,6 +293,72 @@ try {
     await eventually(async () => await cdp.evaluate(`location.href.startsWith(${JSON.stringify(url)}) && document.readyState === 'complete'`), 'Dashboard document');
   }
   await eventually(async () => await cdp.evaluate('typeof login === "function"'), 'Dashboard application script');
+
+  let themeContract = null;
+  if (fixtureRoot) {
+    themeContract = await cdp.evaluate(`(() => {
+      const root = document.documentElement;
+      const variable = name => getComputedStyle(root).getPropertyValue(name).trim();
+      const parse = value => {
+        const match = String(value).match(/^#([0-9a-f]{6})$/i);
+        if (!match) return null;
+        const hex = match[1];
+        return [0,2,4].map(index => parseInt(hex.slice(index,index+2),16) / 255);
+      };
+      const luminance = value => {
+        const rgb = parse(value);
+        if (!rgb) return 0;
+        const linear = rgb.map(channel => channel <= .04045 ? channel / 12.92 : Math.pow((channel + .055) / 1.055, 2.4));
+        return .2126 * linear[0] + .7152 * linear[1] + .0722 * linear[2];
+      };
+      const contrast = (foreground, background) => {
+        const first = luminance(foreground), second = luminance(background);
+        return (Math.max(first, second) + .05) / (Math.min(first, second) + .05);
+      };
+      const snapshot = () => ({
+        theme:root.dataset.theme,
+        text:variable('--text'), panel:variable('--panel'), muted:variable('--muted'),
+        accent:variable('--accent'), danger:variable('--danger'), warn:variable('--warn'),
+        textContrast:contrast(variable('--text'), variable('--panel')),
+        mutedContrast:contrast(variable('--muted'), variable('--panel')),
+        accentContrast:contrast(variable('--accent'), variable('--panel')),
+        dangerContrast:contrast(variable('--danger'), variable('--panel')),
+        warnContrast:contrast(variable('--warn'), variable('--panel'))
+      });
+      const initial = snapshot();
+      const loginToggle = document.querySelector('#login [data-theme-toggle]');
+      const initialLabel = loginToggle?.getAttribute('aria-label') || '';
+      loginToggle?.click();
+      const toggled = snapshot();
+      let persisted = '';
+      try { persisted = localStorage.getItem(window.SecurityEdgeTheme.storageKey) || ''; } catch {}
+      loginToggle?.click();
+      const restored = snapshot();
+      const topToggle = document.querySelector('.topbar [data-theme-toggle]');
+      return {
+        initial, toggled, restored, persisted, initialLabel,
+        loginToggleVisible:Boolean(loginToggle && loginToggle.getBoundingClientRect().width > 0),
+        topTogglePresent:Boolean(topToggle),
+        synchronizedLabel:topToggle?.getAttribute('aria-label') || ''
+      };
+    })()`);
+    if (themeContract.initial.theme !== 'light' || themeContract.toggled.theme !== 'dark' || themeContract.restored.theme !== 'light') {
+      throw new Error(`System-default and toggle theme behavior failed: ${JSON.stringify(themeContract)}`);
+    }
+    for (const palette of [themeContract.initial, themeContract.toggled]) {
+      if (palette.textContrast < 7 || palette.mutedContrast < 4.5 || palette.accentContrast < 4.5 ||
+          palette.dangerContrast < 4.5 || palette.warnContrast < 4.5) {
+        throw new Error(`Theme palette contrast contract failed: ${JSON.stringify(palette)}`);
+      }
+    }
+    if (!themeContract.loginToggleVisible || !themeContract.topTogglePresent || !themeContract.initialLabel.includes('dark') ||
+        !themeContract.synchronizedLabel.includes('dark')) {
+      throw new Error(`Theme toggle accessibility/synchronization contract failed: ${JSON.stringify(themeContract)}`);
+    }
+    if (themeContract.persisted !== 'dark') {
+      throw new Error(`Theme preference was not persisted through localStorage: ${JSON.stringify(themeContract)}`);
+    }
+  }
 
   let loginBrandLayout = null;
   if (fixtureRoot) {
@@ -702,7 +781,7 @@ try {
     route_editor_layout:routeEditorLayout, origin_dialog_layout:originDialogLayout, telemetry_detail_layout:telemetryDetailLayout,
     raw_config_layout:rawConfigLayout, system_header_layout:systemHeaderLayout,
     login_brand_layout:loginBrandLayout, sidebar_brand_layout:sidebarBrandLayout,
-    sidebar_layout:sidebarLayout, overview_topology_layout:overviewTopologyLayout
+    sidebar_layout:sidebarLayout, overview_topology_layout:overviewTopologyLayout, theme_contract:themeContract
   }, null, 2));
 } catch (error) {
   console.error(error.stack || error.message);

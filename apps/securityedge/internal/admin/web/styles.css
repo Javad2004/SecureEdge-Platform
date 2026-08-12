@@ -1,7 +1,8 @@
 :root {
+  color-scheme:dark;
   font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-  color:#e8edf7;
-  background:#0b1020;
+  color:var(--text);
+  background:var(--bg);
   font-synthesis:none;
   --bg:#0b1020;
   --panel:#121a2d;
@@ -13,6 +14,9 @@
   --accent2:#67a6ff;
   --danger:#ff7188;
   --warn:#ffc46b;
+  --chart-grid:#25324c;
+  --chart-requests:#67a6ff;
+  --chart-blocked:#ff7188;
   --shadow:0 16px 50px rgba(0,0,0,.28)
 }
 * {
@@ -1766,3 +1770,274 @@ canvas {
     white-space:normal
   }
 }
+
+/* Persistent light/dark appearance. The early theme bootstrap in theme.js sets
+   data-theme before this stylesheet loads, preventing an opposite-theme flash. */
+html[data-theme="light"] {
+  color-scheme:light;
+  --bg:#f4f7fb;
+  --panel:#ffffff;
+  --panel2:#eef3f9;
+  --border:#d3dce8;
+  --text:#182235;
+  --muted:#5f6f85;
+  --accent:#0f806a;
+  --accent2:#2563eb;
+  --danger:#b4233a;
+  --warn:#9a5a00;
+  --chart-grid:#d3dce8;
+  --chart-requests:#2563eb;
+  --chart-blocked:#b4233a;
+  --shadow:0 16px 42px rgba(30,52,82,.12)
+}
+
+.theme-toggle {
+  position:relative;
+  display:inline-grid;
+  place-items:center;
+  width:40px;
+  min-width:40px;
+  height:40px;
+  min-height:40px;
+  padding:0;
+  border-radius:10px;
+  color:var(--text);
+  background:var(--panel2)
+}
+.theme-toggle:hover {
+  border-color:#3c4d6e
+}
+.theme-toggle:focus-visible {
+  outline:3px solid rgba(103,166,255,.26);
+  outline-offset:2px
+}
+.theme-icon {
+  display:none;
+  width:19px;
+  height:19px;
+  fill:none;
+  stroke:currentColor;
+  stroke-width:1.8;
+  stroke-linecap:round;
+  stroke-linejoin:round
+}
+html[data-theme="dark"] .theme-icon-sun { display:block }
+html[data-theme="light"] .theme-icon-moon { display:block }
+.login-theme-row {
+  display:flex;
+  justify-content:flex-end;
+  margin:-10px -10px 2px 0
+}
+.login-card .theme-toggle {
+  width:40px;
+  min-width:40px;
+  height:40px;
+  min-height:40px;
+  padding:0;
+  border:1px solid var(--border);
+  background:var(--panel2);
+  color:var(--text);
+  font-weight:400
+}
+
+@media (prefers-reduced-motion:no-preference) {
+  body,.sidebar,.kpi,.panel,.route-card,.origin-row,.topology-node,.component-check,.transition-item,
+  button,input,select,textarea,.switch-row,.editor-dialog,#toast {
+    transition:background-color .18s ease,border-color .18s ease,color .18s ease,box-shadow .18s ease
+  }
+  .theme-icon { transition:transform .18s ease }
+  .theme-toggle:hover .theme-icon { transform:rotate(8deg) }
+}
+
+/* Light palette overrides for surfaces that intentionally use fixed colors in
+   the dark palette. Status hues stay semantically consistent while their text
+   and surfaces are darkened enough to preserve readable contrast on white. */
+html[data-theme="light"] body {
+  background:radial-gradient(circle at 80% 0,#dbeafe 0,transparent 32%),var(--bg)
+}
+html[data-theme="light"] .sidebar {
+  background:rgba(248,250,252,.94)
+}
+html[data-theme="light"] .brand-mark {
+  background:linear-gradient(145deg,rgba(15,128,106,.10),rgba(37,99,235,.09));
+  border-color:rgba(28,117,153,.24);
+  box-shadow:0 10px 28px rgba(30,76,116,.10),inset 0 1px 0 rgba(255,255,255,.78)
+}
+html[data-theme="light"] .brand-shield {
+  filter:drop-shadow(0 5px 10px rgba(38,105,154,.16))
+}
+html[data-theme="light"] .brand-shield-check { stroke:#ffffff }
+html[data-theme="light"] .dot { background:#7a8799 }
+html[data-theme="light"] button:hover,
+html[data-theme="light"] .theme-toggle:hover { border-color:#9cadc3 }
+html[data-theme="light"] .danger {
+  background:#fff0f2;
+  border-color:#e9a7b2;
+  color:#b4233a
+}
+html[data-theme="light"] .kpi,
+html[data-theme="light"] .panel {
+  background:linear-gradient(180deg,rgba(255,255,255,.99),rgba(247,250,253,.99))
+}
+html[data-theme="light"] th { background:#eef3f8 }
+html[data-theme="light"] td { color:#26354a }
+html[data-theme="light"] .badge.block,
+html[data-theme="light"] .badge.error {
+  background:#fff0f2;
+  color:#b4233a
+}
+html[data-theme="light"] .badge.log,
+html[data-theme="light"] .badge.warn,
+html[data-theme="light"] .badge.miss {
+  background:#fff6e8;
+  color:#9a5a00
+}
+html[data-theme="light"] .badge.allow,
+html[data-theme="light"] .badge.hit,
+html[data-theme="light"] .badge.ready {
+  background:#eaf8f4;
+  color:#0b725d
+}
+html[data-theme="light"] .badge.rate_limit,
+html[data-theme="light"] .badge.stale {
+  background:#edf4ff;
+  color:#1d4ed8
+}
+html[data-theme="light"] .badge.overload,
+html[data-theme="light"] .badge.banned {
+  background:#f4efff;
+  color:#7c3aed
+}
+html[data-theme="light"] .badge.admin {
+  background:#e9faff;
+  color:#0e7490
+}
+html[data-theme="light"] .filters input,
+html[data-theme="light"] .filters select,
+html[data-theme="light"] .policy-form input:not([type="checkbox"]),
+html[data-theme="light"] .policy-form select,
+html[data-theme="light"] .login-card input,
+html[data-theme="light"] .editor-form input:not([type="checkbox"]),
+html[data-theme="light"] .editor-form select,
+html[data-theme="light"] .structured-config-form textarea {
+  background:#f8fafc
+}
+html[data-theme="light"] .bar-track { background:#e3eaf3 }
+html[data-theme="light"] .switch-row {
+  background:#f6f9fc
+}
+html[data-theme="light"] .switch-row:hover {
+  background:#eef4fa;
+  border-color:#b8c5d5
+}
+html[data-theme="light"] .switch-row input[type="checkbox"] {
+  border-color:#9aa9bd;
+  background-color:#ffffff;
+  box-shadow:inset 0 1px 2px rgba(30,52,82,.08)
+}
+html[data-theme="light"] .switch-row input[type="checkbox"]:hover { border-color:#71849c }
+html[data-theme="light"] .switch-row input[type="checkbox"]:checked {
+  border-color:#2563eb;
+  background-color:#2563eb;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%23ffffff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round' d='M3.2 8.4 6.5 11.4 12.9 4.8'/%3E%3C/svg%3E");
+  box-shadow:0 0 0 1px rgba(37,99,235,.10),0 4px 12px rgba(37,99,235,.14)
+}
+html[data-theme="light"] .modal { background:rgba(21,32,48,.58) }
+html[data-theme="light"] .login-card button[type="submit"] {
+  background:linear-gradient(135deg,#16866f,#356fc6);
+  color:#ffffff
+}
+html[data-theme="light"] #toast {
+  background:#ffffff;
+  border-color:#c7d2df;
+  color:#182235
+}
+html[data-theme="light"] code { color:#0b725d }
+html[data-theme="light"] .connectivity-panel { border-color:#bdcadb }
+html[data-theme="light"] .connectivity-panel::before { background:#7a8799 }
+html[data-theme="light"] .connectivity-hero {
+  background:linear-gradient(120deg,rgba(232,241,252,.98),rgba(248,250,253,.99))
+}
+html[data-theme="light"] .status-orb {
+  background:rgba(100,116,139,.08);
+  border-color:rgba(100,116,139,.28)
+}
+html[data-theme="light"] .status-orb span {
+  background:#7a8799;
+  box-shadow:0 0 0 8px rgba(100,116,139,.09)
+}
+html[data-theme="light"] .status-pill {
+  border-color:#c4cfdb;
+  background:#eef2f6;
+  color:#4f5f73
+}
+html[data-theme="light"] .status-pill.healthy { color:#0b725d; background:#eaf8f4; border-color:#a7ddce }
+html[data-theme="light"] .status-pill.degraded { color:#8b5100; background:#fff6e8; border-color:#eccb99 }
+html[data-theme="light"] .status-pill.down { color:#b4233a; background:#fff0f2; border-color:#e9a7b2 }
+html[data-theme="light"] .status-pill.not_applicable { color:#58697e; background:#eef2f6; border-color:#ccd5df }
+html[data-theme="light"] .connectivity-summary-grid,
+html[data-theme="light"] .recent-traffic-grid { background:#f5f8fb }
+html[data-theme="light"] .topology-node { background:#f8fafc }
+html[data-theme="light"] .topology-node.healthy { border-color:#a8ddcf; background:linear-gradient(180deg,#eefaf6,#f8fafc) }
+html[data-theme="light"] .topology-node.degraded { border-color:#edce9f; background:linear-gradient(180deg,#fff8ed,#f8fafc) }
+html[data-theme="light"] .topology-node.down { border-color:#e9a7b2; background:linear-gradient(180deg,#fff2f4,#f8fafc) }
+html[data-theme="light"] .node-dot,
+html[data-theme="light"] .legend-dot,
+html[data-theme="light"] .activity-dot { background:#7a8799 }
+html[data-theme="light"] .topology-arrow,
+html[data-theme="light"] .transition-arrow { color:#687a92 }
+html[data-theme="light"] .legend-dot.not-applicable { background:#7a8799 }
+html[data-theme="light"] .component-check,
+html[data-theme="light"] .transition-item { background:#f8fafc }
+html[data-theme="light"] .component-error {
+  background:#fff0f2;
+  color:#b4233a
+}
+html[data-theme="light"] .component-times {
+  border-top-color:#d8e0ea;
+  color:#5f6f85
+}
+html[data-theme="light"] .transition-time { color:#5f6f85 }
+html[data-theme="light"] .code-editor {
+  background:#f6f8fb;
+  color:#17385e
+}
+html[data-theme="light"] .editor-dialog {
+  background:linear-gradient(180deg,#ffffff,#f7f9fc);
+  box-shadow:0 30px 80px rgba(30,52,82,.22)
+}
+html[data-theme="light"] .editor-dialog::backdrop { background:rgba(30,42,58,.55) }
+html[data-theme="light"] .icon-button:hover {
+  background:rgba(37,99,235,.06);
+  border-color:#9cadc3
+}
+html[data-theme="light"] .editor-form input[readonly] {
+  color:#5f6f85;
+  background:#eef2f6
+}
+html[data-theme="light"] .wide-dialog .dialog-head {
+  border-color:#d2dce8;
+  background:linear-gradient(180deg,rgba(250,252,255,.99),rgba(243,247,251,.99));
+  box-shadow:0 12px 24px rgba(30,52,82,.10)
+}
+html[data-theme="light"] .wide-dialog .dialog-head p:not(.eyebrow) { color:#42536a }
+html[data-theme="light"] .sticky-actions {
+  background:linear-gradient(0deg,#ffffff 78%,rgba(255,255,255,.92))
+}
+html[data-theme="light"] .route-facts span,
+html[data-theme="light"] .telemetry-detail-grid .metric-row,
+html[data-theme="light"] .telemetry-detail-grid + .subsection { background:#f7f9fc }
+html[data-theme="light"] .telemetry-raw {
+  background:#f4f7fb;
+  color:#23344b
+}
+html[data-theme="light"] .system-config-card > summary:hover { background:rgba(37,99,235,.04) }
+html[data-theme="light"] .system-config-card[open] > summary {
+  background:linear-gradient(180deg,rgba(37,99,235,.055),rgba(37,99,235,.02))
+}
+html[data-theme="light"] .origin-row { background:#f8fafc }
+
+@media(max-width:520px) {
+  .login-theme-row { margin:-6px -6px 4px 0 }
+}
+

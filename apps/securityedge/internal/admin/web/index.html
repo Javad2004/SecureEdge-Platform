@@ -3,13 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#0b1020">
   <title>SecurityEdge Operations Console</title>
+  <script src="/assets/theme.js"></script>
   <link rel="stylesheet" href="/assets/styles.css">
 </head>
 <body>
   <div id="login" class="modal visible" role="dialog" aria-modal="true" aria-labelledby="login-title">
     <form id="login-form" class="login-card">
+      <div class="login-theme-row"><button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch color theme" title="Switch color theme"><svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.41M17.66 6.34l1.41-1.41"></path></svg><svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 15.2A8.5 8.5 0 0 1 8.8 3.5 8.5 8.5 0 1 0 20.5 15.2Z"></path></svg><span class="sr-only theme-toggle-label">Switch color theme</span></button></div>
       <div class="login-brand">
         <div class="brand-mark" aria-hidden="true"><svg class="brand-shield" viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path class="brand-shield-body" d="M12 2.5 19.5 5.3v5.5c0 4.7-2.7 8.35-7.5 10.7-4.8-2.35-7.5-6-7.5-10.7V5.3L12 2.5Z"/><path class="brand-shield-check" d="m8.4 11.9 2.25 2.25 5.05-5.1"/></svg></div>
         <h1 id="login-title">SecurityEdge Console</h1>
@@ -39,7 +42,7 @@
     <main>
       <header class="topbar">
         <div><p class="eyebrow">Application Security Gateway · Operations</p><h1 id="page-title">Overview</h1></div>
-        <div class="top-actions"><span id="last-updated">Never updated</span><button id="refresh" type="button" aria-label="Refresh operational data">Refresh</button></div>
+        <div class="top-actions"><span id="last-updated">Never updated</span><button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch color theme" title="Switch color theme"><svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.41M17.66 6.34l1.41-1.41"></path></svg><svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 15.2A8.5 8.5 0 0 1 8.8 3.5 8.5 8.5 0 1 0 20.5 15.2Z"></path></svg><span class="sr-only theme-toggle-label">Switch color theme</span></button><button id="refresh" type="button" aria-label="Refresh operational data">Refresh</button></div>
       </header>
 
       <section id="view-overview" class="view active">

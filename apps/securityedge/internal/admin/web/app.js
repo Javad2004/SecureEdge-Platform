@@ -328,6 +328,10 @@ function renderOverview() {
   renderSecurityRows($('recent-security'), overview.security_logs?.entries || [], false, 7);
 }
 
+function cssColor(name, fallback) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+}
+
 function drawTrend() {
   const canvas = $('trend-chart');
   const dpr = devicePixelRatio || 1;
@@ -338,7 +342,7 @@ function drawTrend() {
   const context = canvas.getContext('2d');
   context.scale(dpr, dpr);
   context.clearRect(0, 0, width, height);
-  context.strokeStyle = '#25324c';
+  context.strokeStyle = cssColor('--chart-grid', '#25324c');
   context.lineWidth = 1;
   for (let i = 0; i < 5; i++) {
     const y = 20 + i * (height - 40) / 4;
@@ -354,8 +358,8 @@ function drawTrend() {
     });
     context.stroke();
   };
-  draw('requests', '#67a6ff');
-  draw('blocked', '#ff7188');
+  draw('requests', cssColor('--chart-requests', '#67a6ff'));
+  draw('blocked', cssColor('--chart-blocked', '#ff7188'));
 }
 
 function renderBars(element, values, limit = 8) {
@@ -962,6 +966,7 @@ $('save-edge-config').onclick = () => saveRawConfig('edge'); $('save-security-co
 $('reload-edge-config').onclick = async () => { try { await api('/api/v1/edgeproxy/config/reload',{method:'POST'}); state.edgeEditorDirty=false; await refreshAll(); toast('EdgeProxy configuration reloaded'); } catch(error) { $('edge-config-result').textContent=error.message; } };
 $('reload-security-config').onclick = async () => { try { await api('/api/v1/reload',{method:'POST'}); state.securityEditorDirty=false; await refreshAll(); toast('SecurityEdge configuration reloaded'); } catch(error) { $('security-config-result').textContent=error.message; } };
 window.addEventListener('resize', () => state.overview && drawTrend());
+window.addEventListener('securityedge:themechange', () => state.overview && drawTrend());
 
 if (state.token) login(state.token).catch(lock);
 setInterval(() => { if (state.token) refreshAll(); }, 5000);

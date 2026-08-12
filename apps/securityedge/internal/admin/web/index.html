@@ -10,21 +10,21 @@
   <link rel="stylesheet" href="/assets/styles.css">
 </head>
 <body>
-  <div id="login" class="modal visible" role="dialog" aria-modal="true" aria-labelledby="login-title">
+  <div id="login" class="modal visible" role="dialog" aria-modal="true" aria-labelledby="login-title" aria-describedby="login-description">
     <form id="login-form" class="login-card">
       <div class="login-theme-row"><button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch color theme" title="Switch color theme"><svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.41M17.66 6.34l1.41-1.41"></path></svg><svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 15.2A8.5 8.5 0 0 1 8.8 3.5 8.5 8.5 0 1 0 20.5 15.2Z"></path></svg><span class="sr-only theme-toggle-label">Switch color theme</span></button></div>
       <div class="login-brand">
         <div class="brand-mark" aria-hidden="true"><svg class="brand-shield" viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path class="brand-shield-body" d="M12 2.5 19.5 5.3v5.5c0 4.7-2.7 8.35-7.5 10.7-4.8-2.35-7.5-6-7.5-10.7V5.3L12 2.5Z"/><path class="brand-shield-check" d="m8.4 11.9 2.25 2.25 5.05-5.1"/></svg></div>
         <h1 id="login-title">SecurityEdge Console</h1>
       </div>
-      <p>Enter the admin bearer token. It is retained only in this browser tab.</p>
-      <label>Admin token<input id="token" type="password" autocomplete="current-password" required></label>
+      <p id="login-description">Enter the admin bearer token. It is retained only in this browser tab.</p>
+      <label>Admin token<input id="token" type="password" autocomplete="current-password" autocapitalize="none" spellcheck="false" aria-describedby="login-error" autofocus required></label>
       <button type="submit">Open operations console</button>
       <p id="login-error" class="error-text" aria-live="polite"></p>
     </form>
   </div>
 
-  <div class="shell">
+  <div id="app-shell" class="shell" inert>
     <aside class="sidebar">
       <div class="brand"><div class="brand-mark small" aria-hidden="true"><svg class="brand-shield" viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path class="brand-shield-body" d="M12 2.5 19.5 5.3v5.5c0 4.7-2.7 8.35-7.5 10.7-4.8-2.35-7.5-6-7.5-10.7V5.3L12 2.5Z"/><path class="brand-shield-check" d="m8.4 11.9 2.25 2.25 5.05-5.1"/></svg></div><div class="brand-copy"><strong>SecurityEdge</strong><span>WAF · Traffic protection · Observability</span></div></div>
       <nav id="nav" aria-label="Operations sections">
@@ -269,7 +269,7 @@
   </div>
 
 
-  <dialog id="route-dialog" class="editor-dialog wide-dialog">
+  <dialog id="route-dialog" class="editor-dialog wide-dialog" aria-labelledby="route-dialog-title">
     <form id="route-form" method="dialog" class="editor-form">
       <div class="dialog-head"><div><p class="eyebrow">EdgeProxy route</p><h2 id="route-dialog-title">Add route</h2><p>All route, scheduler, proxy, cache, and health-check settings are validated and hot-applied transactionally.</p></div><button type="button" class="ghost icon-button" data-close-dialog="route-dialog" aria-label="Close">×</button></div>
       <input id="route-original-name" type="hidden">
@@ -283,7 +283,7 @@
     </form>
   </dialog>
 
-  <dialog id="origin-dialog" class="editor-dialog">
+  <dialog id="origin-dialog" class="editor-dialog" aria-labelledby="origin-dialog-title">
     <form id="origin-form" method="dialog" class="editor-form">
       <div class="dialog-head"><div><p class="eyebrow">EdgeProxy origin</p><h2 id="origin-dialog-title">Add origin</h2></div><button type="button" class="ghost icon-button" data-close-dialog="origin-dialog" aria-label="Close">×</button></div>
       <input id="origin-route-name" type="hidden"><input id="origin-original-name" type="hidden">
@@ -292,7 +292,7 @@
       <p id="origin-form-error" class="error-text"></p><div class="dialog-actions"><button type="button" class="ghost" data-close-dialog="origin-dialog">Cancel</button><button type="submit">Validate & apply</button></div>
     </form>
   </dialog>
-  <dialog id="telemetry-dialog" class="editor-dialog wide-dialog">
+  <dialog id="telemetry-dialog" class="editor-dialog wide-dialog" aria-labelledby="telemetry-dialog-title">
     <div class="editor-form">
       <div class="dialog-head"><div><p class="eyebrow">Detailed telemetry</p><h2 id="telemetry-dialog-title">Telemetry details</h2><p id="telemetry-dialog-subtitle">Complete counters, latency percentiles, status distributions, scheduler state, and health transitions.</p></div><button type="button" class="ghost icon-button" data-close-dialog="telemetry-dialog" aria-label="Close">×</button></div>
       <div id="telemetry-detail-metrics" class="metric-list telemetry-detail-grid"></div>

@@ -520,3 +520,47 @@ func TestDashboardResponsiveLayoutContract(t *testing.T) {
 		}
 	}
 }
+
+func TestDashboardAuthenticationModalIsolationContract(t *testing.T) {
+	index, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(index)
+	javascript := string(app)
+
+	for _, required := range []string{
+		`id="login" class="modal visible" role="dialog" aria-modal="true" aria-labelledby="login-title" aria-describedby="login-description"`,
+		`id="login-description"`,
+		`id="token" type="password" autocomplete="current-password" autocapitalize="none" spellcheck="false" aria-describedby="login-error" autofocus required`,
+		`id="app-shell" class="shell" inert`,
+		`id="route-dialog" class="editor-dialog wide-dialog" aria-labelledby="route-dialog-title"`,
+		`id="origin-dialog" class="editor-dialog" aria-labelledby="origin-dialog-title"`,
+		`id="telemetry-dialog" class="editor-dialog wide-dialog" aria-labelledby="telemetry-dialog-title"`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard authentication/dialog accessibility contract is missing %q", required)
+		}
+	}
+
+	for _, required := range []string{
+		`function setConsoleLocked(locked, focusLogin = false)`,
+		`shell.inert = locked`,
+		`$('token').focus({preventScroll:true})`,
+		`$('token').value = ''`,
+		`sessionRemove('securityedge_token')`,
+		`catch (error) {`,
+		`state.token = ''`,
+		`if (response.status === 401) {`,
+		`if (response.status === 429) {`,
+		`else setConsoleLocked(true, true);`,
+	} {
+		if !strings.Contains(javascript, required) {
+			t.Fatalf("dashboard authentication-state contract is missing %q", required)
+		}
+	}
+}

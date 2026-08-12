@@ -294,6 +294,83 @@ try {
   }
   await eventually(async () => await cdp.evaluate('typeof login === "function"'), 'Dashboard application script');
 
+  let authenticationUIContract = null;
+  if (fixtureRoot) {
+    await eventually(async () => await cdp.evaluate(`document.activeElement?.id === 'token'`), 'Locked Dashboard login focus');
+    authenticationUIContract = await cdp.evaluate(`(async () => {
+      const shell = document.getElementById('app-shell');
+      const loginPanel = document.getElementById('login');
+      const tokenInput = document.getElementById('token');
+      const activeNav = document.querySelector('.nav-item.active');
+      const originalFetch = window.fetch;
+      const frame = () => new Promise(resolve => requestAnimationFrame(() => resolve()));
+      const snapshot = () => ({
+        shellInert:Boolean(shell?.inert),
+        loginVisible:Boolean(loginPanel?.classList.contains('visible')),
+        activeElement:document.activeElement?.id || document.activeElement?.className || document.activeElement?.tagName || '',
+        stateToken:state.token,
+        storedToken:sessionGet('securityedge_token'),
+        inputValue:tokenInput?.value || ''
+      });
+
+      const initial = snapshot();
+      activeNav?.focus();
+      const backgroundFocusBlocked = document.activeElement !== activeNav;
+
+      tokenInput.value = 'temporary-lock-secret';
+      state.token = 'temporary-lock-secret';
+      sessionSet('securityedge_token', state.token);
+      lock();
+      await frame();
+      const explicitLock = snapshot();
+
+      let failedLoginError = '';
+      tokenInput.value = 'blocked-login-secret';
+      window.fetch = async () => new Response(JSON.stringify({error:{message:'locked'}}), {status:429,headers:{'Content-Type':'application/json'}});
+      try { await login(tokenInput.value); } catch (error) { failedLoginError = error.message; }
+      await frame();
+      const failedLogin = snapshot();
+
+      let expiredDownloadError = '';
+      tokenInput.value = 'download-secret';
+      state.token = 'download-secret';
+      sessionSet('securityedge_token', state.token);
+      window.fetch = async () => new Response(JSON.stringify({error:{message:'expired'}}), {status:401,headers:{'Content-Type':'application/json'}});
+      try { await download('/api/v1/logs/export?format=csv', 'fixture.csv'); } catch (error) { expiredDownloadError = error.message; }
+      await frame();
+      const expiredDownload = snapshot();
+      window.fetch = originalFetch;
+
+      const dialogsNamed = [...document.querySelectorAll('dialog')].every(dialog => {
+        const labelledBy = dialog.getAttribute('aria-labelledby');
+        return Boolean(labelledBy && document.getElementById(labelledBy));
+      });
+      return {initial, backgroundFocusBlocked, explicitLock, failedLogin, failedLoginError, expiredDownload, expiredDownloadError, dialogsNamed};
+    })()`, true);
+    if (!authenticationUIContract.initial.shellInert || !authenticationUIContract.initial.loginVisible ||
+        authenticationUIContract.initial.activeElement !== 'token' || !authenticationUIContract.backgroundFocusBlocked) {
+      throw new Error(`Locked Dashboard does not isolate and focus the authentication modal: ${JSON.stringify(authenticationUIContract)}`);
+    }
+    if (!authenticationUIContract.explicitLock.shellInert || !authenticationUIContract.explicitLock.loginVisible ||
+        authenticationUIContract.explicitLock.stateToken || authenticationUIContract.explicitLock.storedToken ||
+        authenticationUIContract.explicitLock.inputValue || authenticationUIContract.explicitLock.activeElement !== 'token') {
+      throw new Error(`Explicit console lock does not clear credentials and restore modal focus: ${JSON.stringify(authenticationUIContract)}`);
+    }
+    if (!authenticationUIContract.failedLogin.shellInert || authenticationUIContract.failedLogin.stateToken ||
+        authenticationUIContract.failedLogin.storedToken || authenticationUIContract.failedLogin.inputValue ||
+        authenticationUIContract.failedLoginError !== 'Admin authentication is temporarily locked.') {
+      throw new Error(`Failed login leaves authenticated state behind: ${JSON.stringify(authenticationUIContract)}`);
+    }
+    if (!authenticationUIContract.expiredDownload.shellInert || authenticationUIContract.expiredDownload.stateToken ||
+        authenticationUIContract.expiredDownload.storedToken || authenticationUIContract.expiredDownload.inputValue ||
+        authenticationUIContract.expiredDownloadError !== 'Invalid or expired admin token.') {
+      throw new Error(`Expired export authentication does not lock and clear the console: ${JSON.stringify(authenticationUIContract)}`);
+    }
+    if (!authenticationUIContract.dialogsNamed) {
+      throw new Error(`Editor dialogs must expose accessible names: ${JSON.stringify(authenticationUIContract)}`);
+    }
+  }
+
   let themeContract = null;
   if (fixtureRoot) {
     themeContract = await cdp.evaluate(`(async () => {
@@ -438,6 +515,18 @@ try {
 
   await cdp.evaluate(`login(${JSON.stringify(token)})`, true);
   await eventually(async () => await cdp.evaluate(`!document.getElementById('login').classList.contains('visible') && !!state.edgeConfig`), 'Authenticated Dashboard data');
+  if (fixtureRoot) {
+    const authenticatedUI = await cdp.evaluate(`(() => ({
+      shellInert:document.getElementById('app-shell').inert,
+      loginVisible:document.getElementById('login').classList.contains('visible'),
+      inputValue:document.getElementById('token').value,
+      activeIsNav:document.activeElement?.classList?.contains('nav-item') || false
+    }))()`);
+    if (authenticatedUI.shellInert || authenticatedUI.loginVisible || authenticatedUI.inputValue) {
+      throw new Error(`Authenticated Dashboard did not release modal isolation or clear the credential input: ${JSON.stringify(authenticatedUI)}`);
+    }
+    authenticationUIContract.authenticated = authenticatedUI;
+  }
 
   let mobileNavLayouts = [];
   if (fixtureRoot) {
@@ -1247,7 +1336,8 @@ try {
     sidebar_layout:sidebarLayout, overview_topology_layout:overviewTopologyLayout, theme_contract:themeContract,
     semantic_color_contract:semanticColorContract, topbar_layouts:topbarLayouts, security_explorer_layouts:securityExplorerLayouts,
     connectivity_action_layout:connectivityActionLayout,
-    connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract
+    connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
+    authentication_ui_contract:authenticationUIContract
   }, null, 2));
 } catch (error) {
   console.error(error.stack || error.message);

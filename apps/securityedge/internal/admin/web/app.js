@@ -57,13 +57,24 @@ async function api(path, options = {}) {
     lock();
     throw new Error('Invalid or expired admin token.');
   }
-  if (response.status === 429) throw new Error('Admin authentication is temporarily locked.');
+  if (response.status === 429) {
+    lock();
+    throw new Error('Admin authentication is temporarily locked.');
+  }
   if (!response.ok) throw new Error(data?.error?.message || `HTTP ${response.status}`);
   return data;
 }
 
 async function download(path, filename) {
   const response = await fetchWithTimeout(path, {headers: {Authorization: `Bearer ${state.token}`}}, 30000);
+  if (response.status === 401) {
+    lock();
+    throw new Error('Invalid or expired admin token.');
+  }
+  if (response.status === 429) {
+    lock();
+    throw new Error('Admin authentication is temporarily locked.');
+  }
   if (!response.ok) throw new Error(`Export failed: HTTP ${response.status}`);
   const blob = await response.blob();
   const link = document.createElement('a');
@@ -81,19 +92,40 @@ function toast(message) {
   toast.timer = setTimeout(() => element.classList.remove('show'), 3000);
 }
 
+function setConsoleLocked(locked, focusLogin = false) {
+  const loginPanel = $('login');
+  const shell = $('app-shell');
+  loginPanel.classList.toggle('visible', locked);
+  shell.inert = locked;
+  if (locked && focusLogin) {
+    requestAnimationFrame(() => $('token').focus({preventScroll:true}));
+  } else if (!locked) {
+    requestAnimationFrame(() => document.querySelector('.nav-item.active')?.focus({preventScroll:true}));
+  }
+}
+
 function lock() {
-  $('login').classList.add('visible');
-  $('live-dot').classList.remove('live','degraded','down');
-  $('connection-label').textContent = 'Console locked';
   sessionRemove('securityedge_token');
   state.token = '';
+  $('token').value = '';
+  $('live-dot').classList.remove('live','degraded','down');
+  $('connection-label').textContent = 'Console locked';
+  setConsoleLocked(true, true);
 }
 
 async function login(token) {
   state.token = token;
-  await api('/api/v1/session');
+  try {
+    await api('/api/v1/session');
+  } catch (error) {
+    sessionRemove('securityedge_token');
+    state.token = '';
+    setConsoleLocked(true, true);
+    throw error;
+  }
   sessionSet('securityedge_token', token);
-  $('login').classList.remove('visible');
+  $('token').value = '';
+  setConsoleLocked(false);
   $('live-dot').classList.add('live');
   $('connection-label').textContent = 'Checking dependencies';
   await refreshAll();
@@ -990,4 +1022,5 @@ window.addEventListener('resize', () => state.overview && drawTrend());
 window.addEventListener('securityedge:themechange', () => state.overview && drawTrend());
 
 if (state.token) login(state.token).catch(lock);
+else setConsoleLocked(true, true);
 setInterval(() => { if (state.token) refreshAll(); }, 5000);

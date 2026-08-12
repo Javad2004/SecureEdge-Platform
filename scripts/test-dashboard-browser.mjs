@@ -255,7 +255,7 @@ try {
         clear:() => values.clear()
       }});
     })()`);
-    await cdp.evaluate(`(() => { const script=document.createElement('script'); script.textContent=${JSON.stringify(fixture.theme)}; document.head.appendChild(script); })()`);
+    await cdp.evaluate(`(() => { window.__fixtureThemeSource=${JSON.stringify(fixture.theme)}; const script=document.createElement('script'); script.textContent=window.__fixtureThemeSource; document.head.appendChild(script); })()`);
     await eventually(async () => await cdp.evaluate(`!!window.SecurityEdgeTheme`), 'Fixture Dashboard theme bootstrap');
     const mockScript = `(() => {
       const payloads = ${JSON.stringify(fixture.responses)};
@@ -296,7 +296,7 @@ try {
 
   let themeContract = null;
   if (fixtureRoot) {
-    themeContract = await cdp.evaluate(`(() => {
+    themeContract = await cdp.evaluate(`(async () => {
       const root = document.documentElement;
       const variable = name => getComputedStyle(root).getPropertyValue(name).trim();
       const parse = value => {
@@ -332,18 +332,56 @@ try {
       const toggled = snapshot();
       let persisted = '';
       try { persisted = localStorage.getItem(window.SecurityEdgeTheme.storageKey) || ''; } catch {}
+
+      // Exercise a fresh document bootstrap with a saved user preference while
+      // the emulated operating-system preference remains light. This verifies
+      // that persistence is read on initialization rather than merely written.
+      const frame = document.createElement('iframe');
+      frame.hidden = true;
+      document.body.appendChild(frame);
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      const frameValues = new Map([[window.SecurityEdgeTheme.storageKey, persisted]]);
+      Object.defineProperty(frame.contentWindow, 'localStorage', {configurable:true, value:{
+        getItem:key => frameValues.has(String(key)) ? frameValues.get(String(key)) : null,
+        setItem:(key,value) => frameValues.set(String(key), String(value)),
+        removeItem:key => frameValues.delete(String(key)),
+        clear:() => frameValues.clear()
+      }});
+      Object.defineProperty(frame.contentWindow, 'matchMedia', {configurable:true, value:() => ({
+        matches:false,
+        addEventListener:() => {},
+        removeEventListener:() => {},
+        addListener:() => {},
+        removeListener:() => {}
+      })});
+      const freshScript = frame.contentDocument.createElement('script');
+      freshScript.textContent = window.__fixtureThemeSource;
+      frame.contentDocument.head.appendChild(freshScript);
+      const freshPersistedTheme = frame.contentDocument.documentElement.dataset.theme || '';
+      frame.remove();
+
       loginToggle?.click();
       const restored = snapshot();
+
+      // A storage event represents a same-origin tab changing the preference.
+      window.dispatchEvent(new StorageEvent('storage', {key:window.SecurityEdgeTheme.storageKey, newValue:'dark'}));
+      const storageSynced = snapshot();
+      try { localStorage.removeItem(window.SecurityEdgeTheme.storageKey); } catch {}
+      window.dispatchEvent(new StorageEvent('storage', {key:window.SecurityEdgeTheme.storageKey, newValue:null}));
+      const storageCleared = snapshot();
+
       const topToggle = document.querySelector('.topbar [data-theme-toggle]');
       return {
-        initial, toggled, restored, persisted, initialLabel,
+        initial, toggled, restored, storageSynced, storageCleared,
+        freshPersistedTheme, persisted, initialLabel,
         loginToggleVisible:Boolean(loginToggle && loginToggle.getBoundingClientRect().width > 0),
         topTogglePresent:Boolean(topToggle),
         synchronizedLabel:topToggle?.getAttribute('aria-label') || ''
       };
-    })()`);
-    if (themeContract.initial.theme !== 'light' || themeContract.toggled.theme !== 'dark' || themeContract.restored.theme !== 'light') {
-      throw new Error(`System-default and toggle theme behavior failed: ${JSON.stringify(themeContract)}`);
+    })()`, true);
+    if (themeContract.initial.theme !== 'light' || themeContract.toggled.theme !== 'dark' || themeContract.restored.theme !== 'light' ||
+        themeContract.freshPersistedTheme !== 'dark' || themeContract.storageSynced.theme !== 'dark' || themeContract.storageCleared.theme !== 'light') {
+      throw new Error(`System-default, persistence, storage-sync, or toggle theme behavior failed: ${JSON.stringify(themeContract)}`);
     }
     for (const palette of [themeContract.initial, themeContract.toggled]) {
       if (palette.textContrast < 7 || palette.mutedContrast < 4.5 || palette.accentContrast < 4.5 ||

@@ -136,7 +136,7 @@ Important variables:
 | `SECURITYEDGE_TRUSTED_PROXY_CIDRS` | Comma-separated proxies trusted in front of SecurityEdge |
 | `SECURITYEDGE_FORWARDED_FOR_HEADER` | Header accepted only from configured trusted proxies |
 | `SECURITYEDGE_DNS_ENABLED` / `SECURITYEDGE_DNS_CRITICAL` | Enable and classify the DNS acceptance probe |
-| `SECURITYEDGE_DNS_SERVER` | Technitium or other DNS server IP and port |
+| `SECURITYEDGE_DNS_SERVER` | DNS resolver IP address and port |
 | `SECURITYEDGE_DNS_NAMES` | Comma-separated names checked by the DNS probe |
 | `SECURITYEDGE_DNS_EXPECTED_ADDRESSES` | Comma-separated expected resolved IP addresses |
 | `SECURITYEDGE_LOG_FILE_PATH` | Persistent NDJSON security-log path |
@@ -583,6 +583,7 @@ go vet ./...
 go test ./...
 go test -race ./...
 
+node --check ./internal/admin/web/theme.js
 node --check ./internal/admin/web/app.js
 node --check ../../scripts/test-dashboard-browser.mjs
 node ../../scripts/test-dashboard-browser.mjs --fixture-root ../..
@@ -607,6 +608,7 @@ make test
 make race
 make vet
 make js
+make dashboard
 make build
 make validate
 make validate-network
@@ -650,7 +652,7 @@ install -o root -g securityedge -m 0640 /path/to/fullchain.pem /etc/securityedge
 install -o root -g securityedge -m 0640 /path/to/privkey.pem /etc/securityedge/tls/privkey.pem
 ```
 
-Use certificate material issued for the hostname clients will use; do not commit private keys to the repository. Confirm the shared Route table is readable but not writable by SecurityEdge, then start the services. Startup validates each effective profile after applying its systemd environment overrides and loads the TLS key pair before binding the public generation:
+Use certificate material issued for the hostname clients will use; do not commit private keys to the repository. Confirm the shared Route table is readable but not writable by SecurityEdge, then start the services. Startup validates each effective profile after applying its systemd environment overrides and loads the TLS key pair before binding the public listener:
 
 ```sh
 chown edgeproxy:edgeproxy /var/lib/edgeproxy/config.json

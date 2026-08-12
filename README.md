@@ -283,6 +283,16 @@ go -C ./apps/securityedge test ./...
 
 go -C ./apps/edgeproxy test -race ./...
 go -C ./apps/securityedge test -race ./...
+
+node --check ./apps/securityedge/internal/admin/web/theme.js
+node --check ./apps/securityedge/internal/admin/web/app.js
+node --check ./scripts/test-dashboard-browser.mjs
+```
+
+When Chrome, Edge, or Chromium is installed, run the deterministic Dashboard browser contract as well. It exercises both appearance modes, persistence/storage synchronization, responsive layouts, navigation, and mocked Control Plane mutations without changing a running deployment:
+
+```powershell
+node ./scripts/test-dashboard-browser.mjs --fixture-root .
 ```
 
 Build both executables into a root-level `build` directory:

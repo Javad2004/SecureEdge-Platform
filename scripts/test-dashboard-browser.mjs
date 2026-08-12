@@ -476,13 +476,28 @@ try {
             left:Math.round(node.getBoundingClientRect().left * 10) / 10,
             right:Math.round(node.getBoundingClientRect().right * 10) / 10
           })).slice(0,8) : [];
+          const clipped=activeView ? [...activeView.querySelectorAll('*')].filter(node => {
+            if (node.closest('.table-wrap,.connectivity-topology,.component-list,.transition-list,.raw-details')) return false;
+            const style=getComputedStyle(node);
+            const rect=node.getBoundingClientRect();
+            if (style.display === 'none' || style.visibility === 'hidden' || rect.width <= 0 || rect.height <= 0) return false;
+            if (!(node.textContent || '').trim()) return false;
+            if (['auto','scroll'].includes(style.overflowX)) return false;
+            return node.scrollWidth > node.clientWidth + 1;
+          }).map(node => ({
+            tag:node.tagName.toLowerCase(),
+            id:node.id || '',
+            className:typeof node.className === 'string' ? node.className : '',
+            scrollWidth:node.scrollWidth,
+            clientWidth:node.clientWidth
+          })).slice(0,8) : [];
           return {
             navLeft:navRect.left, navRight:navRect.right, scrollLeft:nav.scrollLeft,
             scrollWidth:nav.scrollWidth, clientWidth:nav.clientWidth,
             active:active.textContent.trim(), activeLeft:activeRect.left, activeRight:activeRect.right,
             activeVisible:activeRect.left >= navRect.left - 1 && activeRect.right <= navRect.right + 1,
             viewportWidth:root.clientWidth, bodyScrollWidth:document.body.scrollWidth,
-            partialLeft, escaped
+            partialLeft, escaped, clipped
           };
         })()`);
         if (!layout) throw new Error(`Compact navigation layout is missing at ${width}px for ${view}`);
@@ -491,7 +506,7 @@ try {
         mobileNavLayouts.push(layout);
         if (!layout.activeVisible || layout.partialLeft.length ||
             layout.bodyScrollWidth > layout.viewportWidth + 1 ||
-            layout.escaped.length) {
+            layout.escaped.length || layout.clipped.length) {
           throw new Error(`Compact navigation or page layout escapes the viewport at ${width}px for ${view}: ${JSON.stringify(layout)}`);
         }
       }
@@ -509,6 +524,7 @@ try {
       const layout = await cdp.evaluate(`(() => {
         const root=document.documentElement;
         const topbar=document.querySelector('.topbar');
+        const eyebrow=document.querySelector('.topbar-eyebrow');
         const row=document.querySelector('.topbar-row');
         const titleGroup=document.querySelector('.topbar-title-group');
         const title=document.getElementById('page-title');
@@ -516,16 +532,18 @@ try {
         const actions=document.querySelector('.topbar-actions');
         const toggle=actions?.querySelector('[data-theme-toggle]');
         const refresh=document.getElementById('refresh');
-        if (!topbar || !row || !titleGroup || !title || !updated || !actions || !toggle || !refresh) return null;
+        if (!topbar || !eyebrow || !row || !titleGroup || !title || !updated || !actions || !toggle || !refresh) return null;
         const rect = node => { const value=node.getBoundingClientRect(); return {left:value.left,right:value.right,top:value.top,bottom:value.bottom,width:value.width,height:value.height}; };
-        const topbarRect=rect(topbar), rowRect=rect(row), titleRect=rect(title), updatedRect=rect(updated), actionsRect=rect(actions), toggleRect=rect(toggle), refreshRect=rect(refresh);
+        const topbarRect=rect(topbar), eyebrowRect=rect(eyebrow), rowRect=rect(row), titleRect=rect(title), updatedRect=rect(updated), actionsRect=rect(actions), toggleRect=rect(toggle), refreshRect=rect(refresh);
         return {
           viewportWidth:root.clientWidth, bodyScrollWidth:document.body.scrollWidth,
-          topbar:topbarRect, row:rowRect, title:titleRect, updated:updatedRect, actions:actionsRect, toggle:toggleRect, refresh:refreshRect,
+          topbar:topbarRect, eyebrow:eyebrowRect, row:rowRect, title:titleRect, updated:updatedRect, actions:actionsRect, toggle:toggleRect, refresh:refreshRect,
           titleDirection:getComputedStyle(titleGroup).flexDirection,
           actionDirection:getComputedStyle(actions).flexDirection,
           actionWrap:getComputedStyle(actions).flexWrap,
           actionGap:parseFloat(getComputedStyle(actions).columnGap || getComputedStyle(actions).gap || '0'),
+          eyebrowRowGap:rowRect.top-eyebrowRect.bottom,
+          titleUpdatedGap:updatedRect.top-titleRect.bottom,
           buttonCenterDelta:Math.abs((toggleRect.top+toggleRect.height/2)-(refreshRect.top+refreshRect.height/2)),
           titleActionCenterDelta:Math.abs((titleRect.top+titleRect.height/2)-(actionsRect.top+actionsRect.height/2))
         };
@@ -546,10 +564,79 @@ try {
           layout.updated.top < layout.title.bottom - 1 ||
           layout.title.right > layout.actions.left - 4 ||
           layout.titleActionCenterDelta > 4 ||
-          layout.topbar.height > 105;
+          layout.eyebrowRowGap < 9 || layout.eyebrowRowGap > 13 ||
+          layout.titleUpdatedGap < 8 || layout.titleUpdatedGap > 12 ||
+          layout.topbar.height > 112;
         if (compactMismatch) throw new Error(`Compact Overview header is not balanced at ${width}px: ${JSON.stringify(layout)}`);
       }
     }
+    await cdp.send('Emulation.setDeviceMetricsOverride', {width:1365,height:900,deviceScaleFactor:1,mobile:false});
+    await sleep(80);
+  }
+
+  let securityExplorerLayouts = [];
+  if (fixtureRoot) {
+    for (const width of [700,520,390,320]) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', {width,height:900,deviceScaleFactor:1,mobile:width <= 520});
+      await sleep(60);
+      await cdp.evaluate(`setView('security')`);
+      const layout = await cdp.evaluate(`(() => {
+        const root=document.documentElement;
+        const panel=document.querySelector('#view-security > .panel');
+        const head=panel?.querySelector('.panel-head');
+        const intro=head?.querySelector(':scope > div:first-child');
+        const actions=head?.querySelector('.top-actions');
+        const ndjson=document.getElementById('export-ndjson');
+        const csv=document.getElementById('export-csv');
+        const clear=document.getElementById('clear-security');
+        const filters=document.getElementById('security-filters');
+        if (!panel || !head || !intro || !actions || !ndjson || !csv || !clear || !filters) return null;
+        const rect=node=>{const r=node.getBoundingClientRect(); return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height};};
+        const actionRects=[ndjson,csv,clear].map(rect);
+        const filterRect=rect(filters);
+        const filterControls=[...filters.querySelectorAll('input,select,button')].map(node=>({id:node.id||'',name:node.getAttribute('name')||'',...rect(node)}));
+        return {
+          viewportWidth:root.clientWidth,bodyScrollWidth:document.body.scrollWidth,
+          panel:rect(panel),head:rect(head),intro:rect(intro),actions:rect(actions),filters:filterRect,
+          headDirection:getComputedStyle(head).flexDirection,
+          actionsDisplay:getComputedStyle(actions).display,
+          actionsDirection:getComputedStyle(actions).flexDirection,
+          actionsGap:parseFloat(getComputedStyle(actions).gap || '0'),
+          introActionGap:rect(actions).top-rect(intro).bottom,
+          actionRects,filterControls,
+          filtersDisplay:getComputedStyle(filters).display,
+          actionsScrollWidth:actions.scrollWidth,actionsClientWidth:actions.clientWidth
+        };
+      })()`);
+      if (!layout) throw new Error(`Security Explorer responsive controls are missing at ${width}px`);
+      layout.width=width;
+      securityExplorerLayouts.push(layout);
+      const actionsEscape=layout.actions.left < layout.panel.left - 1 || layout.actions.right > layout.panel.right + 1 ||
+        layout.actionsScrollWidth > layout.actionsClientWidth + 1;
+      if (layout.bodyScrollWidth > layout.viewportWidth + 1 || layout.headDirection !== 'column' || actionsEscape ||
+          layout.introActionGap < 12 || layout.introActionGap > 18) {
+        throw new Error(`Security Explorer header actions are not balanced at ${width}px: ${JSON.stringify(layout)}`);
+      }
+      const [ndjson,csv,clear]=layout.actionRects;
+      if (width > 520) {
+        const centers=[ndjson,csv,clear].map(r=>r.top+r.height/2);
+        if (layout.actionsDisplay !== 'flex' || layout.actionsDirection !== 'row' ||
+            Math.max(...centers)-Math.min(...centers) > 1.5) {
+          throw new Error(`Tablet Security Explorer actions are not kept on one row at ${width}px: ${JSON.stringify(layout)}`);
+        }
+      } else {
+        const exportsAligned=Math.abs(ndjson.top-csv.top) <= 1.5 && Math.abs(ndjson.height-csv.height) <= 1.5;
+        const clearBelow=clear.top >= Math.max(ndjson.bottom,csv.bottom) + 6;
+        const clearSpans=Math.abs(clear.left-layout.actions.left) <= 1.5 && Math.abs(clear.right-layout.actions.right) <= 1.5;
+        const controlsFullWidth=layout.filterControls.every(control =>
+          Math.abs(control.left-layout.filters.left) <= 1.5 && Math.abs(control.right-layout.filters.right) <= 1.5);
+        if (layout.actionsDisplay !== 'grid' || !exportsAligned || !clearBelow || !clearSpans ||
+            layout.filtersDisplay !== 'grid' || !controlsFullWidth) {
+          throw new Error(`Mobile Security Explorer controls are not cleanly stacked at ${width}px: ${JSON.stringify(layout)}`);
+        }
+      }
+    }
+    await cdp.evaluate(`setView('overview')`);
     await cdp.send('Emulation.setDeviceMetricsOverride', {width:1365,height:900,deviceScaleFactor:1,mobile:false});
     await sleep(80);
   }
@@ -685,36 +772,51 @@ try {
       throw new Error(`Desktop connectivity actions are no longer kept on one aligned row: ${JSON.stringify(connectivityActionLayout)}`);
     }
 
-    for (const width of [1365,1100,961,901,701,700,520]) {
-      await cdp.send('Emulation.setDeviceMetricsOverride', {width,height:900,deviceScaleFactor:1,mobile:false});
+    for (const width of [1365,1100,961,901,701,700,520,390,320]) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', {width,height:900,deviceScaleFactor:1,mobile:width <= 520});
       await sleep(80);
       const layout = await cdp.evaluate(`(() => {
         const hero=document.querySelector('.connectivity-hero');
         const heading=document.querySelector('.connectivity-heading');
         const actions=document.querySelector('.connectivity-actions');
+        const pill=document.getElementById('connectivity-overall');
+        const updated=document.getElementById('connectivity-updated');
+        const button=document.getElementById('check-connectivity');
         const heroRect=hero.getBoundingClientRect();
         const headingRect=heading.getBoundingClientRect();
         const actionsRect=actions.getBoundingClientRect();
+        const pillRect=pill.getBoundingClientRect();
+        const updatedRect=updated.getBoundingClientRect();
+        const buttonRect=button.getBoundingClientRect();
         const style=getComputedStyle(hero);
+        const actionStyle=getComputedStyle(actions);
         return {
           viewport:document.documentElement.clientWidth,
           bodyScrollWidth:document.body.scrollWidth,
           flexDirection:style.flexDirection,
-          actionsWrap:getComputedStyle(actions).flexWrap,
+          actionsDisplay:actionStyle.display,
+          actionsWrap:actionStyle.flexWrap,
+          actionsScrollWidth:actions.scrollWidth,actionsClientWidth:actions.clientWidth,
+          updatedWhiteSpace:getComputedStyle(updated).whiteSpace,
           heroLeft:heroRect.left,heroRight:heroRect.right,
           headingLeft:headingRect.left,headingRight:headingRect.right,headingWidth:headingRect.width,
-          actionsLeft:actionsRect.left,actionsRight:actionsRect.right,actionsWidth:actionsRect.width
+          actionsLeft:actionsRect.left,actionsRight:actionsRect.right,actionsWidth:actionsRect.width,
+          pillTop:pillRect.top,pillBottom:pillRect.bottom,
+          updatedTop:updatedRect.top,updatedBottom:updatedRect.bottom,
+          buttonTop:buttonRect.top,buttonBottom:buttonRect.bottom
         };
       })()`);
       layout.width=width;
       connectivityResponsiveLayouts.push(layout);
       const childOverflow = layout.headingLeft < layout.heroLeft - 1 || layout.headingRight > layout.heroRight + 1 ||
         layout.actionsLeft < layout.heroLeft - 1 || layout.actionsRight > layout.heroRight + 1;
+      const compactActionMismatch = width <= 520 ?
+        (layout.actionsDisplay !== 'grid' || layout.actionsScrollWidth > layout.actionsClientWidth + 1 ||
+          layout.updatedWhiteSpace === 'nowrap' || layout.buttonTop < Math.max(layout.pillBottom,layout.updatedBottom) + 6) :
+        (width <= 700 ? layout.actionsWrap !== 'wrap' : layout.actionsWrap !== 'nowrap');
       if (layout.bodyScrollWidth > layout.viewport + 1 || childOverflow ||
           (width > 1180 && layout.flexDirection !== 'row') ||
-          (width <= 1180 && layout.flexDirection !== 'column') ||
-          (width > 700 && layout.actionsWrap !== 'nowrap') ||
-          (width <= 700 && layout.actionsWrap !== 'wrap')) {
+          (width <= 1180 && layout.flexDirection !== 'column') || compactActionMismatch) {
         throw new Error(`Connectivity hero responsive layout failed at ${width}px: ${JSON.stringify(layout)}`);
       }
     }
@@ -1143,7 +1245,8 @@ try {
     raw_config_layout:rawConfigLayout, system_header_layout:systemHeaderLayout,
     login_brand_layout:loginBrandLayout, sidebar_brand_layout:sidebarBrandLayout,
     sidebar_layout:sidebarLayout, overview_topology_layout:overviewTopologyLayout, theme_contract:themeContract,
-    semantic_color_contract:semanticColorContract, topbar_layouts:topbarLayouts, connectivity_action_layout:connectivityActionLayout,
+    semantic_color_contract:semanticColorContract, topbar_layouts:topbarLayouts, security_explorer_layouts:securityExplorerLayouts,
+    connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract
   }, null, 2));
 } catch (error) {

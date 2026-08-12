@@ -764,6 +764,22 @@ canvas {
     align-items:flex-end
   }
 }
+@media(max-width:700px) {
+  #view-security > .panel > .panel-head {
+    flex-direction:column;
+    align-items:stretch;
+    justify-content:flex-start
+  }
+  #view-security > .panel > .panel-head > div:first-child {
+    flex:0 0 auto
+  }
+  #view-security > .panel > .panel-head .top-actions {
+    flex-direction:row;
+    align-items:center;
+    width:100%;
+    margin-top:0
+  }
+}
 @media(max-width:520px) {
   .kpi-grid {
     grid-template-columns:1fr
@@ -775,7 +791,10 @@ canvas {
     grid-template-columns:1fr
   }
   .topbar {
-    margin-bottom:22px
+    margin-bottom:24px
+  }
+  .topbar-eyebrow {
+    margin-bottom:10px
   }
   .topbar-row {
     align-items:flex-start;
@@ -784,7 +803,7 @@ canvas {
   .topbar-title-group {
     align-items:flex-start;
     flex-direction:column;
-    gap:8px
+    gap:9px
   }
   .topbar-actions {
     gap:8px
@@ -795,6 +814,45 @@ canvas {
   .top-actions {
     margin-top:14px;
     align-items:flex-start
+  }
+  .panel-head {
+    flex-wrap:wrap;
+    gap:14px
+  }
+  .panel-head > div:first-child {
+    min-width:0;
+    flex:1 1 210px
+  }
+  .panel-head > button {
+    margin-left:auto
+  }
+  .filters {
+    display:grid;
+    grid-template-columns:minmax(0,1fr);
+    gap:10px
+  }
+  .filters input,
+  .filters select,
+  .filters button {
+    width:100%;
+    min-width:0
+  }
+  .filters button {
+    min-height:40px
+  }
+  #view-security > .panel > .panel-head .top-actions {
+    display:grid;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    width:100%;
+    margin-top:0;
+    gap:8px
+  }
+  #view-security > .panel > .panel-head .top-actions button {
+    width:100%;
+    min-height:40px
+  }
+  #view-security #clear-security {
+    grid-column:1 / -1
   }
   .panel {
     padding:16px
@@ -1226,6 +1284,25 @@ canvas {
   .recent-traffic-note { padding:11px 16px 13px }
   .transition-item { grid-template-columns:1fr }
 }
+@media(max-width:520px) {
+  .connectivity-actions {
+    display:grid;
+    grid-template-columns:auto minmax(0,1fr);
+    align-items:center;
+    width:100%;
+    gap:10px 12px
+  }
+  #connectivity-updated {
+    min-width:0;
+    white-space:normal;
+    overflow-wrap:anywhere;
+    line-height:1.4
+  }
+  #check-connectivity {
+    grid-column:1 / -1;
+    justify-self:start
+  }
+}
 .dot.degraded {
   background:var(--warn);
   box-shadow:0 0 0 5px rgba(255,196,107,.12)
@@ -1638,6 +1715,9 @@ canvas {
   .system-control-intro .panel-head {
     align-items:stretch;
     flex-direction:column
+  }
+  .system-control-intro .panel-head > div {
+    flex:0 0 auto
   }
   #reload-config {
     width:100%;

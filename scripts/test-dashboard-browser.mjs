@@ -632,6 +632,62 @@ try {
     }
   }
 
+  let telemetryTrendGapContract = null;
+  if (fixtureRoot) {
+    telemetryTrendGapContract = await cdp.evaluate(`(() => {
+      const previous = state.overview;
+      const baseTime = Date.now() - 40000;
+      const sample = (offset, available, rateAvailable, rate) => ({
+        generated_at:new Date(baseTime + offset).toISOString(),
+        security:{rejected_per_second:0.25},
+        edgeproxy:{available, request_rate_available:rateAvailable, requests_per_second:rate}
+      });
+      const candidate = structuredClone(previous);
+      candidate.telemetry_history = {samples:[
+        sample(0,true,true,1.5),
+        sample(10000,false,false,0),
+        sample(20000,true,false,99),
+        sample(30000,true,true,2.5),
+        sample(40000,true,true,3.5)
+      ]};
+      state.overview = candidate;
+      renderOverview();
+      const mapped = state.trend.map(point => point.requests);
+
+      const canvas = document.getElementById('trend-chart');
+      const originalGetContext = canvas.getContext;
+      const operations = [];
+      const context = {
+        _strokeStyle:'', lineWidth:1,
+        set strokeStyle(value) { this._strokeStyle = value; },
+        get strokeStyle() { return this._strokeStyle; },
+        scale(){}, clearRect(){}, beginPath(){}, stroke(){},
+        moveTo(x,y){ operations.push({type:'move', color:this._strokeStyle, x, y}); },
+        lineTo(x,y){ operations.push({type:'line', color:this._strokeStyle, x, y}); }
+      };
+      canvas.getContext = () => context;
+      try { drawTrend(); } finally { canvas.getContext = originalGetContext; }
+      const requestColor = cssColor('--chart-requests', '#67a6ff');
+      const requestOps = operations.filter(operation => operation.color === requestColor).map(operation => operation.type);
+
+      state.overview = previous;
+      renderAll();
+      return {mapped, requestOps};
+    })()`);
+    if (telemetryTrendGapContract.mapped.length !== 5 ||
+        telemetryTrendGapContract.mapped[0] !== 1.5 ||
+        telemetryTrendGapContract.mapped[1] !== null ||
+        telemetryTrendGapContract.mapped[2] !== null ||
+        telemetryTrendGapContract.mapped[3] !== 2.5 ||
+        telemetryTrendGapContract.mapped[4] !== 3.5) {
+      throw new Error(`Telemetry history did not preserve unavailable request-rate gaps: ${JSON.stringify(telemetryTrendGapContract)}`);
+    }
+    const expectedRequestOps = ['move','move','line'];
+    if (JSON.stringify(telemetryTrendGapContract.requestOps) !== JSON.stringify(expectedRequestOps)) {
+      throw new Error(`Trend chart connected EdgeProxy request-rate segments across a telemetry gap: ${JSON.stringify(telemetryTrendGapContract)}`);
+    }
+  }
+
   let mobileNavLayouts = [];
   if (fixtureRoot) {
     const views = ['overview','security','protection','traffic','routes','policies','system'];
@@ -1608,7 +1664,7 @@ try {
     connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
     authentication_ui_contract:authenticationUIContract, telemetry_availability_contract:telemetryAvailabilityContract,
-    editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
+    telemetry_trend_gap_contract:telemetryTrendGapContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
   }, null, 2));
 } catch (error) {
   console.error(error.stack || error.message);

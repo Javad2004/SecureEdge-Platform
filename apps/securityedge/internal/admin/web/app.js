@@ -387,7 +387,9 @@ function renderOverview() {
   const history = overview.telemetry_history?.samples || [];
   if (history.length) {
     state.trend = history.map(point => ({
-      requests: Number(point.edgeproxy?.requests_per_second || 0),
+      requests: point.edgeproxy?.available === true && point.edgeproxy?.request_rate_available === true
+        ? Number(point.edgeproxy.requests_per_second || 0)
+        : null,
       blocked: Number(point.security?.rejected_per_second || 0),
       time: Date.parse(point.generated_at) || Date.now()
     }));
@@ -419,13 +421,18 @@ function drawTrend() {
     const y = 20 + i * (height - 40) / 4;
     context.beginPath(); context.moveTo(0, y); context.lineTo(width, y); context.stroke();
   }
-  const maximum = Math.max(1, ...state.trend.flatMap(point => [point.requests, point.blocked]));
+  const values = state.trend.flatMap(point => [point.requests, point.blocked]).filter(Number.isFinite);
+  const maximum = Math.max(1, ...values);
   const draw = (key, color) => {
     context.strokeStyle = color; context.lineWidth = 2; context.beginPath();
+    let segmentStarted = false;
     state.trend.forEach((point, index) => {
+      const value = point[key];
+      if (!Number.isFinite(value)) { segmentStarted = false; return; }
       const x = state.trend.length === 1 ? width / 2 : index * (width / (state.trend.length - 1));
-      const y = height - 20 - (point[key] / maximum) * (height - 40);
-      index ? context.lineTo(x, y) : context.moveTo(x, y);
+      const y = height - 20 - (value / maximum) * (height - 40);
+      if (segmentStarted) context.lineTo(x, y);
+      else { context.moveTo(x, y); segmentStarted = true; }
     });
     context.stroke();
   };

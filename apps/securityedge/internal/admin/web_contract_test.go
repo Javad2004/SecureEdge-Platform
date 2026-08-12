@@ -183,6 +183,24 @@ func TestDashboardThemeContract(t *testing.T) {
 	}
 }
 
+func TestDashboardTrendPreservesTelemetryRateGaps(t *testing.T) {
+	app, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	javascript := string(app)
+	for _, required := range []string{
+		"point.edgeproxy?.request_rate_available === true",
+		"requests: point.edgeproxy?.available === true",
+		"filter(Number.isFinite)",
+		"if (!Number.isFinite(value)) { segmentStarted = false; return; }",
+	} {
+		if !strings.Contains(javascript, required) {
+			t.Fatalf("dashboard telemetry-gap contract is missing %q", required)
+		}
+	}
+}
+
 func TestDashboardTopbarKeepsPrimaryActionsBesideTitle(t *testing.T) {
 	index, err := webAssets.ReadFile("web/index.html")
 	if err != nil {

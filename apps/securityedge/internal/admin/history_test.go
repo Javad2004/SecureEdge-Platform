@@ -51,6 +51,17 @@ func TestTelemetryHistoryPersistsBoundsAndReloads(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("expected persisted history file: %v", err)
 	}
+	persisted, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document telemetryHistoryDocument
+	if err := json.Unmarshal(persisted, &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.SchemaVersion != "1.1" {
+		t.Fatalf("telemetry history schema=%q, want 1.1", document.SchemaVersion)
+	}
 
 	reloaded := newTelemetryHistoryStore(store.cfg)
 	reloadedSnapshot := reloaded.snapshot(10)
@@ -226,6 +237,139 @@ func TestTelemetryHistoryTruncatesOversizedRouteDetails(t *testing.T) {
 	}
 	if store.retainedBytes > store.maxRetainedBytes {
 		t.Fatalf("retained history exceeded byte budget: %d > %d", store.retainedBytes, store.maxRetainedBytes)
+	}
+}
+
+func TestTelemetryHistoryDoesNotInventRateAcrossUnavailableGap(t *testing.T) {
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{Duration: time.Second},
+	})
+
+	store.observe(metrics.Snapshot{Total: metrics.CounterSnapshot{Requests: 1}}, nil)
+	store.mu.Lock()
+	store.samples[0].GeneratedAt = time.Now().UTC().Add(-10 * time.Second).Format(time.RFC3339Nano)
+	store.lastObserved = time.Time{}
+	store.mu.Unlock()
+
+	edge := json.RawMessage(`{"schema_version":"2.0","total":{"requests":100},"routes":{"demo":{"requests":40}}}`)
+	store.observe(metrics.Snapshot{Total: metrics.CounterSnapshot{Requests: 2}}, edge)
+
+	samples := store.snapshot(10).Samples
+	if len(samples) != 2 {
+		t.Fatalf("history samples=%d, want 2", len(samples))
+	}
+	recovered := samples[1]
+	if !recovered.EdgeProxy.Available {
+		t.Fatal("recovered EdgeProxy sample should be available")
+	}
+	if recovered.EdgeProxy.RequestRateAvailable || recovered.EdgeProxy.RequestsPerSecond != 0 {
+		t.Fatalf("recovery rate=%v available=%v, want an explicit rate gap", recovered.EdgeProxy.RequestsPerSecond, recovered.EdgeProxy.RequestRateAvailable)
+	}
+	if route := recovered.Routes["demo"]; route.RequestRateAvailable || route.RequestsPerSecond != 0 {
+		t.Fatalf("recovered Route rate=%v available=%v, want an explicit rate gap", route.RequestsPerSecond, route.RequestRateAvailable)
+	}
+}
+
+func TestTelemetryHistoryMarksRatesAvailableOnlyForContiguousCounters(t *testing.T) {
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{Duration: time.Second},
+	})
+	first := json.RawMessage(`{"schema_version":"2.0","started_at":"2026-08-12T20:00:00Z","total":{"requests":100},"routes":{"demo":{"requests":40}}}`)
+	store.observe(metrics.Snapshot{Total: metrics.CounterSnapshot{Requests: 1}}, first)
+	store.mu.Lock()
+	store.samples[0].GeneratedAt = time.Now().UTC().Add(-10 * time.Second).Format(time.RFC3339Nano)
+	store.lastObserved = time.Time{}
+	store.mu.Unlock()
+
+	second := json.RawMessage(`{"schema_version":"2.0","started_at":"2026-08-12T20:00:00Z","total":{"requests":150},"routes":{"demo":{"requests":70}}}`)
+	store.observe(metrics.Snapshot{Total: metrics.CounterSnapshot{Requests: 2}}, second)
+
+	samples := store.snapshot(10).Samples
+	current := samples[1]
+	if !current.EdgeProxy.RequestRateAvailable || current.EdgeProxy.RequestsPerSecond < 4.9 || current.EdgeProxy.RequestsPerSecond > 5.1 {
+		t.Fatalf("EdgeProxy contiguous rate=%v available=%v, want about 5 req/s", current.EdgeProxy.RequestsPerSecond, current.EdgeProxy.RequestRateAvailable)
+	}
+	route := current.Routes["demo"]
+	if !route.RequestRateAvailable || route.RequestsPerSecond < 2.9 || route.RequestsPerSecond > 3.1 {
+		t.Fatalf("Route contiguous rate=%v available=%v, want about 3 req/s", route.RequestsPerSecond, route.RequestRateAvailable)
+	}
+}
+
+func TestTelemetryHistoryTreatsCounterResetAsRateGap(t *testing.T) {
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{Duration: time.Second},
+	})
+	first := json.RawMessage(`{"schema_version":"2.0","started_at":"2026-08-12T20:00:00Z","total":{"requests":100},"routes":{"demo":{"requests":40}}}`)
+	store.observe(metrics.Snapshot{Total: metrics.CounterSnapshot{Requests: 1}}, first)
+	store.mu.Lock()
+	store.samples[0].GeneratedAt = time.Now().UTC().Add(-10 * time.Second).Format(time.RFC3339Nano)
+	store.lastObserved = time.Time{}
+	store.mu.Unlock()
+
+	reset := json.RawMessage(`{"schema_version":"2.0","started_at":"2026-08-12T20:00:00Z","total":{"requests":3},"routes":{"demo":{"requests":2}}}`)
+	store.observe(metrics.Snapshot{Total: metrics.CounterSnapshot{Requests: 2}}, reset)
+
+	current := store.snapshot(10).Samples[1]
+	if current.EdgeProxy.RequestRateAvailable || current.EdgeProxy.RequestsPerSecond != 0 {
+		t.Fatalf("counter reset produced EdgeProxy rate=%v available=%v", current.EdgeProxy.RequestsPerSecond, current.EdgeProxy.RequestRateAvailable)
+	}
+	if route := current.Routes["demo"]; route.RequestRateAvailable || route.RequestsPerSecond != 0 {
+		t.Fatalf("counter reset produced Route rate=%v available=%v", route.RequestsPerSecond, route.RequestRateAvailable)
+	}
+}
+
+func TestTelemetryHistoryTreatsEdgeProxyRestartAsRateGap(t *testing.T) {
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{Duration: time.Second},
+	})
+	first := json.RawMessage(`{"schema_version":"2.0","started_at":"2026-08-12T20:00:00Z","total":{"requests":100},"routes":{"demo":{"requests":40}}}`)
+	store.observe(metrics.Snapshot{Total: metrics.CounterSnapshot{Requests: 1}}, first)
+	store.mu.Lock()
+	store.samples[0].GeneratedAt = time.Now().UTC().Add(-10 * time.Second).Format(time.RFC3339Nano)
+	store.lastObserved = time.Time{}
+	store.mu.Unlock()
+
+	restarted := json.RawMessage(`{"schema_version":"2.0","started_at":"2026-08-12T20:05:00Z","total":{"requests":150},"routes":{"demo":{"requests":70}}}`)
+	store.observe(metrics.Snapshot{Total: metrics.CounterSnapshot{Requests: 2}}, restarted)
+
+	current := store.snapshot(10).Samples[1]
+	if current.EdgeProxy.RequestRateAvailable || current.EdgeProxy.RequestsPerSecond != 0 {
+		t.Fatalf("EdgeProxy restart produced rate=%v available=%v", current.EdgeProxy.RequestsPerSecond, current.EdgeProxy.RequestRateAvailable)
+	}
+	if route := current.Routes["demo"]; route.RequestRateAvailable || route.RequestsPerSecond != 0 {
+		t.Fatalf("EdgeProxy restart produced Route rate=%v available=%v", route.RequestsPerSecond, route.RequestRateAvailable)
+	}
+}
+
+func TestTelemetryHistoryLoadsV1RatesConservatively(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.json")
+	base := time.Now().UTC().Add(-20 * time.Second)
+	document := telemetryHistoryDocument{
+		SchemaVersion: "1.0",
+		Samples: []telemetryHistoryPoint{
+			{GeneratedAt: base.Format(time.RFC3339Nano), EdgeProxy: telemetryEdgeHistoryPoint{Available: true, Requests: 10}, Routes: map[string]telemetryRouteHistory{"demo": {Requests: 4}}},
+			{GeneratedAt: base.Add(10 * time.Second).Format(time.RFC3339Nano), EdgeProxy: telemetryEdgeHistoryPoint{Available: true, Requests: 30, RequestsPerSecond: 2}, Routes: map[string]telemetryRouteHistory{"demo": {Requests: 14, RequestsPerSecond: 1}}},
+		},
+	}
+	data, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{Duration: time.Second}, FilePath: path,
+	})
+	samples := store.snapshot(10).Samples
+	if len(samples) != 2 {
+		t.Fatalf("history samples=%d, want 2", len(samples))
+	}
+	for i, sample := range samples {
+		if sample.EdgeProxy.RequestRateAvailable || sample.Routes["demo"].RequestRateAvailable {
+			t.Fatalf("legacy sample %d has no rate-validity metadata and must remain a gap: %#v", i, sample)
+		}
 	}
 }
 

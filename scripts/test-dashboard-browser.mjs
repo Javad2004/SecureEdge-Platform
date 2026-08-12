@@ -319,6 +319,7 @@ try {
         theme:root.dataset.theme,
         text:variable('--text'), panel:variable('--panel'), muted:variable('--muted'),
         accent:variable('--accent'), danger:variable('--danger'), warn:variable('--warn'),
+        themeColor:document.querySelector('meta[name="theme-color"]')?.content || '',
         textContrast:contrast(variable('--text'), variable('--panel')),
         mutedContrast:contrast(variable('--muted'), variable('--panel')),
         accentContrast:contrast(variable('--accent'), variable('--panel')),
@@ -389,6 +390,9 @@ try {
         throw new Error(`Theme palette contrast contract failed: ${JSON.stringify(palette)}`);
       }
     }
+    if (themeContract.initial.themeColor.toLowerCase() !== '#f2f6fb' || themeContract.toggled.themeColor.toLowerCase() !== '#0b1020') {
+      throw new Error(`Browser theme-color metadata does not match the active palette: ${JSON.stringify(themeContract)}`);
+    }
     if (!themeContract.loginToggleVisible || !themeContract.topTogglePresent || !themeContract.initialLabel.includes('dark') ||
         !themeContract.synchronizedLabel.includes('dark')) {
       throw new Error(`Theme toggle accessibility/synchronization contract failed: ${JSON.stringify(themeContract)}`);
@@ -434,6 +438,174 @@ try {
 
   await cdp.evaluate(`login(${JSON.stringify(token)})`, true);
   await eventually(async () => await cdp.evaluate(`!document.getElementById('login').classList.contains('visible') && !!state.edgeConfig`), 'Authenticated Dashboard data');
+
+  let semanticColorContract = null;
+  let connectivityActionLayout = null;
+  let connectivityResponsiveLayouts = [];
+  if (fixtureRoot) {
+    // Prevent Light Mode from silently flattening semantic status colors. These
+    // probes cover every status-bearing visual family used by the Dashboard.
+    semanticColorContract = await cdp.evaluate(`(() => {
+      window.SecurityEdgeTheme.apply('light');
+      const normalize = value => String(value || '').replaceAll(' ', '').toLowerCase();
+      const resolveColor = value => {
+        const node = document.createElement('span');
+        node.style.color = value;
+        document.body.appendChild(node);
+        const resolved = getComputedStyle(node).color;
+        node.remove();
+        return normalize(resolved);
+      };
+      const rgb = value => {
+        const values = String(value || '').match(/[0-9.]+/g);
+        return values && values.length >= 3 ? values.slice(0,3).map(Number) : null;
+      };
+      const luminance = value => {
+        const channels = rgb(value);
+        if (!channels) return 0;
+        const linear = channels.map(channel => {
+          const c = channel / 255;
+          return c <= .04045 ? c / 12.92 : Math.pow((c + .055) / 1.055, 2.4);
+        });
+        return .2126 * linear[0] + .7152 * linear[1] + .0722 * linear[2];
+      };
+      const contrast = (a,b) => {
+        const first=luminance(a), second=luminance(b);
+        return (Math.max(first,second)+.05)/(Math.min(first,second)+.05);
+      };
+      const expected = {
+        healthy:resolveColor('var(--accent)'),
+        degraded:resolveColor('var(--warn)'),
+        down:resolveColor('var(--danger)')
+      };
+      const host = document.createElement('div');
+      host.style.cssText = 'position:fixed;left:-10000px;top:0;width:600px;pointer-events:none';
+      document.body.appendChild(host);
+      const states = {};
+      for (const status of ['healthy','degraded','down']) {
+        const dotClass = status === 'healthy' ? 'live' : status;
+        const badgeClass = status === 'healthy' ? 'ready' : status === 'degraded' ? 'warn' : 'error';
+        host.innerHTML =
+          '<article class="panel connectivity-panel status-' + status + '"><div class="connectivity-hero"><div class="status-orb"><span></span></div></div></article>' +
+          '<span class="dot ' + dotClass + '"></span>' +
+          '<div class="topology-node ' + status + '"><span class="node-dot"></span></div>' +
+          '<span class="legend-dot ' + status + '"></span>' +
+          '<article class="component-check ' + status + '"><span class="node-dot"></span></article>' +
+          '<span class="status-pill ' + status + '">' + status + '</span>' +
+          '<span class="badge ' + badgeClass + '">state</span>' +
+          (status === 'healthy' ? '<div class="traffic-active"><span class="activity-dot"></span></div>' : '');
+        const panel = host.querySelector('.connectivity-panel');
+        const orb = host.querySelector('.status-orb span');
+        const dot = host.querySelector('.dot');
+        const topologyDot = host.querySelector('.topology-node .node-dot');
+        const legendDot = host.querySelector('.legend-dot');
+        const component = host.querySelector('.component-check');
+        const componentDot = component.querySelector('.node-dot');
+        const pill = host.querySelector('.status-pill');
+        const badge = host.querySelector('.badge');
+        const pillStyle = getComputedStyle(pill);
+        const badgeStyle = getComputedStyle(badge);
+        states[status] = {
+          expected:expected[status],
+          barGradient:getComputedStyle(panel,'::before').backgroundImage,
+          heroGradient:getComputedStyle(panel.querySelector('.connectivity-hero')).backgroundImage,
+          orb:normalize(getComputedStyle(orb).backgroundColor),
+          dot:normalize(getComputedStyle(dot).backgroundColor),
+          topologyDot:normalize(getComputedStyle(topologyDot).backgroundColor),
+          legendDot:normalize(getComputedStyle(legendDot).backgroundColor),
+          componentDot:normalize(getComputedStyle(componentDot).backgroundColor),
+          componentBorder:normalize(getComputedStyle(component).borderLeftColor),
+          pillTextContrast:contrast(pillStyle.color,pillStyle.backgroundColor),
+          badgeTextContrast:contrast(badgeStyle.color,badgeStyle.backgroundColor),
+          activityDot:status === 'healthy' ? normalize(getComputedStyle(host.querySelector('.activity-dot')).backgroundColor) : ''
+        };
+      }
+      host.remove();
+      return states;
+    })()`);
+    for (const [status, values] of Object.entries(semanticColorContract)) {
+      for (const field of ['orb','dot','topologyDot','legendDot','componentDot','componentBorder']) {
+        if (values[field] !== values.expected) {
+          throw new Error(`Light-theme semantic ${status} color was flattened for ${field}: ${JSON.stringify(values)}`);
+        }
+      }
+      if (!String(values.barGradient).includes('linear-gradient') || !String(values.heroGradient).includes('linear-gradient')) {
+        throw new Error(`Light-theme semantic ${status} panel treatment is missing: ${JSON.stringify(values)}`);
+      }
+      if (values.pillTextContrast < 4.5 || values.badgeTextContrast < 4.5) {
+        throw new Error(`Light-theme semantic ${status} badge/pill contrast is too weak: ${JSON.stringify(values)}`);
+      }
+      if (status === 'healthy' && values.activityDot !== values.expected) {
+        throw new Error(`Light-theme live activity indicator lost its semantic color: ${JSON.stringify(values)}`);
+      }
+    }
+
+    connectivityActionLayout = await cdp.evaluate(`(() => {
+      const actions=document.querySelector('.connectivity-actions');
+      const pill=document.getElementById('connectivity-overall');
+      const updated=document.getElementById('connectivity-updated');
+      const button=document.getElementById('check-connectivity');
+      // Use the longest normal status label and the timestamp shape shown in
+      // production so this guards the exact desktop wrapping regression.
+      const original={pillText:pill.textContent,pillClass:pill.className,updatedText:updated.textContent};
+      pill.textContent='DEGRADED';
+      pill.className='status-pill degraded';
+      updated.textContent='Checked 8/12/2026, 9:21:51 PM';
+      const rects=[pill,updated,button].map(node => node.getBoundingClientRect());
+      const centers=rects.map(rect => rect.top + rect.height/2);
+      const result={
+        flexWrap:getComputedStyle(actions).flexWrap,
+        centerSpread:Math.max(...centers)-Math.min(...centers),
+        actionTop:actions.getBoundingClientRect().top,
+        actionBottom:actions.getBoundingClientRect().bottom,
+        buttonTop:rects[2].top,
+        updatedTop:rects[1].top
+      };
+      pill.textContent=original.pillText;
+      pill.className=original.pillClass;
+      updated.textContent=original.updatedText;
+      return result;
+    })()`);
+    if (connectivityActionLayout.flexWrap !== 'nowrap' || connectivityActionLayout.centerSpread > 1.5) {
+      throw new Error(`Desktop connectivity actions are no longer kept on one aligned row: ${JSON.stringify(connectivityActionLayout)}`);
+    }
+
+    for (const width of [1365,1100,961,901,701,700,520]) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', {width,height:900,deviceScaleFactor:1,mobile:false});
+      await sleep(80);
+      const layout = await cdp.evaluate(`(() => {
+        const hero=document.querySelector('.connectivity-hero');
+        const heading=document.querySelector('.connectivity-heading');
+        const actions=document.querySelector('.connectivity-actions');
+        const heroRect=hero.getBoundingClientRect();
+        const headingRect=heading.getBoundingClientRect();
+        const actionsRect=actions.getBoundingClientRect();
+        const style=getComputedStyle(hero);
+        return {
+          viewport:document.documentElement.clientWidth,
+          bodyScrollWidth:document.body.scrollWidth,
+          flexDirection:style.flexDirection,
+          actionsWrap:getComputedStyle(actions).flexWrap,
+          heroLeft:heroRect.left,heroRight:heroRect.right,
+          headingLeft:headingRect.left,headingRight:headingRect.right,headingWidth:headingRect.width,
+          actionsLeft:actionsRect.left,actionsRight:actionsRect.right,actionsWidth:actionsRect.width
+        };
+      })()`);
+      layout.width=width;
+      connectivityResponsiveLayouts.push(layout);
+      const childOverflow = layout.headingLeft < layout.heroLeft - 1 || layout.headingRight > layout.heroRight + 1 ||
+        layout.actionsLeft < layout.heroLeft - 1 || layout.actionsRight > layout.heroRight + 1;
+      if (layout.bodyScrollWidth > layout.viewport + 1 || childOverflow ||
+          (width > 1180 && layout.flexDirection !== 'row') ||
+          (width <= 1180 && layout.flexDirection !== 'column') ||
+          (width > 700 && layout.actionsWrap !== 'nowrap') ||
+          (width <= 700 && layout.actionsWrap !== 'wrap')) {
+        throw new Error(`Connectivity hero responsive layout failed at ${width}px: ${JSON.stringify(layout)}`);
+      }
+    }
+    await cdp.send('Emulation.setDeviceMetricsOverride', {width:1365,height:900,deviceScaleFactor:1,mobile:false});
+    await sleep(80);
+  }
 
   let sidebarBrandLayout = null;
   if (fixtureRoot) {
@@ -819,7 +991,9 @@ try {
     route_editor_layout:routeEditorLayout, origin_dialog_layout:originDialogLayout, telemetry_detail_layout:telemetryDetailLayout,
     raw_config_layout:rawConfigLayout, system_header_layout:systemHeaderLayout,
     login_brand_layout:loginBrandLayout, sidebar_brand_layout:sidebarBrandLayout,
-    sidebar_layout:sidebarLayout, overview_topology_layout:overviewTopologyLayout, theme_contract:themeContract
+    sidebar_layout:sidebarLayout, overview_topology_layout:overviewTopologyLayout, theme_contract:themeContract,
+    semantic_color_contract:semanticColorContract, connectivity_action_layout:connectivityActionLayout,
+    connectivity_responsive_layouts:connectivityResponsiveLayouts
   }, null, 2));
 } catch (error) {
   console.error(error.stack || error.message);

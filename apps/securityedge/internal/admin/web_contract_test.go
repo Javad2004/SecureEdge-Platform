@@ -141,6 +141,7 @@ func TestDashboardThemeContract(t *testing.T) {
 		`hasUserPreference = true`,
 		`data-theme-toggle`,
 		`securityedge:themechange`,
+		`return theme === 'light' ? '#f2f6fb' : '#0b1020';`,
 	} {
 		if !strings.Contains(javascript, required) {
 			t.Fatalf("theme persistence/system-default contract is missing %q", required)
@@ -151,14 +152,19 @@ func TestDashboardThemeContract(t *testing.T) {
 		`color-scheme:dark`,
 		`html[data-theme="light"] {`,
 		`color-scheme:light`,
-		`--bg:#f4f7fb`,
-		`--text:#182235`,
-		`--muted:#5f6f85`,
-		`--chart-grid:#d3dce8`,
+		`--bg:#f2f6fb`,
+		`--text:#152238`,
+		`--muted:#52647c`,
+		`--chart-grid:#c8d4e3`,
 		`.theme-toggle {`,
 		`html[data-theme="light"] .editor-dialog`,
 		`html[data-theme="light"] .telemetry-raw`,
 		`html[data-theme="light"] .system-config-card[open] > summary`,
+		`html[data-theme="light"] .connectivity-panel.status-degraded::before`,
+		`html[data-theme="light"] .status-degraded .status-orb span`,
+		`html[data-theme="light"] .degraded .node-dot`,
+		`html[data-theme="light"] .legend-dot.degraded`,
+		`html[data-theme="light"] .traffic-active .activity-dot`,
 	} {
 		if !strings.Contains(css, required) {
 			t.Fatalf("dashboard light-theme stylesheet contract is missing %q", required)

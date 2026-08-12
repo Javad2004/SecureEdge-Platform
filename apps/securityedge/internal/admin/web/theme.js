@@ -37,7 +37,7 @@
   }
 
   function themeColor(theme) {
-    return theme === 'light' ? '#f4f7fb' : '#0b1020';
+    return theme === 'light' ? '#f2f6fb' : '#0b1020';
   }
 
   function updateToggleLabels() {

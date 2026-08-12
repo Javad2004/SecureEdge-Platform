@@ -478,8 +478,9 @@ func TestDashboardResponsiveLayoutContract(t *testing.T) {
 		`.route-grid {
     grid-template-columns:minmax(0,1fr)`,
 		`scrollbar-width:none`,
-		`scroll-snap-type:x proximity`,
 		`.sidebar nav::-webkit-scrollbar`,
+		`.sidebar nav::after {`,
+		`flex:0 0 40px`,
 		`.sidebar-foot {
     display:grid;`,
 		`grid-template-columns:auto minmax(0,1fr) auto`,
@@ -506,7 +507,10 @@ func TestDashboardResponsiveLayoutContract(t *testing.T) {
 		`const active = nav?.querySelector('.nav-item.active')`,
 		`const navRect = nav.getBoundingClientRect()`,
 		`const activeRect = active.getBoundingClientRect()`,
-		`nav.scrollLeft += activeRect.left - navRect.left`,
+		`const visibleStart = nav.scrollLeft`,
+		`const activeStart = visibleStart + activeRect.left - navRect.left`,
+		`const itemBoundaries = [...nav.querySelectorAll('.nav-item')]`,
+		`nav.scrollLeft = Math.max(0, Math.min(maxScroll, target))`,
 		`window.addEventListener('resize', () => requestAnimationFrame(ensureActiveNavVisible))`,
 		`const navResizeObserver = new ResizeObserver(() => requestAnimationFrame(ensureActiveNavVisible))`,
 		`navResizeObserver.observe($('nav'))`,

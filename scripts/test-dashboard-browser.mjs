@@ -439,6 +439,48 @@ try {
   await cdp.evaluate(`login(${JSON.stringify(token)})`, true);
   await eventually(async () => await cdp.evaluate(`!document.getElementById('login').classList.contains('visible') && !!state.edgeConfig`), 'Authenticated Dashboard data');
 
+  let mobileNavLayouts = [];
+  if (fixtureRoot) {
+    const views = ['overview','security','protection','traffic','routes','policies','system'];
+    for (const width of [700,390,320]) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', {width,height:900,deviceScaleFactor:1,mobile:width <= 520});
+      await sleep(60);
+      for (const view of views) {
+        await cdp.evaluate(`setView(${JSON.stringify(view)}); ensureActiveNavVisible()`);
+        await sleep(25);
+        const layout = await cdp.evaluate(`(() => {
+          const nav=document.getElementById('nav');
+          const active=nav?.querySelector('.nav-item.active');
+          if (!nav || !active) return null;
+          const navRect=nav.getBoundingClientRect();
+          const activeRect=active.getBoundingClientRect();
+          const items=[...nav.querySelectorAll('.nav-item')].map(item => {
+            const rect=item.getBoundingClientRect();
+            return {label:item.textContent.trim(),left:rect.left,right:rect.right};
+          });
+          const partialLeft=items.filter(item => item.left < navRect.left - 1 && item.right > navRect.left + 1).map(item => item.label);
+          return {
+            navLeft:navRect.left, navRight:navRect.right, scrollLeft:nav.scrollLeft,
+            scrollWidth:nav.scrollWidth, clientWidth:nav.clientWidth,
+            active:active.textContent.trim(), activeLeft:activeRect.left, activeRight:activeRect.right,
+            activeVisible:activeRect.left >= navRect.left - 1 && activeRect.right <= navRect.right + 1,
+            partialLeft
+          };
+        })()`);
+        if (!layout) throw new Error(`Compact navigation layout is missing at ${width}px for ${view}`);
+        layout.width=width;
+        layout.view=view;
+        mobileNavLayouts.push(layout);
+        if (!layout.activeVisible || layout.partialLeft.length) {
+          throw new Error(`Compact navigation clips an item at the leading edge at ${width}px for ${view}: ${JSON.stringify(layout)}`);
+        }
+      }
+    }
+    await cdp.evaluate(`setView('overview')`);
+    await cdp.send('Emulation.setDeviceMetricsOverride', {width:1365,height:900,deviceScaleFactor:1,mobile:false});
+    await sleep(80);
+  }
+
   let topbarLayouts = [];
   if (fixtureRoot) {
     for (const width of [1365,960,700,520,390,360,320]) {
@@ -1040,7 +1082,7 @@ try {
     ok:true, mode, browser, url:fixtureRoot ? 'fixture://dashboard' : url,
     title:contract.title, route:routeEditor.name, algorithm:routeEditor.algorithm,
     cache_route_options:cacheOptions, system_forms_populated:true, system_form_submission:systemFormSubmission, live_mutations_skipped:!fixtureRoot,
-    refresh_coalescing:refreshCoalescing, responsive_layouts:responsiveLayouts, mobile_dialog_layouts:mobileDialogLayouts,
+    refresh_coalescing:refreshCoalescing, mobile_nav_layouts:mobileNavLayouts, responsive_layouts:responsiveLayouts, mobile_dialog_layouts:mobileDialogLayouts,
     route_editor_layout:routeEditorLayout, origin_dialog_layout:originDialogLayout, telemetry_detail_layout:telemetryDetailLayout,
     raw_config_layout:rawConfigLayout, system_header_layout:systemHeaderLayout,
     login_brand_layout:loginBrandLayout, sidebar_brand_layout:sidebarBrandLayout,

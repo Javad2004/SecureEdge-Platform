@@ -104,11 +104,32 @@ function ensureActiveNavVisible() {
   const nav = $('nav');
   const active = nav?.querySelector('.nav-item.active');
   if (!nav || !active) return;
+
+  const tolerance = 1;
   const navRect = nav.getBoundingClientRect();
   const activeRect = active.getBoundingClientRect();
-  if (activeRect.left < navRect.left || activeRect.right > navRect.right) {
-    nav.scrollLeft += activeRect.left - navRect.left;
+  const visibleStart = nav.scrollLeft;
+  const visibleEnd = visibleStart + nav.clientWidth;
+  const activeStart = visibleStart + activeRect.left - navRect.left;
+  const activeEnd = activeStart + activeRect.width;
+
+  if (activeStart >= visibleStart - tolerance && activeEnd <= visibleEnd + tolerance) return;
+
+  const maxScroll = Math.max(0, nav.scrollWidth - nav.clientWidth);
+  let target = activeStart;
+  if (activeEnd > visibleEnd + tolerance) {
+    const minimumScroll = Math.max(0, activeEnd - nav.clientWidth);
+    const itemBoundaries = [...nav.querySelectorAll('.nav-item')]
+      .flatMap(item => {
+        const rect = item.getBoundingClientRect();
+        const start = visibleStart + rect.left - navRect.left;
+        return [start, start + rect.width];
+      })
+      .filter(boundary => boundary >= minimumScroll - tolerance && boundary <= maxScroll + tolerance)
+      .sort((a, b) => a - b);
+    target = itemBoundaries[0] ?? minimumScroll;
   }
+  nav.scrollLeft = Math.max(0, Math.min(maxScroll, target));
 }
 
 function setView(name) {

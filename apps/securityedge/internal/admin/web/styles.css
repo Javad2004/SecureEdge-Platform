@@ -716,16 +716,19 @@ canvas {
     overflow-y:hidden;
     scrollbar-width:none;
     -ms-overflow-style:none;
-    overscroll-behavior-inline:contain;
-    scroll-snap-type:x proximity
+    overscroll-behavior-inline:contain
   }
   .sidebar nav::-webkit-scrollbar {
     display:none
   }
+  .sidebar nav::after {
+    content:"";
+    flex:0 0 40px;
+    pointer-events:none
+  }
   .nav-item {
     white-space:nowrap;
-    width:auto;
-    scroll-snap-align:start
+    width:auto
   }
   .sidebar-foot {
     display:grid;
@@ -798,6 +801,12 @@ canvas {
   }
   .table-wrap {
     margin:0 -16px -16px
+  }
+}
+@media(max-width:360px) {
+  .sidebar .nav-item {
+    padding-left:8px;
+    padding-right:8px
   }
 }
 

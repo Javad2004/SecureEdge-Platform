@@ -172,6 +172,8 @@ Admin API    127.0.0.1:9090
 
 These profiles trust forwarded client addresses only from the local SecurityEdge process. The full-platform Compose profile trusts only the fixed SecurityEdge container address `172.30.0.10`. Standalone profiles do not trust client-supplied forwarding headers.
 
+SecurityEdge's periodic data-plane connectivity check is a **synthetic operational probe**, not application traffic. Integrated EdgeProxy recognizes its reserved marker only when the request is a `HEAD` probe received directly from loopback or a configured trusted-proxy peer. Accepted probes bypass the shared cache and are excluded from application request/cache/upstream metrics, retained access/origin-attempt logs, scheduler selection/active counters, adaptive-latency EWMA, and Origin health transitions while still exercising a real Route and Origin. The marker is stripped before the Origin request is sent. An untrusted client that copies the marker is handled as ordinary application traffic, and SecurityEdge also strips client-supplied copies before forwarding accepted public requests. EdgeProxy's own active Origin health checker remains an out-of-band subsystem and does not pass through the application cache/request metric path.
+
 Start SecurityEdge separately by following [`../securityedge/README.md`](../securityedge/README.md).
 
 ## Routing
@@ -313,6 +315,8 @@ GET     /api/v1/logs
 DELETE  /api/v1/logs
 POST    /api/v1/cache/purge
 ```
+
+Request, cache-hit/miss, upstream-latency, Route, scheduler, and retained access-log telemetry describe **application traffic**. Synthetic SecurityEdge connectivity probes are deliberately excluded so a five-second dependency check cannot dilute the cache hit ratio, inflate request or MISS totals, skew upstream latency, or look like user traffic in the Dashboard. Origin health-check counters remain health telemetry by design and are separate from these application counters.
 
 Log-filter values are bounded before the in-memory ring is scanned: named filters accept at most 512 bytes and the free-text `q` search accepts at most 2,048 bytes. Search normalization is performed once per request rather than once per retained event, preventing an oversized authenticated query from amplifying CPU and allocation work across a large log store.
 

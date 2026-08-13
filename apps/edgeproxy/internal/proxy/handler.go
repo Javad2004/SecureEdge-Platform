@@ -207,6 +207,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	h.mu.RLock()
 	clients, routeTable, routeMap := h.clients, h.router, h.routes
 	h.mu.RUnlock()
+	operationalProbe := trustedOperationalProbe(req, clients)
+	// The marker is edge-internal control metadata. Never forward a client copy
+	// to an Origin, regardless of whether the directly connected peer was trusted.
+	req.Header.Del(internalProbeHeader)
+	if operationalProbe {
+		// Operational data-plane probes must exercise the route and Origin path
+		// without reading from or mutating the application cache.
+		req.Header.Set("Cache-Control", "no-store")
+		req.Header.Set("Pragma", "no-cache")
+		req = withOperationalProbe(req)
+	}
 	req = withResolvedClientIP(req, clients.Resolve(req))
 	match, ok := routeTable.Match(req)
 	if !ok {
@@ -225,7 +236,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		streamedBody = &countingReadCloser{ReadCloser: req.Body}
 		req.Body = streamedBody
 	}
-	finish := h.metrics.Begin(rt.cfg.Name, req.Method)
+	var finish func(metrics.RequestObservation)
+	if !operationalProbe {
+		finish = h.metrics.Begin(rt.cfg.Name, req.Method)
+	}
 	rw := &responseCapture{ResponseWriter: w}
 	result := requestResult{cacheStatus: "BYPASS"}
 	defer func() {
@@ -242,15 +256,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		if result.responseDuration > 0 {
 			duration = result.responseDuration
 		}
-		finish(metrics.RequestObservation{
-			Status:      status,
-			BytesIn:     bytesIn,
-			BytesOut:    bytesOut,
-			Duration:    duration,
-			ProxyError:  result.proxyError,
-			Retries:     result.retries,
-			CacheStatus: result.cacheStatus,
-		})
+		if finish != nil {
+			finish(metrics.RequestObservation{
+				Status:      status,
+				BytesIn:     bytesIn,
+				BytesOut:    bytesOut,
+				Duration:    duration,
+				ProxyError:  result.proxyError,
+				Retries:     result.retries,
+				CacheStatus: result.cacheStatus,
+			})
+		}
+		if operationalProbe {
+			return
+		}
 
 		level := "INFO"
 		if status >= 500 || result.proxyError {
@@ -333,6 +352,12 @@ func (h *Handler) handleRoute(w http.ResponseWriter, req *http.Request, rt *rout
 			return requestResult{cacheStatus: "BYPASS", errorMessage: err.Error()}
 		}
 	}
+	// A trusted synthetic connectivity probe must reach a real Origin, but it is
+	// not application traffic. Bypass cache lookup, fill serialization, and cache
+	// population explicitly rather than relying only on request cache headers.
+	if isOperationalProbe(req) {
+		return h.fetchAndServe(w, req, rt, id, nil, "BYPASS", false, started)
+	}
 	lookup, store, _ := requestCacheMode(req, rt.cfg.Cache)
 	if !lookup && !store {
 		return h.fetchAndServe(w, req, rt, id, nil, "BYPASS", false, started)
@@ -377,6 +402,7 @@ func (h *Handler) handleRoute(w http.ResponseWriter, req *http.Request, rt *rout
 
 func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *routeRuntime, id string, stale *cache.Entry, cacheStatus string, store bool, started time.Time) requestResult {
 	result := requestResult{cacheStatus: cacheStatus}
+	operationalProbe := isOperationalProbe(req)
 	ctx := req.Context()
 	upgradeRequest := hasProtocolUpgrade(req.Header)
 	if timeout := rt.cfg.Proxy.RequestTimeout.Duration; timeout > 0 && !upgradeRequest {
@@ -394,7 +420,12 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 	var activeNode *upstream
 	excluded := make(map[*upstream]bool)
 	for attempt := 0; attempt < attempts; attempt++ {
-		node := rt.pool.pick(excluded)
+		var node *upstream
+		if operationalProbe {
+			node = rt.pool.pickProbe(excluded)
+		} else {
+			node = rt.pool.pick(excluded)
+		}
 		if node == nil {
 			if lastErr == nil {
 				lastErr = errors.New("no eligible upstream available")
@@ -403,7 +434,9 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		}
 		outReq, err := cloneRequest(ctx, req, node, rt.cfg, id, rt.forwardedForHeader)
 		if err != nil {
-			rt.pool.releaseActive(node)
+			if !operationalProbe {
+				rt.pool.releaseActive(node)
+			}
 			lastErr = err
 			break
 		}
@@ -411,7 +444,9 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		started := time.Now()
 		resp, err = node.transport.RoundTrip(outReq)
 		elapsed := time.Since(started)
-		rt.pool.observe(node, elapsed)
+		if !operationalProbe {
+			rt.pool.observe(node, elapsed)
+		}
 		result.upstreamDuration += elapsed
 		result.upstreamCalls++
 		// Count only retry requests that actually reached RoundTrip. A route
@@ -433,22 +468,26 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 			attemptErr = fmt.Errorf("upstream returned %s", resp.Status)
 		}
 		timedOut := isTimeoutError(err)
-		h.metrics.RecordUpstream(rt.cfg.Name, node.url.String(), metrics.UpstreamObservation{
-			Status:   status,
-			Duration: elapsed,
-			Failed:   failed,
-			Timeout:  timedOut,
-			Retry:    attempt > 0,
-		})
-		h.recordUpstreamAttempt(req, rt.cfg.Name, id, node.url.String(), attempt+1, status, elapsed, attempt > 0, timedOut, attemptErr, failed)
+		if !operationalProbe {
+			h.metrics.RecordUpstream(rt.cfg.Name, node.url.String(), metrics.UpstreamObservation{
+				Status:   status,
+				Duration: elapsed,
+				Failed:   failed,
+				Timeout:  timedOut,
+				Retry:    attempt > 0,
+			})
+			h.recordUpstreamAttempt(req, rt.cfg.Name, id, node.url.String(), attempt+1, status, elapsed, attempt > 0, timedOut, attemptErr, failed)
+		}
 
 		if !failed {
 			activeNode = node
 			lastErr = nil
 			result.errorMessage = ""
-			setNodeHealth(node, true, healthChange{Upstream: node.url.String(), Healthy: true, Status: status, Duration: elapsed}, func(change healthChange) {
-				h.recordHealthChange(rt.cfg.Name, change)
-			})
+			if !operationalProbe {
+				setNodeHealth(node, true, healthChange{Upstream: node.url.String(), Healthy: true, Status: status, Duration: elapsed}, func(change healthChange) {
+					h.recordHealthChange(rt.cfg.Name, change)
+				})
+			}
 			break
 		}
 
@@ -456,7 +495,9 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		// indicate an origin failure. Preserve the origin's health and stop here:
 		// every retry would inherit the same already-terminated context.
 		if err != nil && req.Context().Err() != nil {
-			rt.pool.releaseActive(node)
+			if !operationalProbe {
+				rt.pool.releaseActive(node)
+			}
 			if resp != nil && resp.Body != nil {
 				_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 				_ = resp.Body.Close()
@@ -470,9 +511,11 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		lastErr = attemptErr
 		result.errorMessage = errorText(lastErr)
 		excluded[node] = true
-		setNodeHealth(node, false, healthChange{Upstream: node.url.String(), Healthy: false, Status: status, Duration: elapsed, Error: errorText(lastErr)}, func(change healthChange) {
-			h.recordHealthChange(rt.cfg.Name, change)
-		})
+		if !operationalProbe {
+			setNodeHealth(node, false, healthChange{Upstream: node.url.String(), Healthy: false, Status: status, Duration: elapsed, Error: errorText(lastErr)}, func(change healthChange) {
+				h.recordHealthChange(rt.cfg.Name, change)
+			})
+		}
 
 		canRetry := attempt+1 < attempts
 		if retryableResponse && !canRetry {
@@ -489,7 +532,9 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 			resp.Body.Close()
 			resp = nil
 		}
-		rt.pool.releaseActive(node)
+		if !operationalProbe {
+			rt.pool.releaseActive(node)
+		}
 
 		// The route-wide timeout applies to the whole request, not each retry. Once
 		// it expires, record the failed origin but do not attempt another origin
@@ -515,7 +560,7 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		}
 	}
 
-	if activeNode != nil {
+	if activeNode != nil && !operationalProbe {
 		defer rt.pool.releaseActive(activeNode)
 	}
 	if lastErr != nil || resp == nil {
@@ -526,14 +571,16 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		}
 		result.proxyError = true
 		result.errorMessage = errorText(lastErr)
-		h.logger.Error("upstream request failed",
-			"request_id", id,
-			"route", rt.cfg.Name,
-			"upstream", result.upstream,
-			"upstream_calls", result.upstreamCalls,
-			"retries", result.retries,
-			"error", lastErr,
-		)
+		if !operationalProbe {
+			h.logger.Error("upstream request failed",
+				"request_id", id,
+				"route", rt.cfg.Name,
+				"upstream", result.upstream,
+				"upstream_calls", result.upstreamCalls,
+				"retries", result.retries,
+				"error", lastErr,
+			)
+		}
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return result
 	}
@@ -613,7 +660,7 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 			ExpiresAt:  expiresAt,
 			StaleUntil: staleUntil,
 		}
-		if rt.cache.Set(cacheKey(req, rt.cfg.Cache), entry) {
+		if !operationalProbe && rt.cache.Set(cacheKey(req, rt.cfg.Cache), entry) {
 			h.metrics.RecordCacheStore(rt.cfg.Name)
 		}
 	}
@@ -900,6 +947,7 @@ func cloneRequest(ctx context.Context, in *http.Request, node *upstream, cfg *co
 	out.Close = false
 	out.Header = in.Header.Clone()
 	removeHopByHop(out.Header)
+	out.Header.Del(internalProbeHeader)
 	// Treat all inbound forwarding identity headers as untrusted. This edge
 	// reconstructs the canonical forwarding metadata below from the resolved
 	// client address and the actual incoming request.

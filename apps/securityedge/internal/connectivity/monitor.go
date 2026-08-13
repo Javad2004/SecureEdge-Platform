@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/edgeprobe"
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/routes"
 )
 
@@ -376,6 +377,7 @@ func probeDataPlaneHTTP(ctx context.Context, cfg config.Config, configuredRoutes
 	if target.host != "" {
 		req.Host = target.host
 	}
+	edgeprobe.Mark(req)
 	protocol := strings.ToLower(u.Scheme)
 	if protocol == "" {
 		protocol = "http"

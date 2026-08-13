@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/edgeprobe"
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/routes"
 )
 
@@ -218,6 +219,12 @@ func TestProbeDataPlaneHTTPUsesConfiguredWildcardRoute(t *testing.T) {
 		if r.Method != http.MethodHead || r.Host != "connectivity-probe.example.com" || r.URL.Path != "/api" {
 			http.NotFound(w, r)
 			return
+		}
+		if r.Header.Get(edgeprobe.HeaderName) != edgeprobe.HeaderValue || r.UserAgent() != edgeprobe.UserAgent {
+			t.Errorf("probe identity headers=%#v", r.Header)
+		}
+		if r.Header.Get("Cache-Control") != "no-store" || r.Header.Get("Pragma") != "no-cache" {
+			t.Errorf("probe cache policy=%#v", r.Header)
 		}
 		w.Header().Set("X-Request-ID", "matched-route")
 		w.Header().Set("Location", "/must-not-follow")

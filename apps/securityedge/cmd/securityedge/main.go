@@ -21,6 +21,7 @@ import (
 
 	securityedge "github.com/Javad2004/SecureEdge-Platform/apps/securityedge"
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/edgeprobe"
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/envfile"
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/gateway"
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/version"
@@ -451,6 +452,7 @@ func newReverseProxy(target *url.URL, cfg config.ServerConfig, logger *slog.Logg
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			clientIP := gateway.ResolvedClientIP(pr.In.Context())
 			removeForwardingIdentityHeaders(pr.Out.Header, cfg.ForwardedForHeader)
+			edgeprobe.Strip(pr.Out.Header)
 			pr.SetURL(target)
 			pr.SetXForwarded()
 			if net.ParseIP(clientIP) != nil {

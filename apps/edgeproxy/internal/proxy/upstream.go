@@ -106,6 +106,21 @@ func newUpstreamPool(route config.RouteConfig) (*upstreamPool, error) {
 	return pool, nil
 }
 
+func (p *upstreamPool) pickProbe(exclude map[*upstream]bool) *upstream {
+	candidates := p.eligible(exclude, true)
+	if len(candidates) == 0 {
+		candidates = p.eligible(exclude, false)
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	// Connectivity probes deliberately avoid mutating scheduler weights,
+	// selection counters, active-request counts, EWMA latency, or health state.
+	// Their job is to verify that one configured route can reach an Origin, not
+	// to participate in production load-balancing decisions.
+	return candidates[0]
+}
+
 func (p *upstreamPool) pick(exclude map[*upstream]bool) *upstream {
 	candidates := p.eligible(exclude, true)
 	if len(candidates) == 0 {

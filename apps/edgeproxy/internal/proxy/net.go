@@ -110,3 +110,46 @@ func resolvedClientIP(req *http.Request) string {
 	value, _ := req.Context().Value(resolvedClientIPKey{}).(string)
 	return strings.TrimSpace(value)
 }
+
+const (
+	// This wire contract is shared with SecurityEdge's internal connectivity
+	// monitor. A marker is trusted only from loopback or a configured trusted
+	// proxy peer, and it is always stripped before any request reaches an Origin.
+	internalProbeHeader    = "X-SecureEdge-Internal-Probe"
+	internalProbeValue     = "connectivity-v1"
+	internalProbeUserAgent = "SecurityEdge-Connectivity-Probe/1.0"
+)
+
+type operationalProbeKey struct{}
+
+func trustedOperationalProbe(req *http.Request, resolver *clientResolver) bool {
+	if req == nil || req.Method != http.MethodHead {
+		return false
+	}
+	if strings.TrimSpace(req.Header.Get(internalProbeHeader)) != internalProbeValue || strings.TrimSpace(req.UserAgent()) != internalProbeUserAgent {
+		return false
+	}
+	peer := remoteIP(req.RemoteAddr)
+	if peer == nil {
+		return false
+	}
+	if peer.IsLoopback() {
+		return true
+	}
+	return resolver != nil && trustedIP(peer, resolver.trusted)
+}
+
+func withOperationalProbe(req *http.Request) *http.Request {
+	if req == nil {
+		return nil
+	}
+	return req.WithContext(context.WithValue(req.Context(), operationalProbeKey{}, true))
+}
+
+func isOperationalProbe(req *http.Request) bool {
+	if req == nil {
+		return false
+	}
+	value, _ := req.Context().Value(operationalProbeKey{}).(bool)
+	return value
+}

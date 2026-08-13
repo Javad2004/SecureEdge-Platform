@@ -18,6 +18,7 @@ import (
 
 	securityedge "github.com/Javad2004/SecureEdge-Platform/apps/securityedge"
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/edgeprobe"
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/envfile"
 )
 
@@ -257,6 +258,34 @@ func TestGatewayRemovesConfiguredClientIPHeader(t *testing.T) {
 	}
 	if got := headers.Get("X-Forwarded-For"); got == "198.51.100.25" {
 		t.Fatalf("unresolved client-supplied address was propagated: %q", got)
+	}
+}
+
+func TestGatewayStripsClientSuppliedOperationalProbeMarker(t *testing.T) {
+	seen := make(chan http.Header, 1)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Clone()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer origin.Close()
+
+	target, err := url.Parse(origin.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := newReverseProxy(target, config.Default().Server, slog.Default())
+	req := httptest.NewRequest(http.MethodHead, "http://securityedge.test/", nil)
+	req.Header.Set(edgeprobe.HeaderName, edgeprobe.HeaderValue)
+	req.Header.Set("User-Agent", edgeprobe.UserAgent)
+	response := httptest.NewRecorder()
+	proxy.ServeHTTP(response, req)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+
+	headers := <-seen
+	if got := headers.Get(edgeprobe.HeaderName); got != "" {
+		t.Fatalf("client-supplied operational probe marker leaked to EdgeProxy: %q", got)
 	}
 }
 

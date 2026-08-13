@@ -99,6 +99,168 @@ func TestProxyCacheMissThenHit(t *testing.T) {
 	}
 }
 
+func TestTrustedOperationalProbeDoesNotPolluteApplicationTelemetry(t *testing.T) {
+	var calls atomic.Int64
+	var sawMarker atomic.Bool
+	var sawNoStore atomic.Bool
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Header.Get(internalProbeHeader) != "" {
+			sawMarker.Store(true)
+		}
+		if r.Header.Get("Cache-Control") == "no-store" && r.Header.Get("Pragma") == "no-cache" {
+			sawNoStore.Store(true)
+		}
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		_, _ = io.WriteString(w, "origin-body")
+	}))
+	defer origin.Close()
+
+	registry := metrics.New()
+	logs := accesslog.New(100)
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), registry, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	probe := httptest.NewRequest(http.MethodHead, "http://proxy.test/data", nil)
+	probe.RemoteAddr = "127.0.0.1:43210"
+	probe.Header.Set(internalProbeHeader, internalProbeValue)
+	probe.Header.Set("User-Agent", internalProbeUserAgent)
+	probeResponse := httptest.NewRecorder()
+	h.ServeHTTP(probeResponse, probe)
+	if probeResponse.Code != http.StatusOK || probeResponse.Header().Get("X-Cache") != "BYPASS" {
+		t.Fatalf("probe status=%d cache=%q", probeResponse.Code, probeResponse.Header().Get("X-Cache"))
+	}
+	if sawMarker.Load() {
+		t.Fatal("operational probe marker leaked to Origin")
+	}
+	if !sawNoStore.Load() {
+		t.Fatal("operational probe did not reach Origin with a no-store cache policy")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("origin calls after probe=%d, want 1", calls.Load())
+	}
+
+	snapshot := registry.Snapshot()
+	if snapshot.Total.Requests != 0 || snapshot.Total.CacheHits != 0 || snapshot.Total.CacheMisses != 0 || snapshot.Total.CacheBypasses != 0 || snapshot.Total.UpstreamCalls != 0 {
+		t.Fatalf("operational probe polluted application metrics: %#v", snapshot.Total)
+	}
+	if len(snapshot.Routes) != 0 || len(snapshot.Upstreams) != 0 {
+		t.Fatalf("operational probe created route/upstream telemetry: routes=%#v upstreams=%#v", snapshot.Routes, snapshot.Upstreams)
+	}
+	if stats := logs.Stats(); stats.Retained != 0 {
+		t.Fatalf("operational probe polluted access log: %#v", stats)
+	}
+	node := h.routes["test"].pool.nodes[0]
+	if node.selections.Load() != 0 || node.active.Load() != 0 || node.ewmaMS() != 0 {
+		t.Fatalf("operational probe polluted scheduler state: selections=%d active=%d ewma=%f", node.selections.Load(), node.active.Load(), node.ewmaMS())
+	}
+
+	for i, wantCache := range []string{"MISS", "HIT"} {
+		req := httptest.NewRequest(http.MethodGet, "http://proxy.test/data", nil)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK || rr.Header().Get("X-Cache") != wantCache {
+			t.Fatalf("client request %d status=%d cache=%q", i, rr.Code, rr.Header().Get("X-Cache"))
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("origin calls after client traffic=%d, want 2", calls.Load())
+	}
+	snapshot = registry.Snapshot()
+	if snapshot.Total.Requests != 2 || snapshot.Total.CacheHits != 1 || snapshot.Total.CacheMisses != 1 || snapshot.Total.CacheBypasses != 0 || snapshot.Total.UpstreamCalls != 1 {
+		t.Fatalf("client telemetry after probe=%#v", snapshot.Total)
+	}
+	if got := snapshot.Total.Methods[http.MethodGet]; got != 2 {
+		t.Fatalf("GET method count=%d, want 2", got)
+	}
+	if node.selections.Load() != 1 {
+		t.Fatalf("scheduler selections=%d, want only the cache-miss client request", node.selections.Load())
+	}
+}
+
+func TestTrustedOperationalProbeFailureDoesNotMutateOriginHealth(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer origin.Close()
+
+	registry := metrics.New()
+	logs := accesslog.New(100)
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), registry, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	node := h.routes["test"].pool.nodes[0]
+	if !node.healthy.Load() {
+		t.Fatal("test origin should start healthy when active health checks are disabled")
+	}
+
+	probe := httptest.NewRequest(http.MethodHead, "http://proxy.test/data", nil)
+	probe.RemoteAddr = "127.0.0.1:43210"
+	probe.Header.Set(internalProbeHeader, internalProbeValue)
+	probe.Header.Set("User-Agent", internalProbeUserAgent)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, probe)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d, want %d", rr.Code, http.StatusServiceUnavailable)
+	}
+	if !node.healthy.Load() {
+		t.Fatal("synthetic connectivity failure changed EdgeProxy origin-health state")
+	}
+	if node.healthFailures.Load() != 0 || node.healthRecoveries.Load() != 0 {
+		t.Fatalf("synthetic connectivity failure changed health counters: failures=%d recoveries=%d", node.healthFailures.Load(), node.healthRecoveries.Load())
+	}
+	if node.selections.Load() != 0 || node.active.Load() != 0 || node.ewmaMS() != 0 {
+		t.Fatalf("synthetic connectivity failure changed scheduler telemetry: selections=%d active=%d ewma=%f", node.selections.Load(), node.active.Load(), node.ewmaMS())
+	}
+	snapshot := registry.Snapshot()
+	if snapshot.Total.Requests != 0 || snapshot.Total.CacheHits != 0 || snapshot.Total.CacheMisses != 0 || snapshot.Total.CacheBypasses != 0 || snapshot.Total.UpstreamCalls != 0 {
+		t.Fatalf("synthetic connectivity failure polluted application metrics: %#v", snapshot.Total)
+	}
+	if stats := logs.Stats(); stats.Retained != 0 {
+		t.Fatalf("synthetic connectivity failure polluted retained logs: %#v", stats)
+	}
+}
+
+func TestUntrustedClientCannotHideTrafficWithOperationalProbeMarker(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get(internalProbeHeader); got != "" {
+			t.Errorf("reserved probe marker leaked to Origin: %q", got)
+		}
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer origin.Close()
+
+	registry := metrics.New()
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), registry, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	req := httptest.NewRequest(http.MethodHead, "http://proxy.test/data", nil)
+	req.RemoteAddr = "203.0.113.25:43210"
+	req.Header.Set(internalProbeHeader, internalProbeValue)
+	req.Header.Set("User-Agent", internalProbeUserAgent)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rr.Code, rr.Body.String())
+	}
+
+	snapshot := registry.Snapshot()
+	if snapshot.Total.Requests != 1 || snapshot.Total.CacheMisses != 1 || snapshot.Total.UpstreamCalls != 1 {
+		t.Fatalf("untrusted marker incorrectly hid client telemetry: %#v", snapshot.Total)
+	}
+}
+
 func TestProtocolUpgradeClearsHijackedServerDeadline(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	tracked := &deadlineTrackingConn{Conn: serverConn}

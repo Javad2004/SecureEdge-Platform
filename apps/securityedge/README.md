@@ -8,7 +8,7 @@ This README assumes commands are executed from:
 apps/securityedge
 ```
 
-The active deployment mode is **standalone non-embedded gateway mode**. EdgeProxy remains an independently executable application and its source code is not modified.
+The active deployment mode is **standalone non-embedded gateway mode**. EdgeProxy remains an independently executable application; SecurityEdge does not embed EdgeProxy into its own process.
 
 ## Architecture
 
@@ -329,6 +329,8 @@ DNS Resolution → SecurityEdge → EdgeProxy → Routes → Origins
 ```
 
 The dashboard reports component status, probe latency, HTTP status, last success or failure, consecutive failures, route readiness, Origin health, and transition history. It also samples a bounded operational timeline containing SecurityEdge rejection rates, EdgeProxy request/cache/latency signals, and condensed per-Route/per-Origin counters. Derived EdgeProxy request rates are marked available only when two adjacent telemetry samples have valid, monotonic counters; an observability outage, service restart/counter reset, or newly observed Route therefore creates an explicit rate gap instead of a synthetic zero or spike in the trend chart. Existing version-1.0 history files remain readable, but their EdgeProxy rate-validity metadata is unknown and is therefore rendered as a gap; new samples resume the trend once two contiguous samples from the same EdgeProxy process are available. New files persist the explicit rate-validity and EdgeProxy process-start metadata in schema version 1.1. History is bounded by both sample count and a 16 MiB serialized in-memory budget; old samples are evicted first, and an individually oversized topology sample retains its aggregate security/EdgeProxy counters while marking Route details as truncated. The history API reports both retained and maximum retained bytes. When `admin.telemetry_history.file_path` is configured, samples are replaced atomically and restored after restart; the persisted document remains capped at 32 MiB, and a corrupt history file is reported as degraded but never prevents service startup.
+
+The periodic SecurityEdge → EdgeProxy data-plane check uses a reserved operational-probe marker together with `Cache-Control: no-store`. EdgeProxy honors that marker only for the expected `HEAD` probe received directly from loopback or a configured trusted-proxy peer, strips it before contacting the Origin, and excludes the synthetic request from application request/cache/upstream metrics, retained access/origin-attempt logs, scheduler/EWMA state, and Origin health transitions. This keeps the Overview cache hit ratio and request-rate history representative of real application traffic even when connectivity checks run every five seconds. SecurityEdge strips any client-supplied copy of the marker from normal gateway traffic, and EdgeProxy treats a matching marker from an untrusted peer as ordinary metered traffic rather than as a probe. Deploy matching SecurityEdge and EdgeProxy binaries together so the reserved probe contract and telemetry semantics remain aligned during upgrades.
 
 ### Recent Client Traffic
 

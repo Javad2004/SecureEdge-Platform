@@ -219,12 +219,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		req = withOperationalProbe(req)
 	}
 	req = withResolvedClientIP(req, clients.Resolve(req))
-	match, ok := routeTable.Match(req)
-	if !ok {
-		http.Error(w, "no route configured for this host and path", http.StatusNotFound)
-		return
+	match, matched := routeTable.Match(req)
+	routeName := "__unmatched__"
+	var rt *routeRuntime
+	if matched {
+		rt = routeMap[match.Route.Name]
+		routeName = rt.cfg.Name
 	}
-	rt := routeMap[match.Route.Name]
 	id := requestID(req)
 	w.Header().Set("X-Request-ID", id)
 
@@ -238,7 +239,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	var finish func(metrics.RequestObservation)
 	if !operationalProbe {
-		finish = h.metrics.Begin(rt.cfg.Name, req.Method)
+		finish = h.metrics.Begin(routeName, req.Method)
 	}
 	rw := &responseCapture{ResponseWriter: w}
 	result := requestResult{cacheStatus: "BYPASS"}
@@ -293,7 +294,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				Host:               req.Host,
 				Path:               req.URL.EscapedPath(),
 				Query:              sanitizedQuery(req),
-				Route:              rt.cfg.Name,
+				Route:              routeName,
 				Status:             status,
 				BytesIn:            bytesIn,
 				BytesOut:           bytesOut,
@@ -319,7 +320,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			"host", req.Host,
 			"path", req.URL.EscapedPath(),
 			"query", sanitizedQuery(req),
-			"route", rt.cfg.Name,
+			"route", routeName,
 			"status", status,
 			"bytes_in", bytesIn,
 			"bytes_out", bytesOut,
@@ -335,6 +336,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		)
 	}()
 
+	if !matched {
+		http.Error(rw, "no route configured for this host and path", http.StatusNotFound)
+		return
+	}
 	result = h.handleRoute(rw, req, rt, id, started)
 }
 

@@ -261,6 +261,13 @@ try {
       const payloads = ${JSON.stringify(fixture.responses)};
       window.__fixtureRequests = [];
       window.__fixtureFetchCounts = {};
+      window.__fixtureIntervals = [];
+      const fixtureSetInterval = window.setInterval.bind(window);
+      window.setInterval = (handler, timeout, ...args) => {
+        const id = fixtureSetInterval(handler, timeout, ...args);
+        window.__fixtureIntervals.push(id);
+        return id;
+      };
       window.__fixtureActiveFetches = 0;
       window.__fixtureMaxActiveFetches = 0;
       window.fetch = async (input, init = {}) => {
@@ -1304,6 +1311,13 @@ try {
   let refreshCoalescing = null;
   if (fixtureRoot) {
     refreshCoalescing = await cdp.evaluate(`(async () => {
+      // The production dashboard has a 5-second periodic refresh. Stop fixture
+      // intervals before this timing-sensitive contract so an unrelated timer
+      // cannot start a third generation after the manual refresh promise settles.
+      // This isolates the behavior under test: three concurrent triggers must
+      // serialize into the active generation plus one queued generation.
+      (window.__fixtureIntervals || []).forEach(id => clearInterval(id));
+      window.__fixtureIntervals = [];
       const before = window.__fixtureFetchCounts['/api/v1/dashboard/overview'] || 0;
       await Promise.all([refreshAll(), refreshAll(), refreshAll()]);
       const after = window.__fixtureFetchCounts['/api/v1/dashboard/overview'] || 0;

@@ -181,6 +181,83 @@ func TestTrustedOperationalProbeDoesNotPolluteApplicationTelemetry(t *testing.T)
 	}
 }
 
+func TestUnmatchedRequestIsIncludedInApplicationTelemetry(t *testing.T) {
+	registry := metrics.New()
+	logs := accesslog.New(100)
+	h, err := NewHandler(testConfig("http://127.0.0.1:1"), slog.Default(), registry, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "http://unknown.test/missing", nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want %d", rr.Code, http.StatusNotFound)
+	}
+	requestID := rr.Header().Get("X-Request-ID")
+	if requestID == "" {
+		t.Fatal("unmatched response is missing X-Request-ID")
+	}
+
+	snapshot := registry.Snapshot()
+	total := snapshot.Total
+	if total.Requests != 1 || total.Success != 0 || total.ClientErrors != 1 || total.ServerErrors != 0 || total.ProxyErrors != 0 {
+		t.Fatalf("unmatched request was not classified as one client-facing 404: %#v", total)
+	}
+	if total.SuccessRate != 0 || total.ErrorRate != 1 || total.ResponseLatencyMS.Count != 1 || total.StatusCodes["404"] != 1 || total.Methods[http.MethodGet] != 1 {
+		t.Fatalf("unmatched request derived telemetry is inconsistent: %#v", total)
+	}
+	if total.UpstreamCalls != 0 || total.CacheHits != 0 || total.CacheMisses != 0 || total.CacheStale != 0 {
+		t.Fatalf("unmatched request unexpectedly created upstream/cache activity: %#v", total)
+	}
+	unmatched, ok := snapshot.Routes["__unmatched__"]
+	if !ok || unmatched.Requests != 1 || unmatched.ClientErrors != 1 || unmatched.StatusCodes["404"] != 1 {
+		t.Fatalf("unmatched pseudo-route telemetry is missing or inconsistent: %#v", snapshot.Routes)
+	}
+
+	entries := logs.Query(accesslog.Filter{Event: "request_completed", Limit: 10}).Entries
+	if len(entries) != 1 {
+		t.Fatalf("unmatched request access logs=%d, want 1", len(entries))
+	}
+	entry := entries[0]
+	if entry.RequestID != requestID || entry.Route != "__unmatched__" || entry.Status != http.StatusNotFound || entry.Level != "WARN" || entry.ProxyError || entry.Canceled {
+		t.Fatalf("unexpected unmatched access log: %#v", entry)
+	}
+}
+
+func TestTrustedUnmatchedOperationalProbeDoesNotPolluteTelemetry(t *testing.T) {
+	registry := metrics.New()
+	logs := accesslog.New(100)
+	h, err := NewHandler(testConfig("http://127.0.0.1:1"), slog.Default(), registry, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	probe := httptest.NewRequest(http.MethodHead, "http://unknown.test/missing", nil)
+	probe.RemoteAddr = "127.0.0.1:43210"
+	probe.Header.Set(internalProbeHeader, internalProbeValue)
+	probe.Header.Set("User-Agent", internalProbeUserAgent)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, probe)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want %d", rr.Code, http.StatusNotFound)
+	}
+	if rr.Header().Get("X-Request-ID") == "" {
+		t.Fatal("unmatched operational probe response is missing X-Request-ID")
+	}
+	if snapshot := registry.Snapshot(); snapshot.Total.Requests != 0 || len(snapshot.Routes) != 0 {
+		t.Fatalf("trusted unmatched operational probe polluted metrics: %#v", snapshot)
+	}
+	if stats := logs.Stats(); stats.Retained != 0 {
+		t.Fatalf("trusted unmatched operational probe polluted access logs: %#v", stats)
+	}
+}
+
 func TestTrustedOperationalProbeFailureDoesNotMutateOriginHealth(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)

@@ -255,9 +255,12 @@ func writePromCounters(b *strings.Builder, labels string, c CounterSnapshot) {
 		labels = "{" + labels + "}"
 	}
 	values := map[string]uint64{
-		"requests_total": c.Requests, "canceled_requests_total": c.CanceledRequests, "allowed_total": c.Allowed, "blocked_total": c.Blocked,
-		"rate_limited_total": c.RateLimited, "overload_rejected_total": c.OverloadRejected,
-		"banned_rejected_total": c.BannedRejected, "detections_total": c.Detections, "errors_total": c.Errors,
+		"requests_total": c.Requests, "canceled_requests_total": c.CanceledRequests,
+		"allowed_total": c.Allowed, "blocked_total": c.Blocked, "logged_total": c.Logged,
+		"rate_limited_total": c.RateLimited, "global_rate_limited_total": c.GlobalRateLimited, "client_rate_limited_total": c.ClientRateLimited,
+		"overload_rejected_total": c.OverloadRejected, "body_too_large_total": c.BodyTooLarge, "banned_rejected_total": c.BannedRejected,
+		"auto_bans_total": c.AutoBans, "detections_total": c.Detections, "errors_total": c.Errors,
+		"inspected_bodies_total": c.InspectedBodies, "truncated_bodies_total": c.TruncatedBodies,
 	}
 	keys := make([]string, 0, len(values))
 	for key := range values {

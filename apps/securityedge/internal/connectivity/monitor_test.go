@@ -20,8 +20,9 @@ import (
 )
 
 type fakeSource struct {
-	cfg      config.Config
-	edgeDown bool
+	cfg        config.Config
+	edgeDown   bool
+	metricsRaw json.RawMessage
 }
 
 func (f *fakeSource) Config() config.Config { return f.cfg }
@@ -40,6 +41,9 @@ func (f *fakeSource) EdgeJSON(_ context.Context, _ string, path string, _ url.Va
 	case "/api/v1/status":
 		return json.RawMessage(`{"routes":[{"name":"demo-app","ready":true,"upstreams":[{"url":"http://origin:9000","healthy":true}]}]}`), http.StatusOK, nil
 	case "/api/v1/metrics":
+		if f.metricsRaw != nil {
+			return f.metricsRaw, http.StatusOK, nil
+		}
 		return json.RawMessage(`{"schema_version":"2.0","uptime_seconds":42}`), http.StatusOK, nil
 	default:
 		return json.RawMessage(`{"status":"ok"}`), http.StatusOK, nil
@@ -124,6 +128,41 @@ func TestMonitorHealthySnapshot(t *testing.T) {
 		if component.Status != StatusHealthy {
 			t.Fatalf("component %s=%s error=%s", component.ID, component.Status, component.Error)
 		}
+	}
+}
+
+func TestMonitorDegradesMetricsWithoutDeclaredSchema(t *testing.T) {
+	dataPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead || r.URL.Path != "/" || r.Host != "project.test" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("X-Request-ID", "connectivity-test")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer dataPlane.Close()
+
+	source := &fakeSource{
+		cfg:        healthyConfig(t, dataPlane),
+		metricsRaw: json.RawMessage(`{"uptime_seconds":42}`),
+	}
+	snapshot := New(source).Snapshot(context.Background(), true)
+
+	var metricsComponent Component
+	for _, component := range snapshot.Components {
+		if component.ID == "edgeproxy_metrics" {
+			metricsComponent = component
+			break
+		}
+	}
+	if metricsComponent.ID == "" {
+		t.Fatal("EdgeProxy metrics component missing")
+	}
+	if metricsComponent.Status != StatusDegraded || !strings.Contains(metricsComponent.Message, "schema version") {
+		t.Fatalf("metrics component=%#v, want degraded schema error", metricsComponent)
+	}
+	if snapshot.ObservabilityStatus != StatusDegraded || snapshot.EdgeProxyConnectionStatus != StatusDegraded {
+		t.Fatalf("invalid metrics schema was reported healthy: observability=%s edge=%s", snapshot.ObservabilityStatus, snapshot.EdgeProxyConnectionStatus)
 	}
 }
 

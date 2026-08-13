@@ -15,8 +15,19 @@ func TestSnapshotAndPrometheus(t *testing.T) {
 	if s.Total.GlobalRateLimited != 1 || s.Total.ClientRateLimited != 0 || s.Total.Latency.P50MS <= 0 {
 		t.Fatalf("unexpected snapshot: %#v", s.Total)
 	}
-	if text := r.Prometheus(); !strings.Contains(text, "securityedge_rate_limited_total") || !strings.Contains(text, "securityedge_canceled_requests_total") || !strings.Contains(text, `route="demo"`) {
-		t.Fatalf("unexpected prometheus: %s", text)
+	text := r.Prometheus()
+	for _, metric := range []string{
+		"securityedge_requests_total", "securityedge_canceled_requests_total", "securityedge_allowed_total", "securityedge_blocked_total",
+		"securityedge_logged_total", "securityedge_rate_limited_total", "securityedge_global_rate_limited_total", "securityedge_client_rate_limited_total",
+		"securityedge_overload_rejected_total", "securityedge_body_too_large_total", "securityedge_banned_rejected_total", "securityedge_auto_bans_total",
+		"securityedge_detections_total", "securityedge_errors_total", "securityedge_inspected_bodies_total", "securityedge_truncated_bodies_total",
+	} {
+		if !strings.Contains(text, metric) {
+			t.Fatalf("Prometheus output missing %s: %s", metric, text)
+		}
+	}
+	if !strings.Contains(text, `securityedge_global_rate_limited_total 1`) || !strings.Contains(text, `securityedge_global_rate_limited_total{route="demo"} 1`) || !strings.Contains(text, `route="demo"`) {
+		t.Fatalf("Prometheus rate-limit scope or route labels are inconsistent: %s", text)
 	}
 }
 

@@ -399,7 +399,11 @@ func (s *telemetryHistoryStore) load() error {
 			valid = append(valid, sample)
 		}
 	}
-	sort.SliceStable(valid, func(i, j int) bool { return valid[i].GeneratedAt < valid[j].GeneratedAt })
+	sort.SliceStable(valid, func(i, j int) bool {
+		left, _ := time.Parse(time.RFC3339Nano, valid[i].GeneratedAt)
+		right, _ := time.Parse(time.RFC3339Nano, valid[j].GeneratedAt)
+		return left.Before(right)
+	})
 	for _, sample := range valid {
 		s.appendPointLocked(sample)
 	}

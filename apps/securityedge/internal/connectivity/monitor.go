@@ -480,6 +480,10 @@ func (m *Monitor) probeEdgeMetrics(ctx context.Context, cfg config.Config) probe
 		if err := json.Unmarshal(raw, &payload); err != nil {
 			return StatusDegraded, "EdgeProxy metrics response could not be parsed", map[string]any{"parse_error": err.Error()}
 		}
+		payload.SchemaVersion = strings.TrimSpace(payload.SchemaVersion)
+		if payload.SchemaVersion == "" {
+			return StatusDegraded, "EdgeProxy metrics response did not declare a schema version", map[string]any{"uptime_seconds": payload.UptimeSeconds}
+		}
 		return StatusHealthy, "EdgeProxy metrics and cache telemetry are available", map[string]any{"schema_version": payload.SchemaVersion, "uptime_seconds": payload.UptimeSeconds}
 	})
 }

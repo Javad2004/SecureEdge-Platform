@@ -698,6 +698,38 @@ func TestTelemetryHistoryLoadsPreV13SecurityRatesConservatively(t *testing.T) {
 	}
 }
 
+func TestTelemetryHistoryLoadsRFC3339NanoSamplesChronologically(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.json")
+	document := telemetryHistoryDocument{
+		SchemaVersion: "1.5",
+		Samples: []telemetryHistoryPoint{
+			{GeneratedAt: "2026-08-13T12:00:00Z", Security: telemetrySecurityHistoryPoint{Requests: 1}},
+			{GeneratedAt: "2026-08-13T12:00:00.1Z", Security: telemetrySecurityHistoryPoint{Requests: 2}},
+		},
+	}
+	data, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{Duration: time.Second}, FilePath: path,
+	})
+	loaded := store.snapshot(10).Samples
+	if len(loaded) != 2 {
+		t.Fatalf("history samples=%d, want 2", len(loaded))
+	}
+	if loaded[0].GeneratedAt != "2026-08-13T12:00:00Z" || loaded[1].GeneratedAt != "2026-08-13T12:00:00.1Z" {
+		t.Fatalf("history loaded out of chronological order: %#v", loaded)
+	}
+	if got := store.lastObserved.UTC(); !got.Equal(time.Date(2026, 8, 13, 12, 0, 0, 100_000_000, time.UTC)) {
+		t.Fatalf("lastObserved=%s, want latest RFC3339Nano sample", got.Format(time.RFC3339Nano))
+	}
+}
+
 func TestTelemetryHistoryEndpointValidatesLimit(t *testing.T) {
 	server := &Server{history: newTelemetryHistoryStore(config.TelemetryHistoryConfig{
 		Enabled:        true,

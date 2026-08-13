@@ -657,6 +657,40 @@ try {
     }
   }
 
+  let clientCanceledRequestContract = null;
+  if (fixtureRoot) {
+    clientCanceledRequestContract = await cdp.evaluate(`(() => {
+      const previous = state.overview;
+      const candidate = structuredClone(previous);
+      const routeName = Object.keys(candidate.edgeproxy_metrics?.routes || {})[0];
+      if (!routeName) return {routeName:'', text:''};
+      const metric = candidate.edgeproxy_metrics.routes[routeName];
+      metric.requests = 1;
+      metric.canceled_requests = 1;
+      metric.success = 0;
+      metric.client_errors = 0;
+      metric.server_errors = 0;
+      metric.proxy_errors = 0;
+      metric.success_rate = 0.75;
+      metric.error_rate = 0.25;
+      metric.response_latency_ms = {count:0, average:99, minimum:99, maximum:99, p50:99, p95:99, p99:99, distribution:[]};
+      state.overview = candidate;
+      renderRoutes();
+      const text = document.getElementById('route-telemetry-table').textContent.replace(/\\s+/g,' ').trim();
+      state.overview = previous;
+      renderAll();
+      return {routeName, text};
+    })()`);
+    if (!clientCanceledRequestContract.routeName ||
+        !clientCanceledRequestContract.text.includes('1 canceled · no completed responses') ||
+        !clientCanceledRequestContract.text.includes('— / —') ||
+        clientCanceledRequestContract.text.includes('75.0%') ||
+        clientCanceledRequestContract.text.includes('25.0%') ||
+        clientCanceledRequestContract.text.includes('99.00 ms')) {
+      throw new Error(`Client-canceled requests polluted completed-outcome telemetry rendering: ${JSON.stringify(clientCanceledRequestContract)}`);
+    }
+  }
+
   let telemetryTrendGapContract = null;
   if (fixtureRoot) {
     telemetryTrendGapContract = await cdp.evaluate(`(() => {
@@ -751,6 +785,8 @@ try {
 
       for (const metric of Object.values(edgeMetrics.routes || {})) {
         metric.requests = 0;
+        metric.canceled_requests = 0;
+        metric.success = 0;
         metric.success_rate = 1;
         metric.error_rate = 1;
         metric.client_errors = 0;
@@ -1789,7 +1825,7 @@ try {
     connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
     authentication_ui_contract:authenticationUIContract, telemetry_availability_contract:telemetryAvailabilityContract,
-    client_facing_error_contract:clientFacingErrorContract, telemetry_trend_gap_contract:telemetryTrendGapContract,
+    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, telemetry_trend_gap_contract:telemetryTrendGapContract,
     undefined_metric_rendering_contract:undefinedMetricRenderingContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
   }, null, 2));
 } catch (error) {

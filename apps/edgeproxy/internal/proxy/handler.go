@@ -248,8 +248,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 		bytesIn = saturatingAddUint64(bytesIn, result.tunnelBytesIn)
 		bytesOut := saturatingAddUint64(uint64(maxInt64(rw.bytes, 0)), result.tunnelBytesOut)
+		canceled := result.clientCanceled
 		status := rw.status
-		if status == 0 {
+		if status == 0 && !canceled {
 			status = http.StatusOK
 		}
 		duration := time.Since(started)
@@ -259,6 +260,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		if finish != nil {
 			finish(metrics.RequestObservation{
 				Status:      status,
+				Canceled:    canceled,
 				BytesIn:     bytesIn,
 				BytesOut:    bytesOut,
 				Duration:    duration,
@@ -272,7 +274,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 
 		level := "INFO"
-		if status >= 500 || result.proxyError {
+		message := "client request completed"
+		if canceled {
+			message = "client request canceled"
+		} else if status >= 500 || result.proxyError {
 			level = "ERROR"
 		} else if status >= 400 {
 			level = "WARN"
@@ -281,7 +286,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			h.logs.Append(accesslog.Entry{
 				Level:              level,
 				Event:              "request_completed",
-				Message:            "client request completed",
+				Message:            message,
 				RequestID:          id,
 				ClientIP:           clientIP(req),
 				Method:             req.Method,
@@ -300,6 +305,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				UpstreamCalls:      result.upstreamCalls,
 				Retries:            result.retries,
 				ProxyError:         result.proxyError,
+				Canceled:           canceled,
 				Error:              result.errorMessage,
 				UserAgent:          req.UserAgent(),
 				Tags:               []string{"access", "proxy"},
@@ -325,6 +331,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			"cache", result.cacheStatus,
 			"retries", result.retries,
 			"proxy_error", result.proxyError,
+			"canceled", canceled,
 		)
 	}()
 
@@ -342,6 +349,7 @@ type requestResult struct {
 	tunnelBytesOut   uint64
 	responseDuration time.Duration
 	proxyError       bool
+	clientCanceled   bool
 	errorMessage     string
 }
 
@@ -370,8 +378,11 @@ func (h *Handler) handleRoute(w http.ResponseWriter, req *http.Request, rt *rout
 		entry, fresh, isStale := rt.cache.Get(key, now)
 		allowed := requestAllowsCachedEntry(req, entry, now)
 		if fresh && allowed {
-			serveCacheEntry(w, req, entry, "HIT", now)
-			return requestResult{cacheStatus: "HIT"}
+			result := requestResult{cacheStatus: "HIT"}
+			if err := serveCacheEntry(w, req, entry, "HIT", now); err != nil {
+				h.recordResponseCopyError(&result, req, rt.cfg.Name, id, err)
+			}
+			return result
 		}
 		if isStale && allowed {
 			stale = &entry
@@ -390,8 +401,11 @@ func (h *Handler) handleRoute(w http.ResponseWriter, req *http.Request, rt *rout
 		entry, fresh, isStale := rt.cache.Get(key, now)
 		allowed := requestAllowsCachedEntry(req, entry, now)
 		if fresh && allowed {
-			serveCacheEntry(w, req, entry, "HIT", now)
-			return requestResult{cacheStatus: "HIT"}
+			result := requestResult{cacheStatus: "HIT"}
+			if err := serveCacheEntry(w, req, entry, "HIT", now); err != nil {
+				h.recordResponseCopyError(&result, req, rt.cfg.Name, id, err)
+			}
+			return result
 		}
 		if isStale && allowed {
 			stale = &entry
@@ -500,6 +514,7 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		// indicate an origin failure. Preserve the origin's health and stop here:
 		// every retry would inherit the same already-terminated context.
 		if clientCanceled {
+			result.clientCanceled = true
 			if !operationalProbe {
 				rt.pool.releaseActive(node)
 			}
@@ -558,6 +573,9 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 					timer.Stop()
 					lastErr = ctx.Err()
 					result.errorMessage = errorText(lastErr)
+					if req.Context().Err() != nil {
+						result.clientCanceled = true
+					}
 					attempt = attempts
 				case <-timer.C:
 				}
@@ -568,10 +586,26 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 	if activeNode != nil && !operationalProbe {
 		defer rt.pool.releaseActive(activeNode)
 	}
+	// Once the client request context is canceled there is no client-facing
+	// response left to complete. Do not synthesize a 502, serve stale content,
+	// or count the cancellation as a proxy/server failure.
+	if result.clientCanceled || req.Context().Err() != nil {
+		result.clientCanceled = true
+		result.proxyError = false
+		if result.errorMessage == "" {
+			result.errorMessage = errorText(req.Context().Err())
+		}
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return result
+	}
 	if lastErr != nil || resp == nil {
 		if stale != nil {
-			serveCacheEntry(w, req, *stale, "STALE", time.Now())
 			result.cacheStatus = "STALE"
+			if err := serveCacheEntry(w, req, *stale, "STALE", time.Now()); err != nil {
+				h.recordResponseCopyError(&result, req, rt.cfg.Name, id, err)
+			}
 			return result
 		}
 		result.proxyError = true
@@ -609,8 +643,10 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 	}
 
 	if stale != nil && retryableStatus(resp.StatusCode) {
-		serveCacheEntry(w, req, *stale, "STALE", time.Now())
 		result.cacheStatus = "STALE"
+		if err := serveCacheEntry(w, req, *stale, "STALE", time.Now()); err != nil {
+			h.recordResponseCopyError(&result, req, rt.cfg.Name, id, err)
+		}
 		return result
 	}
 
@@ -800,6 +836,19 @@ func unsafeMethod(method string) bool {
 
 func (h *Handler) recordResponseCopyError(result *requestResult, req *http.Request, route, requestID string, err error) {
 	if err == nil {
+		return
+	}
+	if req != nil && req.Context().Err() != nil {
+		result.clientCanceled = true
+		result.proxyError = false
+		result.errorMessage = errorText(req.Context().Err())
+		h.logger.Info("response forwarding canceled with client request",
+			"request_id", requestID,
+			"route", route,
+			"client_ip", clientIP(req),
+			"upstream", result.upstream,
+			"error", req.Context().Err(),
+		)
 		return
 	}
 	result.proxyError = true
@@ -995,7 +1044,10 @@ func retryableStatus(status int) bool {
 	return status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
 }
 
-func serveCacheEntry(w http.ResponseWriter, req *http.Request, entry cache.Entry, status string, now time.Time) {
+func serveCacheEntry(w http.ResponseWriter, req *http.Request, entry cache.Entry, status string, now time.Time) error {
+	if err := req.Context().Err(); err != nil {
+		return err
+	}
 	// Sanitize a private header copy rather than the destination map. The
 	// destination already contains the current request's authoritative edge
 	// metadata, including X-Request-ID.
@@ -1013,13 +1065,15 @@ func serveCacheEntry(w http.ResponseWriter, req *http.Request, entry cache.Entry
 	if conditionalNotModified(req, entry.Header, entry.StatusCode) {
 		w.Header().Del("Content-Length")
 		w.WriteHeader(http.StatusNotModified)
-		return
+		return nil
 	}
 	w.Header().Set("Content-Length", strconv.Itoa(len(entry.Body)))
 	w.WriteHeader(entry.StatusCode)
 	if req.Method != http.MethodHead {
-		_, _ = w.Write(entry.Body)
+		_, err := w.Write(entry.Body)
+		return err
 	}
+	return nil
 }
 
 func formatDuration(d time.Duration) string {

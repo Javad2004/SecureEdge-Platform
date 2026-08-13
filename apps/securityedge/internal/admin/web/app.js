@@ -376,7 +376,7 @@ function renderOverview() {
   const cacheLookups = Number(edgeTotal.cache_hits || 0) + Number(edgeTotal.cache_misses || 0);
   const upstreamSamples = Number(edgeTotal.upstream?.latency_ms?.count || 0);
   $('kpi-requests').textContent = edgeMetricsAvailable ? fmt(edgeTotal.requests) : '—';
-  $('kpi-rps').textContent = edgeMetricsAvailable ? `${Number(edgeMetrics.requests_per_second || 0).toFixed(2)} req/s avg since start` : 'EdgeProxy metrics unavailable';
+  $('kpi-rps').textContent = edgeMetricsAvailable ? `${Number(edgeMetrics.requests_per_second || 0).toFixed(2)} req/s avg since start · ${fmt(edgeTotal.canceled_requests)} canceled` : 'EdgeProxy metrics unavailable';
   $('kpi-blocked').textContent = fmt(rejectedCount(total));
   $('kpi-block-rate').textContent = securityRequests > 0 ? `${pct(total.block_rate)} rejection rate` : 'No requests yet';
   $('kpi-detections').textContent = fmt(total.detections);
@@ -762,7 +762,7 @@ function renderRoutes() {
     const routeClass = routeReadyKnown ? (status.ready ? 'ready' : 'error') : '';
     const routeLabel = routeReadyKnown ? (status.ready ? 'READY' : 'NOT READY') : 'UNKNOWN';
     const routeCacheLookups = Number(telemetry?.cache_hits || 0) + Number(telemetry?.cache_misses || 0);
-    const telemetrySummary = telemetry ? `${fmt(telemetry.requests)} requests · ${routeCacheLookups > 0 ? pct(telemetry.cache_hit_ratio) : 'no cache lookups'}` : 'Telemetry unavailable';
+    const telemetrySummary = telemetry ? `${fmt(telemetry.requests)} requests · ${fmt(telemetry.canceled_requests)} canceled · ${routeCacheLookups > 0 ? pct(telemetry.cache_hit_ratio) : 'no cache lookups'}` : 'Telemetry unavailable';
     return `<article class="route-card managed-route"><div class="route-head"><div><h2>${esc(route.name)}</h2><p>${esc((route.hosts || []).join(', '))} · ${esc(route.path_prefix || '/')}</p></div><span class="badge ${routeClass}">${routeLabel}</span></div><div class="scheduler-banner"><span>Scheduler</span><strong>${esc(algorithm)}</strong><small>${telemetrySummary}</small></div><div class="route-facts"><span>Cache <strong>${cache.enabled ? 'enabled':'disabled'}</strong> · ${esc(cache.default_ttl || '—')}</span><span>Health checks <strong>${health.enabled ? 'enabled':'disabled'}</strong> · ${esc(health.interval || '—')}</span><span>Retries <strong>${fmt(route.proxy?.retry_count)}</strong> · ${esc(route.proxy?.request_timeout || '—')} timeout</span></div><div class="route-actions"><button class="ghost" data-route-edit="${esc(route.name)}">Edit all settings</button><button class="ghost" data-origin-add="${esc(route.name)}">Add origin</button><button class="ghost" data-route-telemetry="${esc(route.name)}">Telemetry</button><button class="danger ghost" data-route-delete="${esc(route.name)}">Delete</button></div><h3>Origins</h3>${origins || '<p class="muted">No origins configured.</p>'}</article>`;
   }).join('') : '<article class="panel empty-state">No routes are configured. Create the first route with the validated form.</article>';
 
@@ -771,12 +771,15 @@ function renderRoutes() {
     if (!m) return `<tr><td><strong>${esc(route.name)}</strong><small class="table-subline">${esc(route.load_balancing?.algorithm || 'round_robin')}</small></td><td>${esc(route.load_balancing?.algorithm || 'round_robin')}</td><td colspan="7" class="muted">EdgeProxy telemetry unavailable.</td><td class="table-actions-cell"><div class="table-actions"><button class="ghost compact-button" data-route-telemetry="${esc(route.name)}">Details</button></div></td></tr>`;
     const latency = m.response_latency_ms || {}, upstream = m.upstream || {};
     const errors = Number(m.client_errors||0)+Number(m.server_errors||0);
-    const requestSamples = Number(m.requests || 0);
+    const completedOutcomes = Number(m.success || 0) + errors;
+    const canceledRequests = Number(m.canceled_requests || 0);
     const cacheLookups = Number(m.cache_hits || 0) + Number(m.cache_misses || 0);
     const latencyAvailable = Number(latency.count || 0) > 0;
-    const requestRates = requestSamples > 0 ? `${pct(m.success_rate)} / ${pct(m.error_rate)}` : '— / —';
-    const errorSummary = requestSamples > 0 ? `${fmt(errors)} client-facing errors` : 'No requests yet';
-    return `<tr><td><strong>${esc(route.name)}</strong><small class="table-subline">${esc(route.load_balancing?.algorithm || 'round_robin')}</small></td><td>${esc(route.load_balancing?.algorithm || 'round_robin')}</td><td>${fmt(m.requests)}</td><td>${requestRates}<small class="table-subline">${errorSummary}</small></td><td>${pctIf(m.cache_hit_ratio, cacheLookups > 0)}<small class="table-subline">${fmt(m.cache_hits)} hit · ${fmt(m.cache_misses)} miss · ${fmt(m.cache_stale)} stale</small></td><td>${msIf(latency.minimum, latencyAvailable)} / ${msIf(latency.average, latencyAvailable)} / ${msIf(latency.maximum, latencyAvailable)}</td><td>${msIf(latency.p50, latencyAvailable)} / ${msIf(latency.p95, latencyAvailable)} / ${msIf(latency.p99, latencyAvailable)}</td><td>${fmt(m.upstream_calls)} calls<small class="table-subline">${fmt(upstream.failures)} fail · ${fmt(upstream.timeouts)} timeout · ${fmt(m.retries)} retry</small></td><td>${bytes(m.bytes_in)} / ${bytes(m.bytes_out)}</td><td class="table-actions-cell"><div class="table-actions"><button class="ghost compact-button" data-route-telemetry="${esc(route.name)}">Details</button></div></td></tr>`;
+    const requestRates = completedOutcomes > 0 ? `${pct(m.success_rate)} / ${pct(m.error_rate)}` : '— / —';
+    const errorSummary = completedOutcomes > 0
+      ? `${fmt(errors)} client-facing errors${canceledRequests > 0 ? ` · ${fmt(canceledRequests)} canceled` : ''}`
+      : (canceledRequests > 0 ? `${fmt(canceledRequests)} canceled · no completed responses` : 'No requests yet');
+    return `<tr><td><strong>${esc(route.name)}</strong><small class="table-subline">${esc(route.load_balancing?.algorithm || 'round_robin')}</small></td><td>${esc(route.load_balancing?.algorithm || 'round_robin')}</td><td>${fmt(m.requests)}<small class="table-subline">${fmt(canceledRequests)} canceled</small></td><td>${requestRates}<small class="table-subline">${errorSummary}</small></td><td>${pctIf(m.cache_hit_ratio, cacheLookups > 0)}<small class="table-subline">${fmt(m.cache_hits)} hit · ${fmt(m.cache_misses)} miss · ${fmt(m.cache_stale)} stale</small></td><td>${msIf(latency.minimum, latencyAvailable)} / ${msIf(latency.average, latencyAvailable)} / ${msIf(latency.maximum, latencyAvailable)}</td><td>${msIf(latency.p50, latencyAvailable)} / ${msIf(latency.p95, latencyAvailable)} / ${msIf(latency.p99, latencyAvailable)}</td><td>${fmt(m.upstream_calls)} calls<small class="table-subline">${fmt(upstream.failures)} fail · ${fmt(upstream.timeouts)} timeout · ${fmt(m.retries)} retry</small></td><td>${bytes(m.bytes_in)} / ${bytes(m.bytes_out)}</td><td class="table-actions-cell"><div class="table-actions"><button class="ghost compact-button" data-route-telemetry="${esc(route.name)}">Details</button></div></td></tr>`;
   }).join('') : '<tr><td colspan="10" class="muted">No routes configured.</td></tr>';
 
   const originRows = [];
@@ -940,8 +943,8 @@ async function openTelemetryDialog(routeName, originName = '') {
       ['P50 / P95 / P99',`${msIf(latency.p50, Number(latency.count || 0) > 0)} / ${msIf(latency.p95, Number(latency.count || 0) > 0)} / ${msIf(latency.p99, Number(latency.count || 0) > 0)}`],['Active requests',fmt(runtime.active_requests)],
       ['EWMA latency',msIf(runtime.ewma_latency_ms, Number(runtime.scheduler_selections || 0) > 0)],['Scheduler selections',fmt(runtime.scheduler_selections)],['Health failures / recoveries',`${fmt(runtime.health_failures)} / ${fmt(runtime.health_recoveries)}`]
     ] : [
-      ['Algorithm',data.route?.load_balancing?.algorithm||'round_robin'],['Ready',runtime.ready ? 'Ready':'Not ready'],['Requests',fmt(m.requests)],
-      ['Success / client / server',`${fmt(m.success)} / ${fmt(m.client_errors)} / ${fmt(m.server_errors)}`],['Success / error rate',Number(m.requests || 0) > 0 ? `${pct(m.success_rate)} / ${pct(m.error_rate)}` : '— / —'],['Proxy errors',fmt(m.proxy_errors)],
+      ['Algorithm',data.route?.load_balancing?.algorithm||'round_robin'],['Ready',runtime.ready ? 'Ready':'Not ready'],['Requests / canceled',`${fmt(m.requests)} / ${fmt(m.canceled_requests)}`],
+      ['Success / client / server',`${fmt(m.success)} / ${fmt(m.client_errors)} / ${fmt(m.server_errors)}`],['Success / error rate',Number(m.success || 0) + Number(m.client_errors || 0) + Number(m.server_errors || 0) > 0 ? `${pct(m.success_rate)} / ${pct(m.error_rate)}` : '— / —'],['Proxy errors',fmt(m.proxy_errors)],
       ['Cache hit / miss / stale / bypass',`${fmt(m.cache_hits)} / ${fmt(m.cache_misses)} / ${fmt(m.cache_stale)} / ${fmt(m.cache_bypasses)}`],['Cache hit ratio',pctIf(m.cache_hit_ratio, Number(m.cache_hits || 0) + Number(m.cache_misses || 0) > 0)],['Cache stores',fmt(m.cache_stores)],
       ['Min / average / max',`${msIf(latency.minimum, Number(latency.count || 0) > 0)} / ${msIf(latency.average, Number(latency.count || 0) > 0)} / ${msIf(latency.maximum, Number(latency.count || 0) > 0)}`],['P50 / P95 / P99',`${msIf(latency.p50, Number(latency.count || 0) > 0)} / ${msIf(latency.p95, Number(latency.count || 0) > 0)} / ${msIf(latency.p99, Number(latency.count || 0) > 0)}`],
       ['Upstream calls / retries',`${fmt(m.upstream_calls)} / ${fmt(m.retries)}`],['Bytes in / out',`${bytes(m.bytes_in)} / ${bytes(m.bytes_out)}`],['Methods',Object.entries(m.methods||{}).map(([k,v])=>`${k}:${v}`).join(' · ')||'—']

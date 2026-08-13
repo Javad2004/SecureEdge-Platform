@@ -74,8 +74,8 @@ func TestDerivedMetricsRemainInternallyConsistent(t *testing.T) {
 
 	snapshot := registry.Snapshot()
 	total := snapshot.Total
-	if total.Requests != total.Success+total.ClientErrors+total.ServerErrors {
-		t.Fatalf("client-facing outcome counters do not partition requests: %#v", total)
+	if total.Requests != total.Success+total.ClientErrors+total.ServerErrors+total.CanceledRequests {
+		t.Fatalf("request outcome counters do not partition physical requests: %#v", total)
 	}
 	if total.Requests != 3 || total.Success != 1 || total.ClientErrors != 1 || total.ServerErrors != 1 || total.ProxyErrors != 1 {
 		t.Fatalf("unexpected request outcome counters: %#v", total)
@@ -103,6 +103,45 @@ func TestDerivedMetricsRemainInternallyConsistent(t *testing.T) {
 		origin.SuccessRate != 2.0/3.0 || origin.ErrorRate != 1.0/3.0 ||
 		origin.LatencyMS.Count != origin.Success+origin.Failures {
 		t.Fatalf("per-Origin derived metrics are inconsistent: %#v", origin)
+	}
+}
+
+func TestCanceledClientRequestIsExcludedFromCompletedOutcomeMetrics(t *testing.T) {
+	registry := New()
+	finish := registry.Begin("demo", "GET")
+	finish(RequestObservation{
+		Status:      502,
+		Canceled:    true,
+		BytesIn:     12,
+		BytesOut:    7,
+		Duration:    25 * time.Millisecond,
+		ProxyError:  true,
+		Retries:     1,
+		CacheStatus: "MISS",
+	})
+
+	snapshot := registry.Snapshot().Total
+	if snapshot.Requests != 1 || snapshot.CanceledRequests != 1 {
+		t.Fatalf("unexpected physical request/cancellation counters: %#v", snapshot)
+	}
+	if snapshot.Success != 0 || snapshot.ClientErrors != 0 || snapshot.ServerErrors != 0 || snapshot.ProxyErrors != 0 {
+		t.Fatalf("client cancellation polluted completed outcomes: %#v", snapshot)
+	}
+	if snapshot.SuccessRate != 0 || snapshot.ErrorRate != 0 || snapshot.ResponseLatencyMS.Count != 0 || len(snapshot.StatusCodes) != 0 {
+		t.Fatalf("client cancellation polluted derived response metrics: %#v", snapshot)
+	}
+	if snapshot.BytesIn != 12 || snapshot.BytesOut != 7 || snapshot.Retries != 1 || snapshot.CacheMisses != 1 {
+		t.Fatalf("physical work from canceled request was lost: %#v", snapshot)
+	}
+
+	finish = registry.Begin("demo", "GET")
+	finish(RequestObservation{Status: 200, Duration: 5 * time.Millisecond, CacheStatus: "BYPASS"})
+	snapshot = registry.Snapshot().Total
+	if snapshot.Requests != 2 || snapshot.CanceledRequests != 1 || snapshot.Success != 1 || snapshot.SuccessRate != 1 || snapshot.ErrorRate != 0 {
+		t.Fatalf("canceled request changed completed-outcome denominator: %#v", snapshot)
+	}
+	if snapshot.ResponseLatencyMS.Count != 1 || snapshot.StatusCodes["200"] != 1 {
+		t.Fatalf("completed response telemetry is inconsistent after cancellation: %#v", snapshot)
 	}
 }
 

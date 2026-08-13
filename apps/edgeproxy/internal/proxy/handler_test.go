@@ -1330,7 +1330,8 @@ func TestClientCancellationPreservesOriginHealthAndStopsRetries(t *testing.T) {
 	cfg.Routes[0].Proxy.RetryCount = 3
 	cfg.Routes[0].Proxy.RetryBackoff = config.Duration{}
 	logs := accesslog.New(20)
-	h, err := NewHandler(cfg, slog.Default(), metrics.New(), logs)
+	registry := metrics.New()
+	h, err := NewHandler(cfg, slog.Default(), registry, logs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1338,9 +1339,10 @@ func TestClientCancellationPreservesOriginHealthAndStopsRetries(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/cancel", nil).WithContext(ctx)
+	response := httptest.NewRecorder()
 	done := make(chan struct{})
 	go func() {
-		h.ServeHTTP(httptest.NewRecorder(), req)
+		h.ServeHTTP(response, req)
 		close(done)
 	}()
 
@@ -1359,6 +1361,9 @@ func TestClientCancellationPreservesOriginHealthAndStopsRetries(t *testing.T) {
 	if firstCalls.Load() != 1 || secondCalls.Load() != 0 {
 		t.Fatalf("unexpected origin calls after cancellation: first=%d second=%d", firstCalls.Load(), secondCalls.Load())
 	}
+	if response.Body.Len() != 0 {
+		t.Fatalf("client cancellation emitted a synthetic response body: %q", response.Body.String())
+	}
 	attempts := logs.Query(accesslog.Filter{Event: "upstream_attempt", Limit: 10})
 	if len(attempts.Entries) != 1 {
 		t.Fatalf("upstream attempts=%d, want 1", len(attempts.Entries))
@@ -1366,7 +1371,22 @@ func TestClientCancellationPreservesOriginHealthAndStopsRetries(t *testing.T) {
 	if !attempts.Entries[0].Canceled || attempts.Entries[0].Timeout {
 		t.Fatalf("client cancellation was not classified independently: %#v", attempts.Entries[0])
 	}
-	originMetric := h.metrics.Snapshot().Routes["test"].Upstreams[first.URL]
+	snapshot := registry.Snapshot().Routes["test"]
+	if snapshot.Requests != 1 || snapshot.CanceledRequests != 1 || snapshot.Success != 0 || snapshot.ClientErrors != 0 || snapshot.ServerErrors != 0 || snapshot.ProxyErrors != 0 {
+		t.Fatalf("client cancellation polluted request outcomes: %#v", snapshot.CounterSnapshot)
+	}
+	if snapshot.ResponseLatencyMS.Count != 0 || len(snapshot.StatusCodes) != 0 {
+		t.Fatalf("client cancellation polluted response latency/status telemetry: %#v", snapshot.CounterSnapshot)
+	}
+	completed := logs.Query(accesslog.Filter{Event: "request_completed", Limit: 10})
+	if len(completed.Entries) != 1 || !completed.Entries[0].Canceled || completed.Entries[0].ProxyError || completed.Entries[0].Status != 0 || completed.Entries[0].Level != "INFO" {
+		t.Fatalf("client cancellation request log is inconsistent: %#v", completed.Entries)
+	}
+	if completed.Entries[0].Message != "client request canceled" {
+		t.Fatalf("client cancellation request log message=%q", completed.Entries[0].Message)
+	}
+
+	originMetric := snapshot.Upstreams[first.URL]
 	if originMetric.Calls != 1 || originMetric.Canceled != 1 || originMetric.Success != 0 || originMetric.Failures != 0 || originMetric.Timeouts != 0 || originMetric.LatencyMS.Count != 0 {
 		t.Fatalf("client cancellation polluted Origin telemetry: %#v", originMetric)
 	}
@@ -1380,6 +1400,60 @@ func TestClientCancellationPreservesOriginHealthAndStopsRetries(t *testing.T) {
 	}
 	if status := h.Readiness(); !status.Ready {
 		t.Fatalf("client cancellation changed readiness: %#v", status)
+	}
+}
+
+func TestClientCancellationDoesNotServeStaleFallback(t *testing.T) {
+	started := make(chan struct{}, 1)
+	origin := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done()
+	}))
+	defer origin.Close()
+
+	cfg := testConfig(origin.URL)
+	cfg.Routes[0].Cache.Enabled = false
+	h, err := NewHandler(cfg, slog.Default(), metrics.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/cancel-stale", nil).WithContext(ctx)
+	response := httptest.NewRecorder()
+	stale := &cache.Entry{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/plain"}},
+		Body:       []byte("stale fallback must not be written"),
+		StoredAt:   time.Now().Add(-time.Minute),
+	}
+
+	resultCh := make(chan requestResult, 1)
+	go func() {
+		resultCh <- h.fetchAndServe(response, req, h.routes["test"], "cancel-stale", stale, "MISS", false, time.Now())
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("origin did not receive the request")
+	}
+	cancel()
+
+	var result requestResult
+	select {
+	case result = <-resultCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy did not stop after client cancellation")
+	}
+	if !result.clientCanceled || result.proxyError {
+		t.Fatalf("unexpected cancellation result: %#v", result)
+	}
+	if result.cacheStatus == "STALE" || response.Body.Len() != 0 || response.Header().Get("X-Cache") == "STALE" {
+		t.Fatalf("client cancellation served stale fallback: status=%q body=%q", result.cacheStatus, response.Body.String())
 	}
 }
 

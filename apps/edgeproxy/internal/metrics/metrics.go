@@ -102,6 +102,7 @@ func updateMax(target *atomic.Uint64, value uint64) {
 
 type Counters struct {
 	requests            atomic.Uint64
+	canceledRequests    atomic.Uint64
 	success             atomic.Uint64
 	clientErrors        atomic.Uint64
 	serverErrors        atomic.Uint64
@@ -151,9 +152,11 @@ type Registry struct {
 	upstreams sync.Map // global map[string]*UpstreamCounters
 }
 
-// RequestObservation finalizes one client-facing request.
+// RequestObservation finalizes one client request. Canceled marks a request that
+// terminated without a complete client-facing HTTP outcome.
 type RequestObservation struct {
 	Status      int
+	Canceled    bool
 	BytesIn     uint64
 	BytesOut    uint64
 	Duration    time.Duration
@@ -191,6 +194,7 @@ type RouteSnapshot struct {
 
 type CounterSnapshot struct {
 	Requests              uint64            `json:"requests"`
+	CanceledRequests      uint64            `json:"canceled_requests"`
 	Success               uint64            `json:"success"`
 	ClientErrors          uint64            `json:"client_errors"`
 	ServerErrors          uint64            `json:"server_errors"`
@@ -277,7 +281,7 @@ func New() *Registry {
 }
 
 // Begin starts accounting for one client request. The returned callback must be
-// called exactly once when the response is complete.
+// called exactly once when request processing terminates, including cancellation.
 func (r *Registry) Begin(route, method string) func(RequestObservation) {
 	method = metricMethod(method)
 	r.inflight.Add(1)
@@ -291,8 +295,28 @@ func (r *Registry) Begin(route, method string) func(RequestObservation) {
 		for _, target := range []*Counters{&r.total, &routeMetrics.counters} {
 			target.bytesIn.Add(observation.BytesIn)
 			target.bytesOut.Add(observation.BytesOut)
-			target.responseLatency.Observe(observation.Duration)
 			target.retries.Add(observation.Retries)
+			switch observation.CacheStatus {
+			case "HIT":
+				target.cacheHits.Add(1)
+			case "MISS":
+				target.cacheMisses.Add(1)
+			case "STALE":
+				target.cacheStale.Add(1)
+			case "BYPASS":
+				target.cacheBypasses.Add(1)
+			}
+
+			// A client-canceled request is physical traffic, so request/method,
+			// byte, retry, and cache-activity counters remain meaningful. It is
+			// not, however, a completed client-facing HTTP outcome. Exclude it
+			// from response status, latency, proxy-error, and reliability data.
+			if observation.Canceled {
+				target.canceledRequests.Add(1)
+				continue
+			}
+
+			target.responseLatency.Observe(observation.Duration)
 			if observation.ProxyError {
 				target.proxyErrors.Add(1)
 			}
@@ -304,16 +328,6 @@ func (r *Registry) Begin(route, method string) func(RequestObservation) {
 				target.clientErrors.Add(1)
 			case observation.Status >= 500:
 				target.serverErrors.Add(1)
-			}
-			switch observation.CacheStatus {
-			case "HIT":
-				target.cacheHits.Add(1)
-			case "MISS":
-				target.cacheMisses.Add(1)
-			case "STALE":
-				target.cacheStale.Add(1)
-			case "BYPASS":
-				target.cacheBypasses.Add(1)
 			}
 		}
 	}
@@ -436,6 +450,7 @@ func snapshotCounters(c *Counters) CounterSnapshot {
 
 	snapshot := CounterSnapshot{
 		Requests:              requests,
+		CanceledRequests:      c.canceledRequests.Load(),
 		Success:               success,
 		ClientErrors:          clientErrors,
 		ServerErrors:          serverErrors,
@@ -455,9 +470,12 @@ func snapshotCounters(c *Counters) CounterSnapshot {
 		StatusCodes:           sortedCounterMap(c.statusCodes.Snapshot()),
 		ResponseLatencyMS:     responseLatency,
 	}
-	if requests > 0 {
-		snapshot.SuccessRate = float64(success) / float64(requests)
-		snapshot.ErrorRate = float64(clientErrors+serverErrors) / float64(requests)
+	// Request volume includes client cancellations, while success/error rates
+	// describe only completed, evaluable HTTP outcomes.
+	evaluated := success + clientErrors + serverErrors
+	if evaluated > 0 {
+		snapshot.SuccessRate = float64(success) / float64(evaluated)
+		snapshot.ErrorRate = float64(clientErrors+serverErrors) / float64(evaluated)
 	}
 	if hits+misses > 0 {
 		snapshot.CacheHitRatio = float64(hits) / float64(hits+misses)

@@ -197,6 +197,26 @@ func TestDashboardClientFacingErrorsDoNotDoubleCountProxyCauses(t *testing.T) {
 	}
 }
 
+func TestDashboardClientCancellationsStayOutOfCompletedOutcomeRates(t *testing.T) {
+	app, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	javascript := string(app)
+	for _, required := range []string{
+		"const canceledRequests = Number(m.canceled_requests || 0)",
+		"const completedOutcomes = Number(m.success || 0) + errors",
+		"completedOutcomes > 0 ? `${pct(m.success_rate)} / ${pct(m.error_rate)}` : '— / —'",
+		"canceled · no completed responses",
+		"['Requests / canceled',`${fmt(m.requests)} / ${fmt(m.canceled_requests)}`]",
+		"Number(m.success || 0) + Number(m.client_errors || 0) + Number(m.server_errors || 0) > 0",
+	} {
+		if !strings.Contains(javascript, required) {
+			t.Fatalf("dashboard client-cancellation telemetry contract is missing %q", required)
+		}
+	}
+}
+
 func TestDashboardTrendPreservesTelemetryRateGaps(t *testing.T) {
 	app, err := webAssets.ReadFile("web/app.js")
 	if err != nil {

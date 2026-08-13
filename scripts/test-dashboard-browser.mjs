@@ -126,15 +126,15 @@ function fixturePayload(root) {
   const overview = {
     generated_at:now, connectivity,
     recent_client_traffic:{status:'no_recent_traffic',requests_in_window:0,unique_clients:0,allowed:0,rejected:0},
-    security_metrics:{schema_version:'1',uptime_seconds:60,inflight:0,total:{
-      blocked:0,rate_limited:0,client_rate_limited:0,global_rate_limited:0,overload_rejected:0,banned_rejected:0,
+    security_metrics:{schema_version:'2.0',uptime_seconds:60,inflight:0,requests_per_second:20/60,total:{
+      requests:20,allowed:20,blocked:0,logged:0,rate_limited:0,client_rate_limited:0,global_rate_limited:0,overload_rejected:0,banned_rejected:0,
       block_rate:0,detections:0,detection_rate:0,latency:{average_ms:1,maximum_ms:2,p50_ms:1,p95_ms:2,p99_ms:2},rules:{},reasons:{}
     }},
     security_logs:{entries:[],retained:0,dropped:0,file_bytes:0,file_errors:0},
     security_status:{rate_limit_buckets:0,active_bans:0,admission:{global_active:0,tracked_clients:0}},
     edgeproxy_status_code:200, edgeproxy_metrics_status_code:200,
     edgeproxy_status:{routes:[routeRuntime]},
-    edgeproxy_metrics:{schema_version:'1',uptime_seconds:60,inflight:0,requests_per_second:1,total:routeMetric,routes:{[route.name]:routeMetric}},
+    edgeproxy_metrics:{schema_version:'2.0',uptime_seconds:60,inflight:0,requests_per_second:20/60,total:routeMetric,routes:{[route.name]:routeMetric}},
     build:{version:'fixture',commit:'fixture',go_version:'fixture',os:'fixture',arch:'fixture'}
   };
   const policies = {
@@ -662,22 +662,23 @@ try {
     telemetryTrendGapContract = await cdp.evaluate(`(() => {
       const previous = state.overview;
       const baseTime = Date.now() - 40000;
-      const sample = (offset, available, rateAvailable, rate) => ({
+      const sample = (offset, available, rateAvailable, rate, rejectedRateAvailable, rejectedRate) => ({
         generated_at:new Date(baseTime + offset).toISOString(),
-        security:{rejected_per_second:0.25},
+        security:{rejected_rate_available:rejectedRateAvailable, rejected_per_second:rejectedRate},
         edgeproxy:{available, request_rate_available:rateAvailable, requests_per_second:rate}
       });
       const candidate = structuredClone(previous);
       candidate.telemetry_history = {samples:[
-        sample(0,true,true,1.5),
-        sample(10000,false,false,0),
-        sample(20000,true,false,99),
-        sample(30000,true,true,2.5),
-        sample(40000,true,true,3.5)
+        sample(0,true,true,1.5,true,0.25),
+        sample(10000,false,false,0,true,0.30),
+        sample(20000,true,false,99,false,99),
+        sample(30000,true,true,2.5,true,0.40),
+        sample(40000,true,true,3.5,true,0.50)
       ]};
       state.overview = candidate;
       renderOverview();
       const mapped = state.trend.map(point => point.requests);
+      const blockedMapped = state.trend.map(point => point.blocked);
 
       const canvas = document.getElementById('trend-chart');
       const originalGetContext = canvas.getContext;
@@ -693,11 +694,13 @@ try {
       canvas.getContext = () => context;
       try { drawTrend(); } finally { canvas.getContext = originalGetContext; }
       const requestColor = cssColor('--chart-requests', '#67a6ff');
+      const blockedColor = cssColor('--chart-blocked', '#ff6b84');
       const requestOps = operations.filter(operation => operation.color === requestColor).map(operation => operation.type);
+      const blockedOps = operations.filter(operation => operation.color === blockedColor).map(operation => operation.type);
 
       state.overview = previous;
       renderAll();
-      return {mapped, requestOps};
+      return {mapped, blockedMapped, requestOps, blockedOps};
     })()`);
     if (telemetryTrendGapContract.mapped.length !== 5 ||
         telemetryTrendGapContract.mapped[0] !== 1.5 ||
@@ -710,6 +713,103 @@ try {
     const expectedRequestOps = ['move','move','line'];
     if (JSON.stringify(telemetryTrendGapContract.requestOps) !== JSON.stringify(expectedRequestOps)) {
       throw new Error(`Trend chart connected EdgeProxy request-rate segments across a telemetry gap: ${JSON.stringify(telemetryTrendGapContract)}`);
+    }
+    if (telemetryTrendGapContract.blockedMapped.length !== 5 ||
+        telemetryTrendGapContract.blockedMapped[0] !== 0.25 ||
+        telemetryTrendGapContract.blockedMapped[1] !== 0.30 ||
+        telemetryTrendGapContract.blockedMapped[2] !== null ||
+        telemetryTrendGapContract.blockedMapped[3] !== 0.40 ||
+        telemetryTrendGapContract.blockedMapped[4] !== 0.50) {
+      throw new Error(`Telemetry history did not preserve SecurityEdge rejection-rate gaps: ${JSON.stringify(telemetryTrendGapContract)}`);
+    }
+    const expectedBlockedOps = ['move','line','move','line'];
+    if (JSON.stringify(telemetryTrendGapContract.blockedOps) !== JSON.stringify(expectedBlockedOps)) {
+      throw new Error(`Trend chart connected SecurityEdge rejection-rate segments across a telemetry gap: ${JSON.stringify(telemetryTrendGapContract)}`);
+    }
+  }
+
+  let undefinedMetricRenderingContract = null;
+  if (fixtureRoot) {
+    undefinedMetricRenderingContract = await cdp.evaluate(`(() => {
+      const previous = state.overview;
+      const candidate = structuredClone(previous);
+      const securityTotal = candidate.security_metrics.total;
+      securityTotal.requests = 0;
+      securityTotal.block_rate = 0.75;
+      securityTotal.detection_rate = 0.50;
+      securityTotal.latency = {average_ms:99, maximum_ms:99, p50_ms:99, p95_ms:99, p99_ms:99};
+
+      const edgeMetrics = candidate.edgeproxy_metrics;
+      edgeMetrics.requests_per_second = 0;
+      const edgeTotal = edgeMetrics.total;
+      edgeTotal.requests = 0;
+      edgeTotal.cache_hits = 0;
+      edgeTotal.cache_misses = 0;
+      edgeTotal.cache_hit_ratio = 0.99;
+      edgeTotal.response_latency_ms = {count:0, average:99, minimum:99, maximum:99, p50:99, p95:99, p99:99, distribution:[]};
+      edgeTotal.upstream = {...(edgeTotal.upstream || {}), calls:0, latency_ms:{count:0, average:99, minimum:99, maximum:99, p50:99, p95:99, p99:99, distribution:[]}};
+
+      for (const metric of Object.values(edgeMetrics.routes || {})) {
+        metric.requests = 0;
+        metric.success_rate = 1;
+        metric.error_rate = 1;
+        metric.client_errors = 0;
+        metric.server_errors = 0;
+        metric.cache_hits = 0;
+        metric.cache_misses = 0;
+        metric.cache_hit_ratio = 1;
+        metric.response_latency_ms = {count:0, average:99, minimum:99, maximum:99, p50:99, p95:99, p99:99, distribution:[]};
+        metric.upstream = {...(metric.upstream || {}), calls:0, latency_ms:{count:0, average:99, minimum:99, maximum:99, p50:99, p95:99, p99:99, distribution:[]}};
+        for (const originMetric of Object.values(metric.upstreams || {})) {
+          originMetric.calls = 0;
+          originMetric.success_rate = 1;
+          originMetric.error_rate = 1;
+          originMetric.latency_ms = {count:0, average:99, minimum:99, maximum:99, p50:99, p95:99, p99:99, distribution:[]};
+        }
+      }
+      for (const route of candidate.edgeproxy_status?.routes || []) {
+        for (const origin of route.upstreams || []) {
+          origin.scheduler_selections = 0;
+          origin.ewma_latency_ms = 99;
+        }
+      }
+
+      state.overview = candidate;
+      renderAll();
+      const result = {
+        blockRate:document.getElementById('kpi-block-rate').textContent.trim(),
+        detectionRate:document.getElementById('kpi-detection-rate').textContent.trim(),
+        cacheRatio:document.getElementById('kpi-cache').textContent.trim(),
+        cacheCounts:document.getElementById('kpi-cache-counts').textContent.trim(),
+        securityP95:document.getElementById('kpi-p95').textContent.trim(),
+        upstreamAverage:document.getElementById('kpi-upstream').textContent.trim(),
+        requestRateLabel:document.getElementById('kpi-rps').textContent.trim(),
+        cacheStats:document.getElementById('cache-stats').textContent.replace(/\\s+/g,' ').trim(),
+        edgeLatency:document.getElementById('latency-stats').textContent.replace(/\\s+/g,' ').trim(),
+        securityLatency:document.getElementById('security-latency').textContent.replace(/\\s+/g,' ').trim(),
+        routeTelemetry:document.getElementById('route-telemetry-table').textContent.replace(/\\s+/g,' ').trim(),
+        originTelemetry:document.getElementById('origin-telemetry-table').textContent.replace(/\\s+/g,' ').trim()
+      };
+      state.overview = previous;
+      renderAll();
+      return result;
+    })()`);
+    if (undefinedMetricRenderingContract.blockRate !== 'No requests yet' ||
+        undefinedMetricRenderingContract.detectionRate !== 'No requests yet' ||
+        undefinedMetricRenderingContract.cacheRatio !== '—' ||
+        !undefinedMetricRenderingContract.cacheCounts.includes('no cache lookups') ||
+        undefinedMetricRenderingContract.securityP95 !== '—' ||
+        undefinedMetricRenderingContract.upstreamAverage !== 'No upstream samples' ||
+        !undefinedMetricRenderingContract.requestRateLabel.includes('avg since start') ||
+        !undefinedMetricRenderingContract.cacheStats.includes('Hit ratio—') ||
+        undefinedMetricRenderingContract.cacheStats.includes('99.0%') ||
+        undefinedMetricRenderingContract.edgeLatency.includes('99.00 ms') ||
+        undefinedMetricRenderingContract.securityLatency.includes('99.00 ms') ||
+        !undefinedMetricRenderingContract.routeTelemetry.includes('No requests yet') ||
+        !undefinedMetricRenderingContract.routeTelemetry.includes('— / —') ||
+        undefinedMetricRenderingContract.routeTelemetry.includes('99.00 ms') ||
+        undefinedMetricRenderingContract.originTelemetry.includes('99.00 ms')) {
+      throw new Error(`Dashboard rendered undefined zero-denominator/sample metrics as measured values: ${JSON.stringify(undefinedMetricRenderingContract)}`);
     }
   }
 
@@ -1689,7 +1789,8 @@ try {
     connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
     authentication_ui_contract:authenticationUIContract, telemetry_availability_contract:telemetryAvailabilityContract,
-    client_facing_error_contract:clientFacingErrorContract, telemetry_trend_gap_contract:telemetryTrendGapContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
+    client_facing_error_contract:clientFacingErrorContract, telemetry_trend_gap_contract:telemetryTrendGapContract,
+    undefined_metric_rendering_contract:undefinedMetricRenderingContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
   }, null, 2));
 } catch (error) {
   console.error(error.stack || error.message);

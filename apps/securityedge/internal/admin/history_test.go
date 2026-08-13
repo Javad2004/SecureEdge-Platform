@@ -37,7 +37,7 @@ func TestTelemetryHistoryPersistsBoundsAndReloads(t *testing.T) {
 				Latency:  metrics.LatencySnapshot{P95MS: 2.5},
 			},
 		}
-		edge := json.RawMessage(`{"schema_version":"2.0","inflight":1,"total":{"requests":` + uintString(requestCount) + `,"cache_hit_ratio":0.5,"response_latency_ms":{"p95":4.5}},"routes":{"demo":{"requests":` + uintString(requestCount) + `,"cache_hit_ratio":0.5,"response_latency_ms":{"p95":4.5},"upstreams":{"origin-a":{"calls":` + uintString(requestCount) + `,"success_rate":1,"latency_ms":{"p95":3.5}}}}}}`)
+		edge := json.RawMessage(`{"schema_version":"2.0","inflight":1,"total":{"requests":` + uintString(requestCount) + `,"cache_hits":1,"cache_misses":1,"cache_hit_ratio":0.5,"response_latency_ms":{"count":` + uintString(requestCount) + `,"p95":4.5}},"routes":{"demo":{"requests":` + uintString(requestCount) + `,"cache_hits":1,"cache_misses":1,"cache_hit_ratio":0.5,"response_latency_ms":{"count":` + uintString(requestCount) + `,"p95":4.5},"upstreams":{"origin-a":{"calls":` + uintString(requestCount) + `,"success_rate":1,"latency_ms":{"count":` + uintString(requestCount) + `,"p95":3.5}}}}}}`)
 		store.observe(security, edge)
 	}
 
@@ -59,8 +59,8 @@ func TestTelemetryHistoryPersistsBoundsAndReloads(t *testing.T) {
 	if err := json.Unmarshal(persisted, &document); err != nil {
 		t.Fatal(err)
 	}
-	if document.SchemaVersion != "1.2" {
-		t.Fatalf("telemetry history schema=%q, want 1.2", document.SchemaVersion)
+	if document.SchemaVersion != "1.3" {
+		t.Fatalf("telemetry history schema=%q, want 1.3", document.SchemaVersion)
 	}
 
 	reloaded := newTelemetryHistoryStore(store.cfg)
@@ -70,6 +70,43 @@ func TestTelemetryHistoryPersistsBoundsAndReloads(t *testing.T) {
 	}
 	if got := reloadedSnapshot.Samples[1].Routes["demo"].Origins["origin-a"].Calls; got != 3 {
 		t.Fatalf("unexpected reloaded origin calls: %d", got)
+	}
+	last := reloadedSnapshot.Samples[1]
+	if !last.Security.P95LatencyAvailable || !last.EdgeProxy.CacheHitRatioAvailable || !last.EdgeProxy.P95LatencyAvailable {
+		t.Fatalf("current aggregate derived-metric availability was not persisted: %#v", last)
+	}
+	route := last.Routes["demo"]
+	origin := route.Origins["origin-a"]
+	if !route.CacheHitRatioAvailable || !route.P95LatencyAvailable || !origin.SuccessRateAvailable || !origin.P95LatencyAvailable {
+		t.Fatalf("current Route/Origin derived-metric availability was not persisted: route=%#v origin=%#v", route, origin)
+	}
+}
+
+func TestTelemetryHistoryMarksUndefinedDerivedMetricsUnavailable(t *testing.T) {
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{Duration: time.Second},
+	})
+	edge := json.RawMessage(`{"schema_version":"2.0","started_at":"2026-08-13T08:00:00Z","total":{"requests":0,"cache_hits":0,"cache_misses":0,"cache_hit_ratio":0.99,"response_latency_ms":{"count":0,"p95":99}},"routes":{"demo":{"requests":0,"cache_hits":0,"cache_misses":0,"cache_hit_ratio":0.99,"response_latency_ms":{"count":0,"p95":99},"upstreams":{"origin-a":{"calls":0,"success_rate":1,"latency_ms":{"count":0,"p95":99}}}}}}`)
+	store.observe(metrics.Snapshot{
+		StartedAt: "2026-08-13T08:00:00Z",
+		Total: metrics.CounterSnapshot{
+			Requests: 0,
+			Latency:  metrics.LatencySnapshot{P95MS: 99},
+		},
+	}, edge)
+
+	samples := store.snapshot(10).Samples
+	if len(samples) != 1 {
+		t.Fatalf("history samples=%d, want 1", len(samples))
+	}
+	point := samples[0]
+	if point.Security.P95LatencyAvailable || point.EdgeProxy.CacheHitRatioAvailable || point.EdgeProxy.P95LatencyAvailable {
+		t.Fatalf("zero-sample aggregate derived metrics must remain unavailable: %#v", point)
+	}
+	route := point.Routes["demo"]
+	origin := route.Origins["origin-a"]
+	if route.CacheHitRatioAvailable || route.P95LatencyAvailable || origin.SuccessRateAvailable || origin.P95LatencyAvailable {
+		t.Fatalf("zero-sample Route/Origin derived metrics must remain unavailable: route=%#v origin=%#v", route, origin)
 	}
 }
 
@@ -428,6 +465,121 @@ func TestTelemetryHistoryLoadsV1RatesConservatively(t *testing.T) {
 		if sample.EdgeProxy.RequestRateAvailable || sample.Routes["demo"].RequestRateAvailable {
 			t.Fatalf("legacy sample %d has no rate-validity metadata and must remain a gap: %#v", i, sample)
 		}
+	}
+}
+
+func TestTelemetryHistoryMarksSecurityRatesAvailableOnlyForContiguousProcess(t *testing.T) {
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{Duration: time.Second},
+	})
+	startedAt := "2026-08-13T08:00:00Z"
+	store.observe(metrics.Snapshot{StartedAt: startedAt, Total: metrics.CounterSnapshot{Requests: 100, Blocked: 10}}, nil)
+	store.mu.Lock()
+	store.samples[0].GeneratedAt = time.Now().UTC().Add(-10 * time.Second).Format(time.RFC3339Nano)
+	store.lastObserved = time.Time{}
+	store.mu.Unlock()
+
+	store.observe(metrics.Snapshot{StartedAt: startedAt, Total: metrics.CounterSnapshot{Requests: 150, Blocked: 15}}, nil)
+
+	current := store.snapshot(10).Samples[1].Security
+	if !current.RequestRateAvailable || current.RequestsPerSecond < 4.9 || current.RequestsPerSecond > 5.1 {
+		t.Fatalf("SecurityEdge contiguous request rate=%v available=%v, want about 5 req/s", current.RequestsPerSecond, current.RequestRateAvailable)
+	}
+	if !current.RejectedRateAvailable || current.RejectedPerSecond < 0.49 || current.RejectedPerSecond > 0.51 {
+		t.Fatalf("SecurityEdge contiguous rejection rate=%v available=%v, want about 0.5 req/s", current.RejectedPerSecond, current.RejectedRateAvailable)
+	}
+}
+
+func TestTelemetryHistoryTreatsSecurityEdgeRestartAsRateGap(t *testing.T) {
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{Duration: time.Second},
+	})
+	store.observe(metrics.Snapshot{StartedAt: "2026-08-13T08:00:00Z", Total: metrics.CounterSnapshot{Requests: 100, Blocked: 10}}, nil)
+	store.mu.Lock()
+	store.samples[0].GeneratedAt = time.Now().UTC().Add(-10 * time.Second).Format(time.RFC3339Nano)
+	store.lastObserved = time.Time{}
+	store.mu.Unlock()
+
+	store.observe(metrics.Snapshot{StartedAt: "2026-08-13T08:05:00Z", Total: metrics.CounterSnapshot{Requests: 150, Blocked: 15}}, nil)
+
+	current := store.snapshot(10).Samples[1].Security
+	if current.RequestRateAvailable || current.RequestsPerSecond != 0 || current.RejectedRateAvailable || current.RejectedPerSecond != 0 {
+		t.Fatalf("SecurityEdge restart produced synthetic rates: %#v", current)
+	}
+}
+
+func TestTelemetryHistoryTreatsSecurityCounterResetAsRateGap(t *testing.T) {
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{Duration: time.Second},
+	})
+	startedAt := "2026-08-13T08:00:00Z"
+	store.observe(metrics.Snapshot{StartedAt: startedAt, Total: metrics.CounterSnapshot{Requests: 100, Blocked: 10}}, nil)
+	store.mu.Lock()
+	store.samples[0].GeneratedAt = time.Now().UTC().Add(-10 * time.Second).Format(time.RFC3339Nano)
+	store.lastObserved = time.Time{}
+	store.mu.Unlock()
+
+	store.observe(metrics.Snapshot{StartedAt: startedAt, Total: metrics.CounterSnapshot{Requests: 3, Blocked: 1}}, nil)
+
+	current := store.snapshot(10).Samples[1].Security
+	if current.RequestRateAvailable || current.RequestsPerSecond != 0 || current.RejectedRateAvailable || current.RejectedPerSecond != 0 {
+		t.Fatalf("SecurityEdge counter reset produced synthetic rates: %#v", current)
+	}
+}
+
+func TestTelemetryHistoryLoadsPreV13SecurityRatesConservatively(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.json")
+	document := telemetryHistoryDocument{
+		SchemaVersion: "1.2",
+		Samples: []telemetryHistoryPoint{{
+			GeneratedAt: time.Now().UTC().Add(-10 * time.Second).Format(time.RFC3339Nano),
+			Security: telemetrySecurityHistoryPoint{
+				InstanceStartedAt: "2026-08-13T08:00:00Z", Requests: 20, Rejected: 4,
+				RequestsPerSecond: 2, RequestRateAvailable: true, RejectedPerSecond: 0.4, RejectedRateAvailable: true,
+				P95LatencyMS: 9, P95LatencyAvailable: true,
+			},
+			EdgeProxy: telemetryEdgeHistoryPoint{
+				Available: true, ErrorCountAvailable: true,
+				CacheHitRatio: 0.5, CacheHitRatioAvailable: true, P95LatencyMS: 7, P95LatencyAvailable: true,
+			},
+			Routes: map[string]telemetryRouteHistory{
+				"demo": {
+					CacheHitRatio: 0.5, CacheHitRatioAvailable: true, P95LatencyMS: 6, P95LatencyAvailable: true,
+					Origins: map[string]telemetryOriginHistory{
+						"origin-a": {Calls: 10, SuccessRate: 1, SuccessRateAvailable: true, P95LatencyMS: 5, P95LatencyAvailable: true},
+					},
+				},
+			},
+		}},
+	}
+	data, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{Duration: time.Second}, FilePath: path,
+	})
+	loaded := store.snapshot(10).Samples
+	if len(loaded) != 1 {
+		t.Fatalf("history samples=%d, want 1", len(loaded))
+	}
+	security := loaded[0].Security
+	if security.RequestRateAvailable || security.RejectedRateAvailable || security.P95LatencyAvailable {
+		t.Fatalf("pre-1.3 SecurityEdge derived-metric validity must be treated as unknown: %#v", security)
+	}
+	edge := loaded[0].EdgeProxy
+	route := loaded[0].Routes["demo"]
+	origin := route.Origins["origin-a"]
+	if edge.CacheHitRatioAvailable || edge.P95LatencyAvailable || route.CacheHitRatioAvailable || route.P95LatencyAvailable ||
+		origin.SuccessRateAvailable || origin.P95LatencyAvailable {
+		t.Fatalf("pre-1.3 derived-metric validity must be treated as unknown: edge=%#v route=%#v origin=%#v", edge, route, origin)
+	}
+	if !edge.ErrorCountAvailable {
+		t.Fatal("schema 1.2 corrected EdgeProxy error-count validity must remain trusted")
 	}
 }
 

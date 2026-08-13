@@ -56,6 +56,56 @@ func TestProxyErrorsRemainDiagnosticSubsetOfClientFacingErrors(t *testing.T) {
 	}
 }
 
+func TestDerivedMetricsRemainInternallyConsistent(t *testing.T) {
+	registry := New()
+
+	finish := registry.Begin("demo", "GET")
+	finish(RequestObservation{Status: 200, Duration: 10 * time.Millisecond, CacheStatus: "HIT"})
+
+	finish = registry.Begin("demo", "POST")
+	finish(RequestObservation{Status: 404, Duration: 20 * time.Millisecond, CacheStatus: "BYPASS"})
+
+	finish = registry.Begin("demo", "GET")
+	finish(RequestObservation{Status: 502, Duration: 30 * time.Millisecond, ProxyError: true, CacheStatus: "MISS"})
+
+	registry.RecordUpstream("demo", "origin-a", UpstreamObservation{Status: 200, Duration: 5 * time.Millisecond})
+	registry.RecordUpstream("demo", "origin-a", UpstreamObservation{Status: 404, Duration: 7 * time.Millisecond})
+	registry.RecordUpstream("demo", "origin-a", UpstreamObservation{Status: 500, Duration: 9 * time.Millisecond, Failed: true})
+
+	snapshot := registry.Snapshot()
+	total := snapshot.Total
+	if total.Requests != total.Success+total.ClientErrors+total.ServerErrors {
+		t.Fatalf("client-facing outcome counters do not partition requests: %#v", total)
+	}
+	if total.Requests != 3 || total.Success != 1 || total.ClientErrors != 1 || total.ServerErrors != 1 || total.ProxyErrors != 1 {
+		t.Fatalf("unexpected request outcome counters: %#v", total)
+	}
+	if total.SuccessRate != 1.0/3.0 || total.ErrorRate != 2.0/3.0 {
+		t.Fatalf("unexpected derived request rates: success=%v error=%v", total.SuccessRate, total.ErrorRate)
+	}
+	if total.CacheHits != 1 || total.CacheMisses != 1 || total.CacheBypasses != 1 || total.CacheHitRatio != 0.5 {
+		t.Fatalf("cache counters/ratio are inconsistent: %#v", total.Cache)
+	}
+	if total.ResponseLatencyMS.Count != total.Requests {
+		t.Fatalf("response-latency samples=%d, want one per completed request=%d", total.ResponseLatencyMS.Count, total.Requests)
+	}
+	if total.Upstream.Calls != total.Upstream.Success+total.Upstream.Failures {
+		t.Fatalf("upstream outcomes do not partition calls: %#v", total.Upstream)
+	}
+	if total.Upstream.Calls != 3 || total.Upstream.Success != 2 || total.Upstream.Failures != 1 {
+		t.Fatalf("unexpected upstream aggregate: %#v", total.Upstream)
+	}
+	if total.Upstream.LatencyMS.Count != total.Upstream.Calls {
+		t.Fatalf("upstream-latency samples=%d, want one per call=%d", total.Upstream.LatencyMS.Count, total.Upstream.Calls)
+	}
+	origin := snapshot.Upstreams["origin-a"]
+	if origin.Calls != 3 || origin.Success != 2 || origin.Failures != 1 ||
+		origin.SuccessRate != 2.0/3.0 || origin.ErrorRate != 1.0/3.0 ||
+		origin.LatencyMS.Count != origin.Calls {
+		t.Fatalf("per-Origin derived metrics are inconsistent: %#v", origin)
+	}
+}
+
 func TestHistogramEmptySnapshot(t *testing.T) {
 	var h histogram
 	snapshot := h.Snapshot()

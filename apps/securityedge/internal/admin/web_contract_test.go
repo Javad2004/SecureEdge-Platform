@@ -332,7 +332,7 @@ func TestDashboardPreservesAuthAndTelemetryTruthfulness(t *testing.T) {
 		"Operations API unavailable",
 		"edgeproxy_metrics_status_code",
 		"return status >= 200 && status < 300 && typeof metrics?.schema_version === 'string'",
-		"edgeMetricsAvailable ? `${ms(edgeTotal.upstream?.latency_ms?.average)} upstream avg` : 'EdgeProxy metrics unavailable'",
+		"upstreamSamples > 0 ? `${ms(edgeTotal.upstream?.latency_ms?.average)} upstream avg` : 'No upstream samples'",
 		"edgeStatusAvailable ? `${healthy}/${origins.length}` : '—'",
 		"edgeStatusAvailable ? `${routes.filter(route => route.ready).length}/${routes.length} routes ready` : 'EdgeProxy status unavailable'",
 		"return key ? routes[key] : null;",
@@ -340,6 +340,13 @@ func TestDashboardPreservesAuthAndTelemetryTruthfulness(t *testing.T) {
 		"healthKnown ? (live.healthy ? 'healthy' : 'unhealthy') : 'unknown'",
 		"EdgeProxy telemetry unavailable.",
 		"Runtime health unavailable.",
+		"req/s avg since start",
+		"pctIf(edgeTotal.cache_hit_ratio, cacheLookups > 0)",
+		"msIf(total.latency?.p95_ms, securityRequests > 0)",
+		"point.security?.rejected_rate_available === true",
+		"pctIf(m.cache_hit_ratio, cacheLookups > 0)",
+		"pctIf(om.success_rate, originCalls > 0)",
+		"msIf(live.ewma_latency_ms, Number(live.scheduler_selections || 0) > 0)",
 	} {
 		if !strings.Contains(javascript, required) {
 			t.Fatalf("dashboard authentication/telemetry truthfulness contract is missing %q", required)

@@ -32,46 +32,56 @@ type telemetryHistoryPoint struct {
 }
 
 type telemetrySecurityHistoryPoint struct {
-	Requests          uint64  `json:"requests"`
-	Rejected          uint64  `json:"rejected"`
-	Detections        uint64  `json:"detections"`
-	Errors            uint64  `json:"errors"`
-	RequestsPerSecond float64 `json:"requests_per_second"`
-	RejectedPerSecond float64 `json:"rejected_per_second"`
-	P95LatencyMS      float64 `json:"p95_latency_ms"`
-	Inflight          int64   `json:"inflight"`
+	InstanceStartedAt     string  `json:"instance_started_at,omitempty"`
+	Requests              uint64  `json:"requests"`
+	Rejected              uint64  `json:"rejected"`
+	Detections            uint64  `json:"detections"`
+	Errors                uint64  `json:"errors"`
+	RequestsPerSecond     float64 `json:"requests_per_second"`
+	RequestRateAvailable  bool    `json:"request_rate_available"`
+	RejectedPerSecond     float64 `json:"rejected_per_second"`
+	RejectedRateAvailable bool    `json:"rejected_rate_available"`
+	P95LatencyMS          float64 `json:"p95_latency_ms"`
+	P95LatencyAvailable   bool    `json:"p95_latency_available"`
+	Inflight              int64   `json:"inflight"`
 }
 
 type telemetryEdgeHistoryPoint struct {
-	Available            bool    `json:"available"`
-	InstanceStartedAt    string  `json:"instance_started_at,omitempty"`
-	Requests             uint64  `json:"requests"`
-	Errors               uint64  `json:"errors"`
-	ErrorCountAvailable  bool    `json:"error_count_available"`
-	CacheHitRatio        float64 `json:"cache_hit_ratio"`
-	RequestsPerSecond    float64 `json:"requests_per_second"`
-	RequestRateAvailable bool    `json:"request_rate_available"`
-	P95LatencyMS         float64 `json:"p95_latency_ms"`
-	Inflight             int64   `json:"inflight"`
+	Available              bool    `json:"available"`
+	InstanceStartedAt      string  `json:"instance_started_at,omitempty"`
+	Requests               uint64  `json:"requests"`
+	Errors                 uint64  `json:"errors"`
+	ErrorCountAvailable    bool    `json:"error_count_available"`
+	CacheHitRatio          float64 `json:"cache_hit_ratio"`
+	CacheHitRatioAvailable bool    `json:"cache_hit_ratio_available"`
+	RequestsPerSecond      float64 `json:"requests_per_second"`
+	RequestRateAvailable   bool    `json:"request_rate_available"`
+	P95LatencyMS           float64 `json:"p95_latency_ms"`
+	P95LatencyAvailable    bool    `json:"p95_latency_available"`
+	Inflight               int64   `json:"inflight"`
 }
 
 type telemetryRouteHistory struct {
-	Requests             uint64                            `json:"requests"`
-	Errors               uint64                            `json:"errors"`
-	ErrorCountAvailable  bool                              `json:"error_count_available"`
-	CacheHitRatio        float64                           `json:"cache_hit_ratio"`
-	RequestsPerSecond    float64                           `json:"requests_per_second"`
-	RequestRateAvailable bool                              `json:"request_rate_available"`
-	P95LatencyMS         float64                           `json:"p95_latency_ms"`
-	Origins              map[string]telemetryOriginHistory `json:"origins,omitempty"`
+	Requests               uint64                            `json:"requests"`
+	Errors                 uint64                            `json:"errors"`
+	ErrorCountAvailable    bool                              `json:"error_count_available"`
+	CacheHitRatio          float64                           `json:"cache_hit_ratio"`
+	CacheHitRatioAvailable bool                              `json:"cache_hit_ratio_available"`
+	RequestsPerSecond      float64                           `json:"requests_per_second"`
+	RequestRateAvailable   bool                              `json:"request_rate_available"`
+	P95LatencyMS           float64                           `json:"p95_latency_ms"`
+	P95LatencyAvailable    bool                              `json:"p95_latency_available"`
+	Origins                map[string]telemetryOriginHistory `json:"origins,omitempty"`
 }
 
 type telemetryOriginHistory struct {
-	Calls        uint64  `json:"calls"`
-	Failures     uint64  `json:"failures"`
-	Timeouts     uint64  `json:"timeouts"`
-	SuccessRate  float64 `json:"success_rate"`
-	P95LatencyMS float64 `json:"p95_latency_ms"`
+	Calls                uint64  `json:"calls"`
+	Failures             uint64  `json:"failures"`
+	Timeouts             uint64  `json:"timeouts"`
+	SuccessRate          float64 `json:"success_rate"`
+	SuccessRateAvailable bool    `json:"success_rate_available"`
+	P95LatencyMS         float64 `json:"p95_latency_ms"`
+	P95LatencyAvailable  bool    `json:"p95_latency_available"`
 }
 
 type edgeMetricsHistoryInput struct {
@@ -87,9 +97,12 @@ type edgeCounterHistoryInput struct {
 	ClientErrors      uint64  `json:"client_errors"`
 	ServerErrors      uint64  `json:"server_errors"`
 	ProxyErrors       uint64  `json:"proxy_errors"`
+	CacheHits         uint64  `json:"cache_hits"`
+	CacheMisses       uint64  `json:"cache_misses"`
 	CacheHitRatio     float64 `json:"cache_hit_ratio"`
 	ResponseLatencyMS struct {
-		P95 float64 `json:"p95"`
+		Count uint64  `json:"count"`
+		P95   float64 `json:"p95"`
 	} `json:"response_latency_ms"`
 }
 
@@ -104,7 +117,8 @@ type edgeOriginHistoryInput struct {
 	Timeouts    uint64  `json:"timeouts"`
 	SuccessRate float64 `json:"success_rate"`
 	LatencyMS   struct {
-		P95 float64 `json:"p95"`
+		Count uint64  `json:"count"`
+		P95   float64 `json:"p95"`
 	} `json:"latency_ms"`
 }
 
@@ -161,13 +175,14 @@ func (s *telemetryHistoryStore) observe(security metrics.Snapshot, edgeRaw json.
 	point := telemetryHistoryPoint{
 		GeneratedAt: nowTime.Format(time.RFC3339Nano),
 		Security: telemetrySecurityHistoryPoint{
-			Requests:          security.Total.Requests,
-			Rejected:          rejectedSecurityRequests(security.Total),
-			Detections:        security.Total.Detections,
-			Errors:            security.Total.Errors,
-			RequestsPerSecond: security.RequestsPerSecond,
-			P95LatencyMS:      security.Total.Latency.P95MS,
-			Inflight:          security.Inflight,
+			InstanceStartedAt:   strings.TrimSpace(security.StartedAt),
+			Requests:            security.Total.Requests,
+			Rejected:            rejectedSecurityRequests(security.Total),
+			Detections:          security.Total.Detections,
+			Errors:              security.Total.Errors,
+			P95LatencyMS:        security.Total.Latency.P95MS,
+			P95LatencyAvailable: security.Total.Requests > 0,
+			Inflight:            security.Inflight,
 		},
 		Routes: map[string]telemetryRouteHistory{},
 	}
@@ -175,31 +190,37 @@ func (s *telemetryHistoryStore) observe(security metrics.Snapshot, edgeRaw json.
 	var edge edgeMetricsHistoryInput
 	if len(edgeRaw) > 0 && json.Unmarshal(edgeRaw, &edge) == nil && strings.TrimSpace(edge.SchemaVersion) != "" {
 		point.EdgeProxy = telemetryEdgeHistoryPoint{
-			Available:           true,
-			InstanceStartedAt:   strings.TrimSpace(edge.StartedAt),
-			Requests:            edge.Total.Requests,
-			Errors:              edge.Total.ClientErrors + edge.Total.ServerErrors,
-			ErrorCountAvailable: true,
-			CacheHitRatio:       edge.Total.CacheHitRatio,
-			P95LatencyMS:        edge.Total.ResponseLatencyMS.P95,
-			Inflight:            edge.Inflight,
+			Available:              true,
+			InstanceStartedAt:      strings.TrimSpace(edge.StartedAt),
+			Requests:               edge.Total.Requests,
+			Errors:                 edge.Total.ClientErrors + edge.Total.ServerErrors,
+			ErrorCountAvailable:    true,
+			CacheHitRatio:          edge.Total.CacheHitRatio,
+			CacheHitRatioAvailable: edge.Total.CacheHits+edge.Total.CacheMisses > 0,
+			P95LatencyMS:           edge.Total.ResponseLatencyMS.P95,
+			P95LatencyAvailable:    edge.Total.ResponseLatencyMS.Count > 0,
+			Inflight:               edge.Inflight,
 		}
 		for routeName, route := range edge.Routes {
 			routePoint := telemetryRouteHistory{
-				Requests:            route.Requests,
-				Errors:              route.ClientErrors + route.ServerErrors,
-				ErrorCountAvailable: true,
-				CacheHitRatio:       route.CacheHitRatio,
-				P95LatencyMS:        route.ResponseLatencyMS.P95,
-				Origins:             map[string]telemetryOriginHistory{},
+				Requests:               route.Requests,
+				Errors:                 route.ClientErrors + route.ServerErrors,
+				ErrorCountAvailable:    true,
+				CacheHitRatio:          route.CacheHitRatio,
+				CacheHitRatioAvailable: route.CacheHits+route.CacheMisses > 0,
+				P95LatencyMS:           route.ResponseLatencyMS.P95,
+				P95LatencyAvailable:    route.ResponseLatencyMS.Count > 0,
+				Origins:                map[string]telemetryOriginHistory{},
 			}
 			for originName, origin := range route.Upstreams {
 				routePoint.Origins[originName] = telemetryOriginHistory{
-					Calls:        origin.Calls,
-					Failures:     origin.Failures,
-					Timeouts:     origin.Timeouts,
-					SuccessRate:  origin.SuccessRate,
-					P95LatencyMS: origin.LatencyMS.P95,
+					Calls:                origin.Calls,
+					Failures:             origin.Failures,
+					Timeouts:             origin.Timeouts,
+					SuccessRate:          origin.SuccessRate,
+					SuccessRateAvailable: origin.Calls > 0,
+					P95LatencyMS:         origin.LatencyMS.P95,
+					P95LatencyAvailable:  origin.LatencyMS.Count > 0,
 				}
 			}
 			point.Routes[routeName] = routePoint
@@ -211,8 +232,16 @@ func (s *telemetryHistoryStore) observe(security metrics.Snapshot, edgeRaw json.
 		if previousTime, err := time.Parse(time.RFC3339Nano, previous.GeneratedAt); err == nil {
 			seconds := nowTime.Sub(previousTime).Seconds()
 			if seconds > 0 {
-				point.Security.RequestsPerSecond = counterRate(previous.Security.Requests, point.Security.Requests, seconds, point.Security.RequestsPerSecond)
-				point.Security.RejectedPerSecond = counterRate(previous.Security.Rejected, point.Security.Rejected, seconds, 0)
+				sameSecurityEdgeInstance := point.Security.InstanceStartedAt != "" &&
+					point.Security.InstanceStartedAt == previous.Security.InstanceStartedAt
+				if sameSecurityEdgeInstance && point.Security.Requests >= previous.Security.Requests {
+					point.Security.RequestsPerSecond = float64(point.Security.Requests-previous.Security.Requests) / seconds
+					point.Security.RequestRateAvailable = true
+				}
+				if sameSecurityEdgeInstance && point.Security.Rejected >= previous.Security.Rejected {
+					point.Security.RejectedPerSecond = float64(point.Security.Rejected-previous.Security.Rejected) / seconds
+					point.Security.RejectedRateAvailable = true
+				}
 				sameEdgeProxyInstance := point.EdgeProxy.Available && previous.EdgeProxy.Available &&
 					point.EdgeProxy.InstanceStartedAt != "" && point.EdgeProxy.InstanceStartedAt == previous.EdgeProxy.InstanceStartedAt
 				if sameEdgeProxyInstance && point.EdgeProxy.Requests >= previous.EdgeProxy.Requests {
@@ -327,14 +356,31 @@ func (s *telemetryHistoryStore) load() error {
 	if err := decoder.Decode(&document); err != nil {
 		return fmt.Errorf("decode telemetry history: %w", err)
 	}
-	if document.SchemaVersion != "1.0" && document.SchemaVersion != "1.1" && document.SchemaVersion != "1.2" {
+	if document.SchemaVersion != "1.0" && document.SchemaVersion != "1.1" && document.SchemaVersion != "1.2" && document.SchemaVersion != "1.3" {
 		return fmt.Errorf("unsupported telemetry history schema %q", document.SchemaVersion)
 	}
 	if err := ensureJSONEOF(decoder); err != nil {
 		return fmt.Errorf("decode telemetry history: %w", err)
 	}
-	if document.SchemaVersion != "1.2" {
-		for i := range document.Samples {
+	for i := range document.Samples {
+		if document.SchemaVersion != "1.3" {
+			document.Samples[i].Security.RequestRateAvailable = false
+			document.Samples[i].Security.RejectedRateAvailable = false
+			document.Samples[i].Security.P95LatencyAvailable = false
+			document.Samples[i].EdgeProxy.CacheHitRatioAvailable = false
+			document.Samples[i].EdgeProxy.P95LatencyAvailable = false
+			for name, route := range document.Samples[i].Routes {
+				route.CacheHitRatioAvailable = false
+				route.P95LatencyAvailable = false
+				for originName, origin := range route.Origins {
+					origin.SuccessRateAvailable = false
+					origin.P95LatencyAvailable = false
+					route.Origins[originName] = origin
+				}
+				document.Samples[i].Routes[name] = route
+			}
+		}
+		if document.SchemaVersion == "1.0" || document.SchemaVersion == "1.1" {
 			document.Samples[i].EdgeProxy.ErrorCountAvailable = false
 			for name, route := range document.Samples[i].Routes {
 				route.ErrorCountAvailable = false
@@ -410,7 +456,7 @@ func readBoundedTelemetryHistoryFile(path string) ([]byte, error) {
 }
 
 func (s *telemetryHistoryStore) persistLocked() error {
-	document := telemetryHistoryDocument{SchemaVersion: "1.2", Samples: s.samples}
+	document := telemetryHistoryDocument{SchemaVersion: "1.3", Samples: s.samples}
 	data, err := json.Marshal(document)
 	if err != nil {
 		return fmt.Errorf("encode telemetry history: %w", err)
@@ -481,16 +527,6 @@ func (s *telemetryHistoryStore) persistLocked() error {
 
 func rejectedSecurityRequests(counter metrics.CounterSnapshot) uint64 {
 	return counter.Blocked + counter.RateLimited + counter.OverloadRejected + counter.BannedRejected
-}
-
-func counterRate(previous, current uint64, seconds, fallback float64) float64 {
-	if seconds <= 0 {
-		return fallback
-	}
-	if current < previous {
-		return fallback
-	}
-	return float64(current-previous) / seconds
 }
 
 func ensureJSONEOF(decoder *json.Decoder) error {

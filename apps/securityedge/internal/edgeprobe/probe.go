@@ -2,15 +2,16 @@ package edgeprobe
 
 import "net/http"
 
-// HeaderName and HeaderValue form the reserved internal wire contract used by
+// HeaderName, HeaderValue, and ResponseValue form the reserved internal wire contract used by
 // SecurityEdge's synthetic data-plane connectivity probe. EdgeProxy only honors
 // this marker from a directly connected loopback/trusted proxy peer, and
 // SecurityEdge strips client-supplied copies before forwarding normal traffic.
 // The marker is not a credential; trust comes from the direct peer check.
 const (
-	HeaderName  = "X-SecureEdge-Internal-Probe"
-	HeaderValue = "connectivity-v1"
-	UserAgent   = "SecurityEdge-Connectivity-Probe/1.0"
+	HeaderName    = "X-SecureEdge-Internal-Probe"
+	HeaderValue   = "connectivity-v1"
+	ResponseValue = "matched-v1"
+	UserAgent     = "SecurityEdge-Connectivity-Probe/1.0"
 )
 
 // Mark prepares a synthetic data-plane probe so it cannot read from or populate

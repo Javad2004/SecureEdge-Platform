@@ -226,6 +226,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		rt = routeMap[match.Route.Name]
 		routeName = rt.cfg.Name
 	}
+	if operationalProbe && matched {
+		// A trusted probe receives an explicit private acknowledgement only after
+		// the configured Host/Path matched a real Route. SecurityEdge uses this to
+		// distinguish a matched Route from the observable __unmatched__ 404 path.
+		w.Header().Set(internalProbeHeader, internalProbeResponseValue)
+	}
 	id := requestID(req)
 	w.Header().Set("X-Request-ID", id)
 

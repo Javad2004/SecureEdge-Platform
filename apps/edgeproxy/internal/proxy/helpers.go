@@ -136,6 +136,7 @@ func sanitizeOriginResponseHeaders(h http.Header) {
 		"X-Security-Action",
 		"X-Security-Score",
 		"X-Security-Gateway",
+		internalProbeHeader,
 	} {
 		h.Del(name)
 	}

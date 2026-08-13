@@ -408,10 +408,18 @@ func probeDataPlaneHTTP(ctx context.Context, cfg config.Config, configuredRoutes
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	requestID := strings.TrimSpace(resp.Header.Get("X-Request-ID"))
 	if requestID == "" {
-		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy data-plane HTTP(S)", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: u.String(), message: fmt.Sprintf("EdgeProxy returned HTTP %d without matching the configured probe route", resp.StatusCode), httpStatus: resp.StatusCode, latency: latency, details: details}
+		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy data-plane HTTP(S)", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: u.String(), message: fmt.Sprintf("EdgeProxy returned HTTP %d without a request identifier", resp.StatusCode), httpStatus: resp.StatusCode, latency: latency, details: details}
 	}
 	details["request_id"] = requestID
-	return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy data-plane HTTP(S)", layer: "edgeproxy", status: StatusHealthy, critical: true, endpoint: u.String(), message: fmt.Sprintf("EdgeProxy accepted the configured route probe with HTTP %d", resp.StatusCode), httpStatus: resp.StatusCode, latency: latency, details: details}
+	ack := strings.TrimSpace(resp.Header.Get(edgeprobe.HeaderName))
+	if ack != edgeprobe.ResponseValue {
+		if ack != "" {
+			details["probe_ack"] = ack
+		}
+		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy data-plane HTTP(S)", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: u.String(), message: fmt.Sprintf("EdgeProxy returned HTTP %d without acknowledging a matched operational probe route", resp.StatusCode), httpStatus: resp.StatusCode, latency: latency, details: details}
+	}
+	details["probe_ack"] = ack
+	return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy data-plane HTTP(S)", layer: "edgeproxy", status: StatusHealthy, critical: true, endpoint: u.String(), message: fmt.Sprintf("EdgeProxy acknowledged the configured route probe with HTTP %d", resp.StatusCode), httpStatus: resp.StatusCode, latency: latency, details: details}
 }
 
 func (m *Monitor) probeEdgeHealth(ctx context.Context, cfg config.Config) probeResult {
@@ -625,7 +633,7 @@ func aggregate(now time.Time, cfg config.ConnectivityConfig, components []Compon
 	}
 
 	observability := StatusHealthy
-	for _, id := range []string{"securityedge_admin", "edgeproxy_admin_health", "edgeproxy_metrics"} {
+	for _, id := range []string{"securityedge_admin", "edgeproxy_admin_health", "edgeproxy_routes_origins", "edgeproxy_metrics"} {
 		component, ok := byID[id]
 		if !ok || component.Status == StatusDown {
 			observability = StatusDown

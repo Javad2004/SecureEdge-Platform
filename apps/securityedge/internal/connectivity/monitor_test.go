@@ -50,6 +50,33 @@ func (f *fakeSource) EdgeJSON(_ context.Context, _ string, path string, _ url.Va
 	}
 }
 
+type selectiveFailureSource struct {
+	cfg      config.Config
+	failPath string
+}
+
+func (f *selectiveFailureSource) Config() config.Config { return f.cfg }
+func (f *selectiveFailureSource) Routes() []routes.Route {
+	return []routes.Route{{Name: "demo-app", Hosts: []string{"project.test"}, PathPrefix: "/"}}
+}
+func (f *selectiveFailureSource) EdgeJSON(_ context.Context, _ string, path string, _ url.Values, _ any) (json.RawMessage, int, error) {
+	if path == f.failPath {
+		return nil, 0, errors.New("dependency endpoint unavailable")
+	}
+	switch path {
+	case "/healthz":
+		return json.RawMessage(`{"status":"ok"}`), http.StatusOK, nil
+	case "/readyz":
+		return json.RawMessage(`{"status":"ready","unhealthy_routes":[]}`), http.StatusOK, nil
+	case "/api/v1/status":
+		return json.RawMessage(`{"routes":[{"name":"demo-app","ready":true,"upstreams":[{"url":"http://origin:9000","healthy":true}]}]}`), http.StatusOK, nil
+	case "/api/v1/metrics":
+		return json.RawMessage(`{"schema_version":"2.0","uptime_seconds":42}`), http.StatusOK, nil
+	default:
+		return json.RawMessage(`{"status":"ok"}`), http.StatusOK, nil
+	}
+}
+
 func healthyConfig(t *testing.T, dataPlane *httptest.Server) config.Config {
 	t.Helper()
 	cfg := config.Default()
@@ -124,6 +151,7 @@ func TestMonitorHealthySnapshot(t *testing.T) {
 			return
 		}
 		w.Header().Set("X-Request-ID", "connectivity-test")
+		w.Header().Set(edgeprobe.HeaderName, edgeprobe.ResponseValue)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
@@ -157,6 +185,7 @@ func TestMonitorDegradesMetricsWithoutDeclaredSchema(t *testing.T) {
 			return
 		}
 		w.Header().Set("X-Request-ID", "connectivity-test")
+		w.Header().Set(edgeprobe.HeaderName, edgeprobe.ResponseValue)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer dataPlane.Close()
@@ -189,9 +218,45 @@ func TestMonitorDegradesMetricsWithoutDeclaredSchema(t *testing.T) {
 	}
 }
 
+func TestMonitorDegradesObservabilityWhenRouteStatusAPIIsUnavailable(t *testing.T) {
+	dataPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-ID", "connectivity-test")
+		w.Header().Set(edgeprobe.HeaderName, edgeprobe.ResponseValue)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer dataPlane.Close()
+
+	source := &selectiveFailureSource{
+		cfg:      healthyConfig(t, dataPlane),
+		failPath: "/api/v1/status",
+	}
+	snapshot := New(source).Snapshot(context.Background(), true)
+
+	var routeStatus Component
+	for _, component := range snapshot.Components {
+		if component.ID == "edgeproxy_routes_origins" {
+			routeStatus = component
+			break
+		}
+	}
+	if routeStatus.ID == "" || routeStatus.Status != StatusDown {
+		t.Fatalf("route-status component=%#v, want DOWN", routeStatus)
+	}
+	if snapshot.TrafficPathStatus != StatusHealthy {
+		t.Fatalf("traffic path=%s, want healthy while readiness/data plane remain healthy", snapshot.TrafficPathStatus)
+	}
+	if snapshot.ObservabilityStatus != StatusDown || snapshot.OverallStatus != StatusDegraded {
+		t.Fatalf("route-status outage hidden: overall=%s observability=%s edge=%s", snapshot.OverallStatus, snapshot.ObservabilityStatus, snapshot.EdgeProxyConnectionStatus)
+	}
+	if snapshot.EdgeProxyConnectionStatus != StatusDegraded {
+		t.Fatalf("edge connection=%s, want degraded", snapshot.EdgeProxyConnectionStatus)
+	}
+}
+
 func TestMonitorDetectsEdgeProxyFailureAndRecordsRecovery(t *testing.T) {
 	dataPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("X-Request-ID", "connectivity-test")
+		w.Header().Set(edgeprobe.HeaderName, edgeprobe.ResponseValue)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
@@ -321,6 +386,7 @@ func TestProbeDataPlaneHTTPUsesConfiguredWildcardRoute(t *testing.T) {
 			t.Errorf("probe cache policy=%#v", r.Header)
 		}
 		w.Header().Set("X-Request-ID", "matched-route")
+		w.Header().Set(edgeprobe.HeaderName, edgeprobe.ResponseValue)
 		w.Header().Set("Location", "/must-not-follow")
 		w.WriteHeader(http.StatusFound)
 	}))
@@ -343,6 +409,28 @@ func TestProbeDataPlaneHTTPUsesConfiguredWildcardRoute(t *testing.T) {
 	}
 	if result.details["protocol"] != "http" || result.details["tls"] != false {
 		t.Fatalf("protocol details=%#v", result.details)
+	}
+}
+
+func TestProbeDataPlaneHTTPRejectsUnmatchedResponseWithRequestIDButNoProbeAcknowledgement(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Request-ID", "unmatched-request")
+		http.Error(w, "no route configured for this host and path", http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Server.Mode = "gateway"
+	cfg.Server.UpstreamProxyURL = server.URL
+	cfg.Admin.Connectivity.Timeout = config.Duration{Duration: time.Second}
+	result := probeDataPlaneHTTP(context.Background(), cfg, []routes.Route{{
+		Name: "api", Hosts: []string{"project.test"}, PathPrefix: "/",
+	}})
+	if result.status != StatusDown {
+		t.Fatalf("unacknowledged unmatched response=%#v, want DOWN", result)
+	}
+	if !strings.Contains(result.message, "without acknowledging") {
+		t.Fatalf("message=%q", result.message)
 	}
 }
 
@@ -448,6 +536,7 @@ func TestCanceledCallerDoesNotPoisonConnectivitySnapshot(t *testing.T) {
 			return
 		}
 		w.Header().Set("X-Request-ID", "connectivity-test")
+		w.Header().Set(edgeprobe.HeaderName, edgeprobe.ResponseValue)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer dataPlane.Close()

@@ -133,6 +133,9 @@ func TestTrustedOperationalProbeDoesNotPolluteApplicationTelemetry(t *testing.T)
 	if probeResponse.Code != http.StatusOK || probeResponse.Header().Get("X-Cache") != "BYPASS" {
 		t.Fatalf("probe status=%d cache=%q", probeResponse.Code, probeResponse.Header().Get("X-Cache"))
 	}
+	if got := probeResponse.Header().Get(internalProbeHeader); got != internalProbeResponseValue {
+		t.Fatalf("trusted matched probe acknowledgement=%q, want %q", got, internalProbeResponseValue)
+	}
 	if sawMarker.Load() {
 		t.Fatal("operational probe marker leaked to Origin")
 	}
@@ -249,6 +252,9 @@ func TestTrustedUnmatchedOperationalProbeDoesNotPolluteTelemetry(t *testing.T) {
 	}
 	if rr.Header().Get("X-Request-ID") == "" {
 		t.Fatal("unmatched operational probe response is missing X-Request-ID")
+	}
+	if got := rr.Header().Get(internalProbeHeader); got != "" {
+		t.Fatalf("unmatched operational probe received a false route-match acknowledgement: %q", got)
 	}
 	if snapshot := registry.Snapshot(); snapshot.Total.Requests != 0 || len(snapshot.Routes) != 0 {
 		t.Fatalf("trusted unmatched operational probe polluted metrics: %#v", snapshot)
@@ -2566,6 +2572,7 @@ func TestOriginCannotSpoofAuthoritativeEdgeHeaders(t *testing.T) {
 		w.Header().Set("X-Security-Action", "BLOCK")
 		w.Header().Set("X-Security-Score", "999")
 		w.Header().Set("X-Security-Gateway", "origin")
+		w.Header().Set(internalProbeHeader, internalProbeResponseValue)
 		w.Header().Set("Cache-Control", "public, max-age=60")
 		_, _ = io.WriteString(w, "ok")
 	}))
@@ -2593,7 +2600,7 @@ func TestOriginCannotSpoofAuthoritativeEdgeHeaders(t *testing.T) {
 		if got := rec.Result().Header.Values("X-Upstream-Response-Time"); index == 0 && (len(got) != 1 || got[0] == "999s") {
 			t.Fatalf("request %d timing headers=%#v", index, got)
 		}
-		for _, name := range []string{"X-Security-Action", "X-Security-Score", "X-Security-Gateway"} {
+		for _, name := range []string{"X-Security-Action", "X-Security-Score", "X-Security-Gateway", internalProbeHeader} {
 			if got := rec.Result().Header.Values(name); len(got) != 0 {
 				t.Fatalf("request %d leaked %s=%#v", index, name, got)
 			}

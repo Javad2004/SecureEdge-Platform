@@ -115,9 +115,10 @@ const (
 	// This wire contract is shared with SecurityEdge's internal connectivity
 	// monitor. A marker is trusted only from loopback or a configured trusted
 	// proxy peer, and it is always stripped before any request reaches an Origin.
-	internalProbeHeader    = "X-SecureEdge-Internal-Probe"
-	internalProbeValue     = "connectivity-v1"
-	internalProbeUserAgent = "SecurityEdge-Connectivity-Probe/1.0"
+	internalProbeHeader        = "X-SecureEdge-Internal-Probe"
+	internalProbeValue         = "connectivity-v1"
+	internalProbeResponseValue = "matched-v1"
+	internalProbeUserAgent     = "SecurityEdge-Connectivity-Probe/1.0"
 )
 
 type operationalProbeKey struct{}

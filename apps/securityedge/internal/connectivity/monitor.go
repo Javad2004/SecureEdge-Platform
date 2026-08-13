@@ -223,7 +223,6 @@ func (m *Monitor) run(ctx context.Context, monitorCfg config.ConnectivityConfig)
 		close(results)
 	}()
 
-	now := time.Now().UTC()
 	collected := make([]probeResult, 0, 9)
 	var routeState []Route
 	for result := range results {
@@ -234,11 +233,21 @@ func (m *Monitor) run(ctx context.Context, monitorCfg config.ConnectivityConfig)
 	}
 	sort.Slice(collected, func(i, j int) bool { return componentOrder(collected[i].id) < componentOrder(collected[j].id) })
 
+	// Timestamp the completed probe generation, not its start. Otherwise a slow
+	// dependency check can make a freshly returned snapshot older than the
+	// configured cache interval and trigger another full probe immediately.
+	now := time.Now().UTC()
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// A wall-clock rollback can leave historical outcome timestamps and
+	// transition entries numerically ahead of the newly generated snapshot.
+	// Keep cumulative availability counters, but discard impossible future
+	// timestamps so the dashboard cannot report a last success/failure or state
+	// transition that has not happened yet in the corrected wall-clock timeline.
+	m.history = connectivityHistoryNotAfter(m.history, now)
 	components := make([]Component, 0, len(collected))
 	for _, result := range collected {
-		previous := m.components[result.id]
+		previous := sanitizeComponentHistory(m.components[result.id], now)
 		component := updateComponent(previous, result, now)
 		m.components[result.id] = component
 		components = append(components, cloneComponent(component))
@@ -593,6 +602,40 @@ func updateComponent(previous Component, result probeResult, now time.Time) Comp
 		component.AvailabilityPercent = float64(component.SuccessfulChecks) / float64(component.Checks) * 100
 	}
 	return component
+}
+
+func sanitizeComponentHistory(component Component, now time.Time) Component {
+	component.LastSuccessAt = historicalTimestampNotAfter(component.LastSuccessAt, now)
+	component.LastFailureAt = historicalTimestampNotAfter(component.LastFailureAt, now)
+	return component
+}
+
+func historicalTimestampNotAfter(raw string, now time.Time) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	observed, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil || observed.After(now.UTC()) {
+		return ""
+	}
+	return raw
+}
+
+func connectivityHistoryNotAfter(history []Transition, now time.Time) []Transition {
+	if len(history) == 0 {
+		return history
+	}
+	cutoff := now.UTC()
+	out := make([]Transition, 0, len(history))
+	for _, transition := range history {
+		observed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(transition.Timestamp))
+		if err != nil || observed.After(cutoff) {
+			continue
+		}
+		out = append(out, transition)
+	}
+	return out
 }
 
 func aggregate(now time.Time, cfg config.ConnectivityConfig, components []Component, routesState []Route, history []Transition) Snapshot {

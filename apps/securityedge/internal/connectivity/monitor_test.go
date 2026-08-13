@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -644,6 +645,116 @@ func TestMonitorRefreshesFutureDatedCachedSnapshotAfterClockRollback(t *testing.
 	}
 	if got.OverallStatus != StatusDown {
 		t.Fatalf("refreshed dependency failure was not observed: overall=%s components=%#v", got.OverallStatus, got.Components)
+	}
+}
+
+func TestMonitorGeneratedAtRepresentsCompletedProbeGeneration(t *testing.T) {
+	var dataPlaneCalls atomic.Int32
+	dataPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dataPlaneCalls.Add(1)
+		time.Sleep(350 * time.Millisecond)
+		w.Header().Set("X-Request-ID", "connectivity-test")
+		w.Header().Set(edgeprobe.HeaderName, edgeprobe.ResponseValue)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer dataPlane.Close()
+
+	cfg := healthyConfig(t, dataPlane)
+	cfg.Admin.Connectivity.CheckInterval = config.Duration{Duration: 200 * time.Millisecond}
+	cfg.Admin.Connectivity.Timeout = config.Duration{Duration: time.Second}
+	monitor := New(&fakeSource{cfg: cfg})
+
+	first := monitor.Snapshot(context.Background(), true)
+	generatedAt, err := time.Parse(time.RFC3339Nano, first.GeneratedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if age := time.Since(generatedAt); age < 0 || age >= cfg.Admin.Connectivity.CheckInterval.Duration {
+		t.Fatalf("freshly completed snapshot has invalid age %s for interval %s", age, cfg.Admin.Connectivity.CheckInterval.Duration)
+	}
+
+	before := dataPlaneCalls.Load()
+	second := monitor.Snapshot(context.Background(), false)
+	if after := dataPlaneCalls.Load(); after != before {
+		t.Fatalf("fresh snapshot immediately triggered another data-plane probe: before=%d after=%d", before, after)
+	}
+	if second.GeneratedAt != first.GeneratedAt {
+		t.Fatalf("fresh cached snapshot changed generation: first=%s second=%s", first.GeneratedAt, second.GeneratedAt)
+	}
+}
+
+func TestMonitorRemovesFutureHistoricalTimestampsAfterClockRollback(t *testing.T) {
+	dataPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-ID", "connectivity-test")
+		w.Header().Set(edgeprobe.HeaderName, edgeprobe.ResponseValue)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer dataPlane.Close()
+
+	source := &fakeSource{
+		cfg:        healthyConfig(t, dataPlane),
+		metricsRaw: json.RawMessage(`{"uptime_seconds":42}`),
+	}
+	monitor := New(source)
+	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
+	monitor.components["edgeproxy_metrics"] = Component{
+		ID: "edgeproxy_metrics", Status: StatusHealthy, Checks: 4, SuccessfulChecks: 4,
+		ConsecutiveSuccesses: 4, LastSuccessAt: future, LastFailureAt: future,
+	}
+	monitor.history = []Transition{{
+		Timestamp: future, Component: "edgeproxy_metrics", From: StatusDown, To: StatusHealthy,
+		Message: "future transition from the pre-correction timeline",
+	}}
+
+	got := monitor.Snapshot(context.Background(), true)
+	var metricsComponent Component
+	found := false
+	for _, component := range got.Components {
+		if component.ID == "edgeproxy_metrics" {
+			metricsComponent = component
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("edgeproxy_metrics component missing")
+	}
+	if metricsComponent.Status != StatusDegraded {
+		t.Fatalf("metrics status=%s, want degraded", metricsComponent.Status)
+	}
+	if metricsComponent.LastSuccessAt != "" || metricsComponent.LastFailureAt != "" {
+		t.Fatalf("future historical timestamps survived rollback: %#v", metricsComponent)
+	}
+	if metricsComponent.Checks != 5 || metricsComponent.SuccessfulChecks != 4 {
+		t.Fatalf("clock recovery changed cumulative availability accounting: %#v", metricsComponent)
+	}
+	if len(got.History) != 1 {
+		t.Fatalf("history=%#v, want only the new post-rollback transition", got.History)
+	}
+	transitionTime, err := time.Parse(time.RFC3339Nano, got.History[0].Timestamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generatedAt, err := time.Parse(time.RFC3339Nano, got.GeneratedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transitionTime.After(generatedAt) {
+		t.Fatalf("transition timestamp %s is after snapshot %s", transitionTime, generatedAt)
+	}
+}
+
+func TestConnectivityHistoryNotAfterDropsFutureAndInvalidTransitions(t *testing.T) {
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	history := []Transition{
+		{Timestamp: now.Add(-time.Second).Format(time.RFC3339Nano), Component: "past"},
+		{Timestamp: now.Format(time.RFC3339Nano), Component: "current"},
+		{Timestamp: now.Add(time.Nanosecond).Format(time.RFC3339Nano), Component: "future"},
+		{Timestamp: "not-a-time", Component: "invalid"},
+	}
+	got := connectivityHistoryNotAfter(history, now)
+	if len(got) != 2 || got[0].Component != "past" || got[1].Component != "current" {
+		t.Fatalf("filtered history=%#v", got)
 	}
 }
 

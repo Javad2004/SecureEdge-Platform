@@ -348,7 +348,7 @@ This panel is updated by real requests that reach SecurityEdge. It can show:
 - EdgeProxy cache result;
 - request and unique-client counts within the bounded recent window.
 
-The recent-traffic tracker retains at most 512 request events in memory. If more still-in-window events have been evicted because that capacity was reached, the API sets `window_truncated=true`, reports the retention capacity and a conservative `minimum_requests_in_window`, and the Dashboard labels the displayed breakdown as a retained sample instead of presenting it as an exact five-minute total. This keeps memory bounded without silently under-reporting high-volume traffic.
+The recent-traffic tracker retains at most 512 request events in memory and keeps that bounded set ordered by normalized observation time rather than tracker insertion order. Concurrent scheduling or delayed request finalization therefore cannot make an older event appear as the latest request or displace a newer retained event. If more still-in-window events have been evicted because that capacity was reached, the API sets `window_truncated=true`, reports the retention capacity and a conservative `minimum_requests_in_window`, and the Dashboard labels the displayed breakdown as a retained sample instead of presenting it as an exact five-minute total. This keeps memory bounded without silently under-reporting high-volume traffic.
 
 No external acceptance-test reporter is required. No recent traffic is informational and does not make service health degraded or down.
 

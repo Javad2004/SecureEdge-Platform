@@ -65,3 +65,50 @@ func TestSnapshotClearsTruncationAfterEvictedEventLeavesWindow(t *testing.T) {
 		t.Fatalf("expected empty current window, got %#v", snapshot)
 	}
 }
+
+func TestTrackerOrdersOutOfOrderEventsByObservedTime(t *testing.T) {
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	tracker := New(3, time.Minute)
+	tracker.Observe(Event{ObservedAt: now.Add(-5 * time.Second).Format(time.RFC3339Nano), RequestID: "newer", Action: "ALLOW"})
+	tracker.Observe(Event{ObservedAt: now.Add(-10 * time.Second).Format(time.RFC3339Nano), RequestID: "older", Action: "ALLOW"})
+
+	snapshot := tracker.Snapshot(now)
+	if snapshot.LastRequest == nil || snapshot.LastRequest.RequestID != "newer" {
+		t.Fatalf("last request should be newest by observation time: %#v", snapshot.LastRequest)
+	}
+	recent := tracker.Recent(10)
+	if len(recent) != 2 || recent[0].RequestID != "newer" || recent[1].RequestID != "older" {
+		t.Fatalf("recent events are not chronologically ordered: %#v", recent)
+	}
+}
+
+func TestTrackerOrdersFractionalTimestampsWithinSameSecond(t *testing.T) {
+	tracker := New(3, time.Minute)
+	tracker.Observe(Event{ObservedAt: "2026-08-13T12:00:00.1Z", RequestID: "later", Action: "ALLOW"})
+	tracker.Observe(Event{ObservedAt: "2026-08-13T12:00:00Z", RequestID: "earlier", Action: "ALLOW"})
+
+	recent := tracker.Recent(10)
+	if len(recent) != 2 || recent[0].RequestID != "later" || recent[1].RequestID != "earlier" {
+		t.Fatalf("fractional timestamps are not chronologically ordered: %#v", recent)
+	}
+}
+
+func TestTrackerRetainsNewestEventsWhenOlderObservationArrivesAtCapacity(t *testing.T) {
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	tracker := New(2, time.Minute)
+	tracker.Observe(Event{ObservedAt: now.Add(-20 * time.Second).Format(time.RFC3339Nano), RequestID: "middle", Action: "ALLOW"})
+	tracker.Observe(Event{ObservedAt: now.Add(-10 * time.Second).Format(time.RFC3339Nano), RequestID: "newest", Action: "ALLOW"})
+	tracker.Observe(Event{ObservedAt: now.Add(-30 * time.Second).Format(time.RFC3339Nano), RequestID: "delayed-oldest", Action: "ALLOW"})
+
+	recent := tracker.Recent(10)
+	if len(recent) != 2 || recent[0].RequestID != "newest" || recent[1].RequestID != "middle" {
+		t.Fatalf("capacity should retain the newest observations: %#v", recent)
+	}
+	snapshot := tracker.Snapshot(now)
+	if snapshot.LastRequest == nil || snapshot.LastRequest.RequestID != "newest" {
+		t.Fatalf("unexpected last request: %#v", snapshot.LastRequest)
+	}
+	if !snapshot.WindowTruncated || snapshot.RequestsInWindow != 2 || snapshot.MinimumRequestsInWindow != 3 {
+		t.Fatalf("discarded in-window observation must preserve a conservative lower bound: %#v", snapshot)
+	}
+}

@@ -63,20 +63,44 @@ func New(capacity int, window time.Duration) *Tracker {
 }
 
 func (t *Tracker) Observe(event Event) {
-	if event.ObservedAt == "" {
-		event.ObservedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	observed, err := time.Parse(time.RFC3339Nano, event.ObservedAt)
+	if err != nil {
+		observed = time.Now().UTC()
+	} else {
+		observed = observed.UTC()
 	}
+	event.ObservedAt = observed.Format(time.RFC3339Nano)
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if len(t.events) == t.capacity {
-		if observed, err := time.Parse(time.RFC3339Nano, t.events[0].ObservedAt); err == nil && observed.After(t.latestEvictedAt) {
-			t.latestEvictedAt = observed
-		}
-		copy(t.events, t.events[1:])
-		t.events[len(t.events)-1] = event
+
+	position := sort.Search(len(t.events), func(i int) bool {
+		existing, parseErr := time.Parse(time.RFC3339Nano, t.events[i].ObservedAt)
+		return parseErr == nil && existing.After(observed)
+	})
+	if len(t.events) < t.capacity {
+		t.events = append(t.events, Event{})
+		copy(t.events[position+1:], t.events[position:])
+		t.events[position] = event
 		return
 	}
-	t.events = append(t.events, event)
+
+	if position == 0 {
+		t.noteEvicted(observed)
+		return
+	}
+
+	if evicted, parseErr := time.Parse(time.RFC3339Nano, t.events[0].ObservedAt); parseErr == nil {
+		t.noteEvicted(evicted)
+	}
+	copy(t.events[:position-1], t.events[1:position])
+	t.events[position-1] = event
+}
+
+func (t *Tracker) noteEvicted(observed time.Time) {
+	if observed.After(t.latestEvictedAt) {
+		t.latestEvictedAt = observed
+	}
 }
 
 func (t *Tracker) Snapshot(now time.Time) Snapshot {
@@ -144,7 +168,9 @@ func (t *Tracker) Recent(limit int) []Event {
 	if limit <= 0 || limit > len(t.events) {
 		limit = len(t.events)
 	}
-	out := append([]Event(nil), t.events[len(t.events)-limit:]...)
-	sort.SliceStable(out, func(i, j int) bool { return out[i].ObservedAt > out[j].ObservedAt })
+	out := make([]Event, limit)
+	for i := 0; i < limit; i++ {
+		out[i] = t.events[len(t.events)-1-i]
+	}
 	return out
 }

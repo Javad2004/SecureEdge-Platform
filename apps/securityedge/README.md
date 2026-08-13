@@ -332,6 +332,8 @@ The dashboard reports component status, probe latency, HTTP status, last success
 
 The periodic SecurityEdge → EdgeProxy data-plane check uses a reserved operational-probe marker together with `Cache-Control: no-store`. EdgeProxy honors that marker only for the expected `HEAD` probe received directly from loopback or a configured trusted-proxy peer, strips it before contacting the Origin, and excludes the synthetic request from application request/cache/upstream metrics, retained access/origin-attempt logs, scheduler/EWMA state, and Origin health transitions. This keeps the Overview cache hit ratio and request-rate history representative of real application traffic even when connectivity checks run every five seconds. SecurityEdge strips any client-supplied copy of the marker from normal gateway traffic, and EdgeProxy treats a matching marker from an untrusted peer as ordinary metered traffic rather than as a probe. Deploy matching SecurityEdge and EdgeProxy binaries together so the reserved probe contract and telemetry semantics remain aligned during upgrades.
 
+`X-SecureEdge-Internal-Probe` is reserved exclusively for this private connectivity contract and is rejected as `server.forwarded_for_header`. Using control-plane metadata as a client-identity source would otherwise create a configuration that validates but cannot be honored consistently after the marker is stripped.
+
 ### Recent Client Traffic
 
 This panel is updated by real requests that reach SecurityEdge. It can show:
@@ -345,6 +347,8 @@ This panel is updated by real requests that reach SecurityEdge. It can show:
 - response duration;
 - EdgeProxy cache result;
 - request and unique-client counts within the bounded recent window.
+
+The recent-traffic tracker retains at most 512 request events in memory. If more still-in-window events have been evicted because that capacity was reached, the API sets `window_truncated=true`, reports the retention capacity and a conservative `minimum_requests_in_window`, and the Dashboard labels the displayed breakdown as a retained sample instead of presenting it as an exact five-minute total. This keeps memory bounded without silently under-reporting high-volume traffic.
 
 No external acceptance-test reporter is required. No recent traffic is informational and does not make service health degraded or down.
 
@@ -441,7 +445,7 @@ Multiple rapid restart requests are coalesced so the newest valid revision wins.
 
 The restart-required comparison uses the file-backed SecurityEdge configuration independently of runtime/environment endpoint overrides. A change made to EdgeProxy routes from the Dashboard therefore cannot be misclassified as a SecurityEdge process change or cause an unnecessary listener restart.
 
-Rate-limit buckets and automatic-ban tracking are also process-wide stores. Route policies may define different request rates, bursts, violation thresholds, windows, and ban durations, but they must use the same `cleanup_interval`, `idle_ttl`, `max_buckets`, and `max_tracked_clients` capacity settings as `default_policy`. This prevents one route from applying a smaller shared-store capacity to buckets or client records created by another route.
+Rate-limit buckets and automatic-ban tracking are also process-wide stores. Route policies may define different request rates, bursts, violation thresholds, windows, and ban durations, but they must use the same `cleanup_interval`, `idle_ttl`, `max_buckets`, and `max_tracked_clients` capacity settings as `default_policy`. This prevents one route from applying a smaller shared-store capacity to buckets or client records created by another route. The case-insensitive identifier `__unmatched__` is reserved for SecurityEdge's internal unmatched-request telemetry and cannot be used as an EdgeProxy Route name or a SecurityEdge Route-policy key, preventing unmatched traffic from inheriting or merging with a user-defined Route identity.
 
 Dashboard policy updates are prepared before the configuration file is replaced. A validation or reload-preparation failure therefore leaves both the persisted file and the active runtime unchanged. Reload and policy-write transactions are serialized, so concurrent Admin API requests cannot overwrite one another or apply a different revision than the one persisted on disk.
 

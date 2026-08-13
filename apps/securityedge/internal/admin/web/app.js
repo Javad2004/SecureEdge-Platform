@@ -351,8 +351,13 @@ function renderRecentTraffic() {
   $('recent-traffic-reason').textContent = active ? (request.reason || 'Policy allowed') : '—';
   $('recent-traffic-status').textContent = active ? String(request.status || '—') : '—';
   $('recent-traffic-cache').textContent = active ? `${request.cache_status || 'Not reported'} cache` : '— cache';
-  $('recent-traffic-count').textContent = fmt(traffic.requests_in_window);
-  $('recent-traffic-clients').textContent = `${fmt(traffic.unique_clients)} unique clients · ${fmt(traffic.allowed)} allowed · ${fmt(traffic.rejected)} rejected · ${fmt(traffic.canceled)} canceled`;
+  const retainedRequests = Number(traffic.requests_in_window || 0);
+  const truncated = Boolean(traffic.window_truncated);
+  const minimumRequests = Math.max(retainedRequests + (truncated ? 1 : 0), Number(traffic.minimum_requests_in_window || 0));
+  $('recent-traffic-count').textContent = truncated ? `≥${fmt(minimumRequests)}` : fmt(retainedRequests);
+  const retainedPrefix = truncated ? `${fmt(retainedRequests)} retained · ` : '';
+  const capacitySuffix = truncated ? ` · capacity ${fmt(traffic.retention_capacity)}` : '';
+  $('recent-traffic-clients').textContent = `${retainedPrefix}${fmt(traffic.unique_clients)} unique clients · ${fmt(traffic.allowed)} allowed · ${fmt(traffic.rejected)} rejected · ${fmt(traffic.canceled)} canceled${capacitySuffix}`;
 }
 
 function edgeMetricsSnapshot(overview = state.overview || {}) {

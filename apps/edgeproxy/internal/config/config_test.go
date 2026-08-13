@@ -284,6 +284,16 @@ func TestValidateNormalizesWhitespaceUsedAtRuntime(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsReservedUnmatchedRouteName(t *testing.T) {
+	cfg := Default()
+	route := validRouteForValidation()
+	route.Name = "__UNMATCHED__"
+	cfg.Routes = []RouteConfig{route}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("expected reserved internal route name to be rejected, got %v", err)
+	}
+}
+
 func TestValidateRejectsAmbiguousDuplicateRouteSelector(t *testing.T) {
 	cfg := Default()
 	first := validRouteForValidation()
@@ -358,7 +368,7 @@ func TestRejectsInvalidTrustedProxyConfiguration(t *testing.T) {
 }
 
 func TestRejectsReservedClientIPSourceHeaders(t *testing.T) {
-	for _, header := range []string{"Authorization", "Cookie", "Forwarded", "Host", "X-Request-ID", "X-Forwarded-Proto"} {
+	for _, header := range []string{"Authorization", "Cookie", "Forwarded", "Host", "X-Request-ID", "X-Forwarded-Proto", "X-SecureEdge-Internal-Probe"} {
 		t.Run(header, func(t *testing.T) {
 			cfg := Default()
 			cfg.Routes = []RouteConfig{validRouteForValidation()}

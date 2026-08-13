@@ -250,7 +250,7 @@ func TestConfigurationNormalizesSafeScalarAndPolicyValues(t *testing.T) {
 }
 
 func TestRejectsReservedClientIPSourceHeaders(t *testing.T) {
-	for _, header := range []string{"Authorization", "Cookie", "Forwarded", "Host", "X-Request-ID", "X-Forwarded-Proto"} {
+	for _, header := range []string{"Authorization", "Cookie", "Forwarded", "Host", "X-Request-ID", "X-Forwarded-Proto", "X-SecureEdge-Internal-Probe"} {
 		t.Run(header, func(t *testing.T) {
 			cfg := Default()
 			cfg.Server.Mode = "embedded"
@@ -279,6 +279,16 @@ func TestRejectsPolicyAddressInBothAllowAndDenyLists(t *testing.T) {
 	cfg.DefaultPolicy.IPDenylist = []string{"192.0.2.10"}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error")
+	}
+}
+
+func TestRejectsReservedUnmatchedRoutePolicyName(t *testing.T) {
+	cfg := Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.RoutePolicies = map[string]Policy{"__UNMATCHED__": cfg.DefaultPolicy}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("expected reserved internal route policy name to be rejected, got %v", err)
 	}
 }
 

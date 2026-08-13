@@ -28,24 +28,28 @@ type Event struct {
 }
 
 type Snapshot struct {
-	GeneratedAt      string `json:"generated_at"`
-	WindowSeconds    int64  `json:"window_seconds"`
-	Status           string `json:"status"`
-	Summary          string `json:"summary"`
-	LastObservedAt   string `json:"last_observed_at,omitempty"`
-	RequestsInWindow int    `json:"requests_in_window"`
-	UniqueClients    int    `json:"unique_clients"`
-	Allowed          int    `json:"allowed"`
-	Rejected         int    `json:"rejected"`
-	Canceled         int    `json:"canceled"`
-	LastRequest      *Event `json:"last_request,omitempty"`
+	GeneratedAt             string `json:"generated_at"`
+	WindowSeconds           int64  `json:"window_seconds"`
+	RetentionCapacity       int    `json:"retention_capacity"`
+	WindowTruncated         bool   `json:"window_truncated"`
+	MinimumRequestsInWindow int    `json:"minimum_requests_in_window"`
+	Status                  string `json:"status"`
+	Summary                 string `json:"summary"`
+	LastObservedAt          string `json:"last_observed_at,omitempty"`
+	RequestsInWindow        int    `json:"requests_in_window"`
+	UniqueClients           int    `json:"unique_clients"`
+	Allowed                 int    `json:"allowed"`
+	Rejected                int    `json:"rejected"`
+	Canceled                int    `json:"canceled"`
+	LastRequest             *Event `json:"last_request,omitempty"`
 }
 
 type Tracker struct {
-	mu       sync.RWMutex
-	capacity int
-	window   time.Duration
-	events   []Event
+	mu              sync.RWMutex
+	capacity        int
+	window          time.Duration
+	events          []Event
+	latestEvictedAt time.Time
 }
 
 func New(capacity int, window time.Duration) *Tracker {
@@ -65,6 +69,9 @@ func (t *Tracker) Observe(event Event) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if len(t.events) == t.capacity {
+		if observed, err := time.Parse(time.RFC3339Nano, t.events[0].ObservedAt); err == nil && observed.After(t.latestEvictedAt) {
+			t.latestEvictedAt = observed
+		}
 		copy(t.events, t.events[1:])
 		t.events[len(t.events)-1] = event
 		return
@@ -76,15 +83,20 @@ func (t *Tracker) Snapshot(now time.Time) Snapshot {
 	t.mu.RLock()
 	events := append([]Event(nil), t.events...)
 	window := t.window
+	capacity := t.capacity
+	latestEvictedAt := t.latestEvictedAt
 	t.mu.RUnlock()
 
 	now = now.UTC()
 	cutoff := now.Add(-window)
+	windowTruncated := !latestEvictedAt.IsZero() && !latestEvictedAt.Before(cutoff)
 	out := Snapshot{
-		GeneratedAt:   now.Format(time.RFC3339Nano),
-		WindowSeconds: int64(window.Seconds()),
-		Status:        "no_recent_traffic",
-		Summary:       "No client requests have been observed during the recent activity window.",
+		GeneratedAt:       now.Format(time.RFC3339Nano),
+		WindowSeconds:     int64(window.Seconds()),
+		RetentionCapacity: capacity,
+		WindowTruncated:   windowTruncated,
+		Status:            "no_recent_traffic",
+		Summary:           "No client requests have been observed during the recent activity window.",
 	}
 	clients := map[string]struct{}{}
 	for i := len(events) - 1; i >= 0; i-- {
@@ -111,9 +123,17 @@ func (t *Tracker) Snapshot(now time.Time) Snapshot {
 		}
 	}
 	out.UniqueClients = len(clients)
+	out.MinimumRequestsInWindow = out.RequestsInWindow
+	if out.WindowTruncated {
+		out.MinimumRequestsInWindow++
+	}
 	if out.LastRequest != nil {
 		out.Status = "traffic_observed"
-		out.Summary = "Recent client traffic is reaching SecurityEdge; completed security decisions and cancellations are summarized separately."
+		if out.WindowTruncated {
+			out.Summary = "Recent client traffic exceeds the retained event capacity; activity-window counts are a bounded retained sample and the true request volume is higher."
+		} else {
+			out.Summary = "Recent client traffic is reaching SecurityEdge; completed security decisions and cancellations are summarized separately."
+		}
 	}
 	return out
 }

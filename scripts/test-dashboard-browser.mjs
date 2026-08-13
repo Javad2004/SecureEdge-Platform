@@ -125,7 +125,7 @@ function fixturePayload(root) {
   };
   const overview = {
     generated_at:now, connectivity,
-    recent_client_traffic:{status:'no_recent_traffic',requests_in_window:0,unique_clients:0,allowed:0,rejected:0,canceled:0},
+    recent_client_traffic:{status:'no_recent_traffic',window_seconds:300,retention_capacity:512,window_truncated:false,minimum_requests_in_window:0,requests_in_window:0,unique_clients:0,allowed:0,rejected:0,canceled:0},
     security_metrics:{schema_version:'2.0',uptime_seconds:60,inflight:0,requests_per_second:20/60,total:{
       requests:20,canceled_requests:0,allowed:20,blocked:0,logged:0,rate_limited:0,client_rate_limited:0,global_rate_limited:0,overload_rejected:0,banned_rejected:0,
       block_rate:0,detections:0,detection_rate:0,latency:{average_ms:1,maximum_ms:2,p50_ms:1,p95_ms:2,p99_ms:2},rules:{},reasons:{}
@@ -718,7 +718,7 @@ try {
       total.detection_rate = 0.50;
       total.latency = {average_ms:99, maximum_ms:99, p50_ms:99, p95_ms:99, p99_ms:99};
       candidate.recent_client_traffic = {
-        status:'traffic_observed', window_seconds:300, requests_in_window:1, unique_clients:1,
+        status:'traffic_observed', window_seconds:300, retention_capacity:512, window_truncated:false, minimum_requests_in_window:1, requests_in_window:1, unique_clients:1,
         allowed:0, rejected:0, canceled:1, last_observed_at:new Date().toISOString(),
         last_request:{method:'POST',path:'/upload',host:'project.test',client_ip:'198.51.100.5',route:'demo-app',action:'CANCELED',reason:'client_canceled',status:0}
       };
@@ -748,6 +748,38 @@ try {
     };
     if (Object.values(securityCanceledFailures).some(Boolean)) {
       throw new Error(`SecurityEdge client cancellation polluted completed-decision telemetry rendering: ${JSON.stringify({contract:securityCanceledRequestContract,failures:securityCanceledFailures})}`);
+    }
+  }
+
+  let recentTrafficTruncationContract = null;
+  if (fixtureRoot) {
+    recentTrafficTruncationContract = await cdp.evaluate(`(() => {
+      const previous = state.overview;
+      const candidate = structuredClone(previous);
+      candidate.recent_client_traffic = {
+        status:'traffic_observed', window_seconds:300, retention_capacity:512, window_truncated:true,
+        minimum_requests_in_window:513, requests_in_window:512, unique_clients:211,
+        allowed:480, rejected:31, canceled:1, last_observed_at:new Date().toISOString(),
+        summary:'Recent client traffic exceeds the retained event capacity; activity-window counts are a bounded retained sample and the true request volume is higher.',
+        last_request:{method:'GET',path:'/load',host:'project.test',client_ip:'198.51.100.10',route:'demo-app',action:'ALLOW',reason:'',status:200}
+      };
+      state.overview = candidate;
+      renderRecentTraffic();
+      const text = id => document.getElementById(id).textContent.replace(/\\s+/g,' ').trim();
+      const result = {
+        count:text('recent-traffic-count'),
+        details:text('recent-traffic-clients'),
+        summary:text('recent-traffic-summary')
+      };
+      state.overview = previous;
+      renderAll();
+      return result;
+    })()`);
+    if (recentTrafficTruncationContract.count !== '≥513' ||
+        !recentTrafficTruncationContract.details.includes('512 retained') ||
+        !recentTrafficTruncationContract.details.includes('capacity 512') ||
+        !recentTrafficTruncationContract.summary.includes('bounded retained sample')) {
+      throw new Error(`Truncated recent-traffic window rendered as an exact total: ${JSON.stringify(recentTrafficTruncationContract)}`);
     }
   }
 
@@ -1893,7 +1925,7 @@ try {
     connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
     authentication_ui_contract:authenticationUIContract, telemetry_availability_contract:telemetryAvailabilityContract,
-    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, telemetry_trend_gap_contract:telemetryTrendGapContract,
+    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract,
     undefined_metric_rendering_contract:undefinedMetricRenderingContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
   }, null, 2));
 } catch (error) {

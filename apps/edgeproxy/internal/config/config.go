@@ -30,6 +30,7 @@ const (
 	maxCacheVaryHeaders               = 128
 	maxCacheStatusCodes               = 128
 	maxHealthStatuses                 = 128
+	reservedUnmatchedRouteName        = "__unmatched__"
 )
 
 type Config struct {
@@ -460,6 +461,8 @@ func (c *Config) Validate() error {
 			errs = append(errs, fmt.Errorf("routes[%d].name is required", i))
 		} else if len(r.Name) > 256 {
 			errs = append(errs, fmt.Errorf("routes[%d].name cannot exceed 256 bytes", i))
+		} else if strings.EqualFold(r.Name, reservedUnmatchedRouteName) {
+			errs = append(errs, fmt.Errorf("routes[%d].name %q is reserved for internal unmatched-request telemetry", i, r.Name))
 		} else {
 			nameKey := strings.ToLower(r.Name)
 			if _, exists := names[nameKey]; exists {
@@ -931,7 +934,8 @@ func reservedClientIPSourceHeader(value string) bool {
 		"x-forwarded-port",
 		"x-forwarded-proto",
 		"x-forwarded-server",
-		"x-request-id":
+		"x-request-id",
+		"x-secureedge-internal-probe":
 		return true
 	default:
 		return false

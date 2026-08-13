@@ -48,6 +48,7 @@ const (
 	maxRateLimitRequestsPerSecond  = 1_000_000.0
 	maxRateLimitBurst              = 1_000_000
 	maxAutoBanViolationThreshold   = 10_000
+	reservedUnmatchedRouteName     = "__unmatched__"
 )
 
 type Config struct {
@@ -702,6 +703,9 @@ func (c *Config) Validate() error {
 		if trimmedName != name {
 			errs = append(errs, fmt.Errorf("route policy name %q must not contain surrounding whitespace", name))
 		}
+		if strings.EqualFold(trimmedName, reservedUnmatchedRouteName) {
+			errs = append(errs, fmt.Errorf("route policy name %q is reserved for internal unmatched-request telemetry", name))
+		}
 		if err := validatePolicy("route_policies."+name, &p); err != nil {
 			errs = append(errs, err)
 		}
@@ -1017,7 +1021,8 @@ func reservedClientIPSourceHeader(value string) bool {
 		"x-forwarded-port",
 		"x-forwarded-proto",
 		"x-forwarded-server",
-		"x-request-id":
+		"x-request-id",
+		"x-secureedge-internal-probe":
 		return true
 	default:
 		return false

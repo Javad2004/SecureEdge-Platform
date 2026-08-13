@@ -14,7 +14,10 @@ import (
 	"strings"
 )
 
-const maxEdgeProxyConfigBytes int64 = 4 << 20
+const (
+	maxEdgeProxyConfigBytes    int64 = 4 << 20
+	reservedUnmatchedRouteName       = "__unmatched__"
+)
 
 type EdgeProxyConfig struct {
 	Routes []Route `json:"routes"`
@@ -75,6 +78,9 @@ func Load(path string) (*Table, error) {
 		cfg.Routes[i].PathPrefix = normalizedPrefix
 		if cfg.Routes[i].Name == "" || len(cfg.Routes[i].Hosts) == 0 {
 			return nil, fmt.Errorf("edgeproxy route %d is incomplete", i)
+		}
+		if strings.EqualFold(cfg.Routes[i].Name, reservedUnmatchedRouteName) {
+			return nil, fmt.Errorf("edgeproxy route name %q is reserved for internal unmatched-request telemetry", cfg.Routes[i].Name)
 		}
 		nameKey := strings.ToLower(cfg.Routes[i].Name)
 		if seenNames[nameKey] {

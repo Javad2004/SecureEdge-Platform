@@ -124,6 +124,16 @@ func TestLoadRejectsDuplicateHostPathSelector(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsReservedUnmatchedRouteName(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "edge.json")
+	if err := os.WriteFile(file, []byte(`{"routes":[{"name":"__UNMATCHED__","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(file); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("expected reserved internal route name to be rejected, got %v", err)
+	}
+}
+
 func TestLoadRejectsCaseInsensitiveDuplicateRouteNames(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "edge.json")
 	data := `{"routes":[{"name":"Demo","hosts":["one.test"],"path_prefix":"/"},{"name":"demo","hosts":["two.test"],"path_prefix":"/"}]}`

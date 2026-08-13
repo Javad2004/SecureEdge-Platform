@@ -730,6 +730,103 @@ func TestTelemetryHistoryLoadsRFC3339NanoSamplesChronologically(t *testing.T) {
 	}
 }
 
+func TestTelemetryHistoryDropsFutureDatedSamplesOnLoadWithoutFreezingCollection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.json")
+	now := time.Now().UTC()
+	startedAt := now.Add(-time.Hour).Format(time.RFC3339Nano)
+	document := telemetryHistoryDocument{
+		SchemaVersion: "1.5",
+		Samples: []telemetryHistoryPoint{
+			{
+				GeneratedAt: now.Add(-2 * time.Minute).Format(time.RFC3339Nano),
+				Security: telemetrySecurityHistoryPoint{
+					InstanceStartedAt: startedAt,
+					Requests:          10,
+				},
+			},
+			{
+				GeneratedAt: now.Add(time.Hour).Format(time.RFC3339Nano),
+				Security: telemetrySecurityHistoryPoint{
+					InstanceStartedAt: startedAt,
+					Requests:          20,
+				},
+			},
+		},
+	}
+	data, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{}, FilePath: path,
+	})
+	loaded := store.snapshot(10)
+	if len(loaded.Samples) != 1 || loaded.Samples[0].Security.Requests != 10 {
+		t.Fatalf("future-dated history sample was retained: %#v", loaded.Samples)
+	}
+	if !strings.Contains(loaded.LastError, "future-dated") {
+		t.Fatalf("future-dated history recovery was not surfaced: %q", loaded.LastError)
+	}
+
+	store.observe(metrics.Snapshot{
+		StartedAt: startedAt,
+		Total:     metrics.CounterSnapshot{Requests: 30},
+	}, nil)
+	after := store.snapshot(10)
+	if len(after.Samples) != 2 || after.Samples[1].Security.Requests != 30 {
+		t.Fatalf("history sampling remained frozen after future-sample recovery: %#v", after.Samples)
+	}
+	if after.Samples[1].Security.RequestRateAvailable {
+		t.Fatalf("clock-correction recovery invented a request rate: %#v", after.Samples[1].Security)
+	}
+	if after.LastError != "" {
+		t.Fatalf("successful persistence should clear the recovery warning, got %q", after.LastError)
+	}
+}
+
+func TestTelemetryHistoryRecoversFromLiveWallClockRollbackWithoutRateSpike(t *testing.T) {
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{},
+	})
+	now := time.Now().UTC()
+	startedAt := now.Add(-time.Hour).Format(time.RFC3339Nano)
+	store.appendPointLocked(telemetryHistoryPoint{
+		GeneratedAt: now.Add(-2 * time.Minute).Format(time.RFC3339Nano),
+		Security: telemetrySecurityHistoryPoint{
+			InstanceStartedAt: startedAt,
+			Requests:          10,
+		},
+	})
+	store.appendPointLocked(telemetryHistoryPoint{
+		GeneratedAt: now.Add(time.Hour).Format(time.RFC3339Nano),
+		Security: telemetrySecurityHistoryPoint{
+			InstanceStartedAt: startedAt,
+			Requests:          20,
+		},
+	})
+	store.lastObserved = now.Add(time.Hour)
+
+	store.observe(metrics.Snapshot{
+		StartedAt: startedAt,
+		Total:     metrics.CounterSnapshot{Requests: 30},
+	}, nil)
+
+	samples := store.snapshot(10).Samples
+	if len(samples) != 2 {
+		t.Fatalf("clock rollback should discard only future samples and retain current history: %#v", samples)
+	}
+	if samples[0].Security.Requests != 10 || samples[1].Security.Requests != 30 {
+		t.Fatalf("unexpected history after clock rollback: %#v", samples)
+	}
+	if samples[1].Security.RequestRateAvailable || samples[1].Security.RejectedRateAvailable {
+		t.Fatalf("clock rollback must create a rate gap instead of a spike: %#v", samples[1].Security)
+	}
+}
+
 func TestTelemetryHistoryEndpointValidatesLimit(t *testing.T) {
 	server := &Server{history: newTelemetryHistoryStore(config.TelemetryHistoryConfig{
 		Enabled:        true,

@@ -150,6 +150,7 @@ type telemetryHistoryStore struct {
 	retainedBytes    int64
 	maxRetainedBytes int64
 	lastObserved     time.Time
+	rateGapPending   bool
 	lastError        string
 }
 
@@ -171,6 +172,14 @@ func (s *telemetryHistoryStore) observe(security metrics.Snapshot, edgeRaw json.
 	nowTime := time.Now().UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !s.lastObserved.IsZero() && nowTime.Before(s.lastObserved) {
+		// A wall-clock rollback (or a future-dated persisted sample) must not
+		// freeze collection until the clock catches up. Future samples cannot
+		// be ordered truthfully against the current wall clock, so discard
+		// them and force one explicit rate gap before resuming normal sampling.
+		s.discardSamplesAfterLocked(nowTime)
+		s.rateGapPending = true
+	}
 	if !s.lastObserved.IsZero() && nowTime.Sub(s.lastObserved) < s.cfg.SampleInterval.Duration {
 		return
 	}
@@ -232,7 +241,7 @@ func (s *telemetryHistoryStore) observe(security metrics.Snapshot, edgeRaw json.
 		}
 	}
 
-	if len(s.samples) > 0 {
+	if len(s.samples) > 0 && !s.rateGapPending {
 		previous := s.samples[len(s.samples)-1]
 		if previousTime, err := time.Parse(time.RFC3339Nano, previous.GeneratedAt); err == nil {
 			seconds := nowTime.Sub(previousTime).Seconds()
@@ -269,6 +278,7 @@ func (s *telemetryHistoryStore) observe(security metrics.Snapshot, edgeRaw json.
 
 	s.appendPointLocked(point)
 	s.lastObserved = nowTime
+	s.rateGapPending = false
 	if s.cfg.FilePath != "" {
 		if err := s.persistLocked(); err != nil {
 			s.lastError = err.Error()
@@ -276,6 +286,38 @@ func (s *telemetryHistoryStore) observe(security metrics.Snapshot, edgeRaw json.
 			s.lastError = ""
 		}
 	}
+}
+
+func (s *telemetryHistoryStore) discardSamplesAfterLocked(cutoff time.Time) int {
+	if len(s.samples) == 0 {
+		s.lastObserved = time.Time{}
+		return 0
+	}
+
+	keptSamples := make([]telemetryHistoryPoint, 0, len(s.samples))
+	keptBytes := make([]int64, 0, len(s.sampleBytes))
+	var retained int64
+	dropped := 0
+	for i, sample := range s.samples {
+		observedAt, err := time.Parse(time.RFC3339Nano, sample.GeneratedAt)
+		if err == nil && observedAt.After(cutoff) {
+			dropped++
+			continue
+		}
+		keptSamples = append(keptSamples, sample)
+		if i < len(s.sampleBytes) {
+			keptBytes = append(keptBytes, s.sampleBytes[i])
+			retained += s.sampleBytes[i]
+		}
+	}
+	s.samples = keptSamples
+	s.sampleBytes = keptBytes
+	s.retainedBytes = retained
+	s.lastObserved = time.Time{}
+	if len(s.samples) > 0 {
+		s.lastObserved, _ = time.Parse(time.RFC3339Nano, s.samples[len(s.samples)-1].GeneratedAt)
+	}
+	return dropped
 }
 
 func (s *telemetryHistoryStore) appendPointLocked(point telemetryHistoryPoint) {
@@ -394,10 +436,22 @@ func (s *telemetryHistoryStore) load() error {
 		}
 	}
 	valid := document.Samples[:0]
+	loadedAt := time.Now().UTC()
+	futureSamples := 0
 	for _, sample := range document.Samples {
-		if _, err := time.Parse(time.RFC3339Nano, sample.GeneratedAt); err == nil {
-			valid = append(valid, sample)
+		observedAt, err := time.Parse(time.RFC3339Nano, sample.GeneratedAt)
+		if err != nil {
+			continue
 		}
+		if observedAt.After(loadedAt) {
+			futureSamples++
+			continue
+		}
+		valid = append(valid, sample)
+	}
+	if futureSamples > 0 {
+		s.rateGapPending = true
+		s.lastError = fmt.Sprintf("ignored %d future-dated telemetry history sample(s) after a wall-clock rollback or clock correction", futureSamples)
 	}
 	sort.SliceStable(valid, func(i, j int) bool {
 		left, _ := time.Parse(time.RFC3339Nano, valid[i].GeneratedAt)

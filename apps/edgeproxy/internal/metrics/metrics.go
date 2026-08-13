@@ -48,8 +48,10 @@ func (c *stringCounters) Snapshot() map[string]uint64 {
 }
 
 type histogram struct {
-	count   atomic.Uint64
-	sumNS   atomic.Uint64
+	count atomic.Uint64
+	sumNS atomic.Uint64
+	// minNS stores duration nanoseconds plus one so zero remains the unset
+	// sentinel while a real zero-duration sample is still representable.
 	minNS   atomic.Uint64
 	maxNS   atomic.Uint64
 	buckets [len(latencyBounds) + 1]atomic.Uint64
@@ -62,7 +64,7 @@ func (h *histogram) Observe(duration time.Duration) {
 	ns := uint64(duration)
 	h.count.Add(1)
 	h.sumNS.Add(ns)
-	updateMin(&h.minNS, ns)
+	updateMin(&h.minNS, ns+1)
 	updateMax(&h.maxNS, ns)
 	index := len(latencyBounds)
 	for i, bound := range latencyBounds {
@@ -107,6 +109,7 @@ type Counters struct {
 	upstreamCalls       atomic.Uint64
 	upstreamSuccess     atomic.Uint64
 	upstreamFailures    atomic.Uint64
+	upstreamCanceled    atomic.Uint64
 	upstreamTimeouts    atomic.Uint64
 	retries             atomic.Uint64
 	bytesIn             atomic.Uint64
@@ -127,6 +130,7 @@ type UpstreamCounters struct {
 	calls       atomic.Uint64
 	success     atomic.Uint64
 	failures    atomic.Uint64
+	canceled    atomic.Uint64
 	timeouts    atomic.Uint64
 	retries     atomic.Uint64
 	statusCodes stringCounters
@@ -163,6 +167,7 @@ type UpstreamObservation struct {
 	Status   int
 	Duration time.Duration
 	Failed   bool
+	Canceled bool
 	Timeout  bool
 	Retry    bool
 }
@@ -230,6 +235,7 @@ type UpstreamAggregate struct {
 	Calls       uint64            `json:"calls"`
 	Success     uint64            `json:"success"`
 	Failures    uint64            `json:"failures"`
+	Canceled    uint64            `json:"canceled"`
 	Timeouts    uint64            `json:"timeouts"`
 	Retries     uint64            `json:"retries"`
 	StatusCodes map[string]uint64 `json:"status_codes"`
@@ -240,6 +246,7 @@ type UpstreamSnapshot struct {
 	Calls       uint64            `json:"calls"`
 	Success     uint64            `json:"success"`
 	Failures    uint64            `json:"failures"`
+	Canceled    uint64            `json:"canceled"`
 	Timeouts    uint64            `json:"timeouts"`
 	Retries     uint64            `json:"retries"`
 	SuccessRate float64           `json:"success_rate"`
@@ -320,6 +327,10 @@ func (r *Registry) RecordUpstream(route, upstream string, observation UpstreamOb
 
 	for _, target := range []*Counters{&r.total, &routeMetrics.counters} {
 		target.upstreamCalls.Add(1)
+		if observation.Canceled {
+			target.upstreamCanceled.Add(1)
+			continue
+		}
 		target.upstreamLatency.Observe(observation.Duration)
 		if observation.Status > 0 {
 			target.upstreamStatusCodes.Add(strconv.Itoa(observation.Status), 1)
@@ -335,6 +346,13 @@ func (r *Registry) RecordUpstream(route, upstream string, observation UpstreamOb
 	}
 	for _, target := range []*UpstreamCounters{globalUpstream, routeUpstream} {
 		target.calls.Add(1)
+		if observation.Retry {
+			target.retries.Add(1)
+		}
+		if observation.Canceled {
+			target.canceled.Add(1)
+			continue
+		}
 		target.latency.Observe(observation.Duration)
 		if observation.Status > 0 {
 			target.statusCodes.Add(strconv.Itoa(observation.Status), 1)
@@ -346,9 +364,6 @@ func (r *Registry) RecordUpstream(route, upstream string, observation UpstreamOb
 		}
 		if observation.Timeout {
 			target.timeouts.Add(1)
-		}
-		if observation.Retry {
-			target.retries.Add(1)
 		}
 	}
 }
@@ -457,6 +472,7 @@ func snapshotCounters(c *Counters) CounterSnapshot {
 		Calls:       upstreamCalls,
 		Success:     upstreamSuccess,
 		Failures:    upstreamFailures,
+		Canceled:    c.upstreamCanceled.Load(),
 		Timeouts:    c.upstreamTimeouts.Load(),
 		Retries:     snapshot.Retries,
 		StatusCodes: sortedCounterMap(c.upstreamStatusCodes.Snapshot()),
@@ -482,14 +498,18 @@ func snapshotUpstream(c *UpstreamCounters) UpstreamSnapshot {
 		Calls:       calls,
 		Success:     success,
 		Failures:    failures,
+		Canceled:    c.canceled.Load(),
 		Timeouts:    c.timeouts.Load(),
 		Retries:     c.retries.Load(),
 		StatusCodes: sortedCounterMap(c.statusCodes.Snapshot()),
 		LatencyMS:   c.latency.Snapshot(),
 	}
-	if calls > 0 {
-		out.SuccessRate = float64(success) / float64(calls)
-		out.ErrorRate = float64(failures) / float64(calls)
+	// Client-canceled attempts are real physical calls, but they are not evidence
+	// about Origin reliability. Derive rates only from evaluated Origin outcomes.
+	evaluated := success + failures
+	if evaluated > 0 {
+		out.SuccessRate = float64(success) / float64(evaluated)
+		out.ErrorRate = float64(failures) / float64(evaluated)
 	}
 	return out
 }
@@ -501,7 +521,7 @@ func (h *histogram) Snapshot() LatencySnapshot {
 		return out
 	}
 	out.Average = nsToMS(h.sumNS.Load() / count)
-	out.Minimum = nsToMS(h.minNS.Load())
+	out.Minimum = nsToMS(h.minNS.Load() - 1)
 	out.Maximum = nsToMS(h.maxNS.Load())
 
 	var cumulative uint64

@@ -76,6 +76,7 @@ type telemetryRouteHistory struct {
 
 type telemetryOriginHistory struct {
 	Calls                uint64  `json:"calls"`
+	Canceled             uint64  `json:"canceled"`
 	Failures             uint64  `json:"failures"`
 	Timeouts             uint64  `json:"timeouts"`
 	SuccessRate          float64 `json:"success_rate"`
@@ -113,6 +114,7 @@ type edgeRouteHistoryInput struct {
 
 type edgeOriginHistoryInput struct {
 	Calls       uint64  `json:"calls"`
+	Canceled    uint64  `json:"canceled"`
 	Failures    uint64  `json:"failures"`
 	Timeouts    uint64  `json:"timeouts"`
 	SuccessRate float64 `json:"success_rate"`
@@ -215,10 +217,11 @@ func (s *telemetryHistoryStore) observe(security metrics.Snapshot, edgeRaw json.
 			for originName, origin := range route.Upstreams {
 				routePoint.Origins[originName] = telemetryOriginHistory{
 					Calls:                origin.Calls,
+					Canceled:             origin.Canceled,
 					Failures:             origin.Failures,
 					Timeouts:             origin.Timeouts,
 					SuccessRate:          origin.SuccessRate,
-					SuccessRateAvailable: origin.Calls > 0,
+					SuccessRateAvailable: origin.LatencyMS.Count > 0,
 					P95LatencyMS:         origin.LatencyMS.P95,
 					P95LatencyAvailable:  origin.LatencyMS.Count > 0,
 				}
@@ -356,14 +359,14 @@ func (s *telemetryHistoryStore) load() error {
 	if err := decoder.Decode(&document); err != nil {
 		return fmt.Errorf("decode telemetry history: %w", err)
 	}
-	if document.SchemaVersion != "1.0" && document.SchemaVersion != "1.1" && document.SchemaVersion != "1.2" && document.SchemaVersion != "1.3" {
+	if document.SchemaVersion != "1.0" && document.SchemaVersion != "1.1" && document.SchemaVersion != "1.2" && document.SchemaVersion != "1.3" && document.SchemaVersion != "1.4" {
 		return fmt.Errorf("unsupported telemetry history schema %q", document.SchemaVersion)
 	}
 	if err := ensureJSONEOF(decoder); err != nil {
 		return fmt.Errorf("decode telemetry history: %w", err)
 	}
 	for i := range document.Samples {
-		if document.SchemaVersion != "1.3" {
+		if document.SchemaVersion != "1.3" && document.SchemaVersion != "1.4" {
 			document.Samples[i].Security.RequestRateAvailable = false
 			document.Samples[i].Security.RejectedRateAvailable = false
 			document.Samples[i].Security.P95LatencyAvailable = false
@@ -456,7 +459,7 @@ func readBoundedTelemetryHistoryFile(path string) ([]byte, error) {
 }
 
 func (s *telemetryHistoryStore) persistLocked() error {
-	document := telemetryHistoryDocument{SchemaVersion: "1.3", Samples: s.samples}
+	document := telemetryHistoryDocument{SchemaVersion: "1.4", Samples: s.samples}
 	data, err := json.Marshal(document)
 	if err != nil {
 		return fmt.Errorf("encode telemetry history: %w", err)

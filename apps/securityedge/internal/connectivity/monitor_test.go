@@ -62,6 +62,38 @@ func healthyConfig(t *testing.T, dataPlane *httptest.Server) config.Config {
 	return cfg
 }
 
+func TestUpdateComponentExcludesUnknownAndNotApplicableFromAvailability(t *testing.T) {
+	now := time.Date(2026, 8, 13, 10, 0, 0, 0, time.UTC)
+	previous := Component{
+		ID: "edgeproxy_data_http", Status: StatusDown, Checks: 4, SuccessfulChecks: 3, AvailabilityPercent: 75,
+		ConsecutiveFailures: 1, LastSuccessAt: "2026-08-13T09:58:00Z", LastFailureAt: "2026-08-13T09:59:00Z",
+	}
+
+	unknown := updateComponent(previous, probeResult{id: previous.ID, status: StatusUnknown}, now)
+	if unknown.Checks != 4 || unknown.SuccessfulChecks != 3 || unknown.AvailabilityPercent != 75 {
+		t.Fatalf("unknown status changed availability denominator: %#v", unknown)
+	}
+	if unknown.ConsecutiveSuccesses != 0 || unknown.ConsecutiveFailures != 0 {
+		t.Fatalf("unknown status should interrupt current streaks: %#v", unknown)
+	}
+	if unknown.LastSuccessAt != previous.LastSuccessAt || unknown.LastFailureAt != previous.LastFailureAt {
+		t.Fatalf("unknown status changed historical outcome timestamps: %#v", unknown)
+	}
+
+	notApplicable := updateComponent(unknown, probeResult{id: previous.ID, status: StatusNotApplicable}, now.Add(time.Second))
+	if notApplicable.Checks != 4 || notApplicable.SuccessfulChecks != 3 || notApplicable.AvailabilityPercent != 75 {
+		t.Fatalf("N/A status changed availability denominator: %#v", notApplicable)
+	}
+
+	healthy := updateComponent(notApplicable, probeResult{id: previous.ID, status: StatusHealthy}, now.Add(2*time.Second))
+	if healthy.Checks != 5 || healthy.SuccessfulChecks != 4 || healthy.AvailabilityPercent != 80 {
+		t.Fatalf("next evaluable check used the wrong denominator: %#v", healthy)
+	}
+	if healthy.ConsecutiveSuccesses != 1 || healthy.ConsecutiveFailures != 0 {
+		t.Fatalf("non-evaluable gap should break success streak continuity: %#v", healthy)
+	}
+}
+
 func TestMonitorHealthySnapshot(t *testing.T) {
 	dataPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodHead || r.URL.Path != "/" || r.Host != "project.test" {

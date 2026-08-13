@@ -89,20 +89,58 @@ func TestDerivedMetricsRemainInternallyConsistent(t *testing.T) {
 	if total.ResponseLatencyMS.Count != total.Requests {
 		t.Fatalf("response-latency samples=%d, want one per completed request=%d", total.ResponseLatencyMS.Count, total.Requests)
 	}
-	if total.Upstream.Calls != total.Upstream.Success+total.Upstream.Failures {
+	if total.Upstream.Calls != total.Upstream.Success+total.Upstream.Failures+total.Upstream.Canceled {
 		t.Fatalf("upstream outcomes do not partition calls: %#v", total.Upstream)
 	}
 	if total.Upstream.Calls != 3 || total.Upstream.Success != 2 || total.Upstream.Failures != 1 {
 		t.Fatalf("unexpected upstream aggregate: %#v", total.Upstream)
 	}
-	if total.Upstream.LatencyMS.Count != total.Upstream.Calls {
-		t.Fatalf("upstream-latency samples=%d, want one per call=%d", total.Upstream.LatencyMS.Count, total.Upstream.Calls)
+	if total.Upstream.LatencyMS.Count != total.Upstream.Success+total.Upstream.Failures {
+		t.Fatalf("upstream-latency samples=%d, want one per evaluated call=%d", total.Upstream.LatencyMS.Count, total.Upstream.Success+total.Upstream.Failures)
 	}
 	origin := snapshot.Upstreams["origin-a"]
 	if origin.Calls != 3 || origin.Success != 2 || origin.Failures != 1 ||
 		origin.SuccessRate != 2.0/3.0 || origin.ErrorRate != 1.0/3.0 ||
-		origin.LatencyMS.Count != origin.Calls {
+		origin.LatencyMS.Count != origin.Success+origin.Failures {
 		t.Fatalf("per-Origin derived metrics are inconsistent: %#v", origin)
+	}
+}
+
+func TestCanceledUpstreamAttemptIsExcludedFromOriginReliabilityAndLatency(t *testing.T) {
+	registry := New()
+	registry.RecordUpstream("demo", "origin-a", UpstreamObservation{Duration: 17 * time.Millisecond, Failed: true, Timeout: true, Canceled: true})
+
+	snapshot := registry.Snapshot()
+	aggregate := snapshot.Total.Upstream
+	if aggregate.Calls != 1 || aggregate.Canceled != 1 || aggregate.Success != 0 || aggregate.Failures != 0 || aggregate.Timeouts != 0 {
+		t.Fatalf("client-canceled attempt polluted aggregate Origin outcomes: %#v", aggregate)
+	}
+	if aggregate.LatencyMS.Count != 0 {
+		t.Fatalf("client-canceled attempt polluted aggregate Origin latency: %#v", aggregate.LatencyMS)
+	}
+
+	origin := snapshot.Upstreams["origin-a"]
+	if origin.Calls != 1 || origin.Canceled != 1 || origin.Success != 0 || origin.Failures != 0 || origin.Timeouts != 0 {
+		t.Fatalf("client-canceled attempt polluted per-Origin outcomes: %#v", origin)
+	}
+	if origin.SuccessRate != 0 || origin.ErrorRate != 0 || origin.LatencyMS.Count != 0 {
+		t.Fatalf("client-canceled attempt polluted per-Origin derived metrics: %#v", origin)
+	}
+
+	registry.RecordUpstream("demo", "origin-a", UpstreamObservation{Status: 200, Duration: 5 * time.Millisecond})
+	origin = registry.Snapshot().Upstreams["origin-a"]
+	if origin.Calls != 2 || origin.Canceled != 1 || origin.Success != 1 || origin.Failures != 0 || origin.SuccessRate != 1 || origin.ErrorRate != 0 || origin.LatencyMS.Count != 1 {
+		t.Fatalf("canceled call changed the evaluated Origin denominator: %#v", origin)
+	}
+}
+
+func TestHistogramPreservesRealZeroMinimum(t *testing.T) {
+	var h histogram
+	h.Observe(0)
+	h.Observe(5 * time.Millisecond)
+	snapshot := h.Snapshot()
+	if snapshot.Count != 2 || snapshot.Minimum != 0 || snapshot.Maximum != 5 {
+		t.Fatalf("zero-duration minimum was lost: %#v", snapshot)
 	}
 }
 

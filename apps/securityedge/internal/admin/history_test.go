@@ -15,6 +15,27 @@ import (
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/metrics"
 )
 
+func TestTelemetryHistoryDoesNotTreatCanceledOnlyOriginAsReliabilitySample(t *testing.T) {
+	cfg := config.Default().Admin.TelemetryHistory
+	cfg.Enabled = true
+	cfg.SampleInterval = config.Duration{}
+	store := newTelemetryHistoryStore(cfg)
+
+	edge := json.RawMessage(`{"schema_version":"2.0","started_at":"2026-08-13T08:00:00Z","routes":{"demo":{"upstreams":{"origin-a":{"calls":1,"success":0,"failures":0,"canceled":1,"success_rate":0,"latency_ms":{"count":0}}}}}}`)
+	store.observe(metrics.Snapshot{}, edge)
+	snapshot := store.snapshot(10)
+	if len(snapshot.Samples) != 1 {
+		t.Fatalf("samples=%d, want 1", len(snapshot.Samples))
+	}
+	origin := snapshot.Samples[0].Routes["demo"].Origins["origin-a"]
+	if origin.Calls != 1 || origin.Canceled != 1 || origin.Failures != 0 || origin.Timeouts != 0 {
+		t.Fatalf("canceled-only Origin counters were not preserved in history: %#v", origin)
+	}
+	if origin.SuccessRateAvailable || origin.P95LatencyAvailable {
+		t.Fatalf("canceled-only Origin attempt became a reliability/latency sample: %#v", origin)
+	}
+}
+
 func TestTelemetryHistoryPersistsBoundsAndReloads(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "telemetry", "history.json")
 	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
@@ -59,8 +80,8 @@ func TestTelemetryHistoryPersistsBoundsAndReloads(t *testing.T) {
 	if err := json.Unmarshal(persisted, &document); err != nil {
 		t.Fatal(err)
 	}
-	if document.SchemaVersion != "1.3" {
-		t.Fatalf("telemetry history schema=%q, want 1.3", document.SchemaVersion)
+	if document.SchemaVersion != "1.4" {
+		t.Fatalf("telemetry history schema=%q, want 1.4", document.SchemaVersion)
 	}
 
 	reloaded := newTelemetryHistoryStore(store.cfg)
@@ -524,6 +545,54 @@ func TestTelemetryHistoryTreatsSecurityCounterResetAsRateGap(t *testing.T) {
 	current := store.snapshot(10).Samples[1].Security
 	if current.RequestRateAvailable || current.RequestsPerSecond != 0 || current.RejectedRateAvailable || current.RejectedPerSecond != 0 {
 		t.Fatalf("SecurityEdge counter reset produced synthetic rates: %#v", current)
+	}
+}
+
+func TestTelemetryHistoryLoadsV13WithoutCanceledField(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.json")
+	document := telemetryHistoryDocument{
+		SchemaVersion: "1.3",
+		Samples: []telemetryHistoryPoint{{
+			GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano),
+			Security: telemetrySecurityHistoryPoint{
+				Requests: 20, P95LatencyMS: 9, P95LatencyAvailable: true,
+			},
+			EdgeProxy: telemetryEdgeHistoryPoint{
+				Available: true, ErrorCountAvailable: true,
+				CacheHitRatio: 0.5, CacheHitRatioAvailable: true, P95LatencyMS: 7, P95LatencyAvailable: true,
+			},
+			Routes: map[string]telemetryRouteHistory{
+				"demo": {
+					CacheHitRatio: 0.5, CacheHitRatioAvailable: true, P95LatencyMS: 6, P95LatencyAvailable: true,
+					Origins: map[string]telemetryOriginHistory{
+						"origin-a": {Calls: 10, SuccessRate: 1, SuccessRateAvailable: true, P95LatencyMS: 5, P95LatencyAvailable: true},
+					},
+				},
+			},
+		}},
+	}
+	data, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{Duration: time.Second}, FilePath: path,
+	})
+	loaded := store.snapshot(10).Samples
+	if len(loaded) != 1 {
+		t.Fatalf("history samples=%d, want 1", len(loaded))
+	}
+	origin := loaded[0].Routes["demo"].Origins["origin-a"]
+	if origin.Canceled != 0 {
+		t.Fatalf("schema 1.3 history unexpectedly synthesized canceled attempts: %#v", origin)
+	}
+	if !loaded[0].Security.P95LatencyAvailable || !loaded[0].EdgeProxy.CacheHitRatioAvailable ||
+		!loaded[0].EdgeProxy.P95LatencyAvailable || !origin.SuccessRateAvailable || !origin.P95LatencyAvailable {
+		t.Fatalf("schema 1.3 derived-metric validity must remain trusted: %#v", loaded[0])
 	}
 }
 

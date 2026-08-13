@@ -1363,9 +1363,19 @@ func TestClientCancellationPreservesOriginHealthAndStopsRetries(t *testing.T) {
 	if len(attempts.Entries) != 1 {
 		t.Fatalf("upstream attempts=%d, want 1", len(attempts.Entries))
 	}
+	if !attempts.Entries[0].Canceled || attempts.Entries[0].Timeout {
+		t.Fatalf("client cancellation was not classified independently: %#v", attempts.Entries[0])
+	}
+	originMetric := h.metrics.Snapshot().Routes["test"].Upstreams[first.URL]
+	if originMetric.Calls != 1 || originMetric.Canceled != 1 || originMetric.Success != 0 || originMetric.Failures != 0 || originMetric.Timeouts != 0 || originMetric.LatencyMS.Count != 0 {
+		t.Fatalf("client cancellation polluted Origin telemetry: %#v", originMetric)
+	}
 	for _, node := range h.routes["test"].pool.nodes {
 		if !node.healthy.Load() {
 			t.Fatalf("client cancellation marked origin %s unhealthy", node.url)
+		}
+		if node.url.String() == first.URL && node.ewmaMS() != 0 {
+			t.Fatalf("client cancellation polluted adaptive-latency telemetry: ewma=%f", node.ewmaMS())
 		}
 	}
 	if status := h.Readiness(); !status.Ready {

@@ -345,7 +345,9 @@ func TestDashboardPreservesAuthAndTelemetryTruthfulness(t *testing.T) {
 		"msIf(total.latency?.p95_ms, securityRequests > 0)",
 		"point.security?.rejected_rate_available === true",
 		"pctIf(m.cache_hit_ratio, cacheLookups > 0)",
-		"pctIf(om.success_rate, originCalls > 0)",
+		"Number(component.checks || 0) > 0",
+		"fmt(om.canceled)",
+		"pctIf(om.success_rate, latencyAvailable)",
 		"msIf(live.ewma_latency_ms, Number(live.scheduler_selections || 0) > 0)",
 	} {
 		if !strings.Contains(javascript, required) {

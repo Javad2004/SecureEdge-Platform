@@ -444,7 +444,8 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		started := time.Now()
 		resp, err = node.transport.RoundTrip(outReq)
 		elapsed := time.Since(started)
-		if !operationalProbe {
+		clientCanceled := err != nil && req.Context().Err() != nil
+		if !operationalProbe && !clientCanceled {
 			rt.pool.observe(node, elapsed)
 		}
 		result.upstreamDuration += elapsed
@@ -469,15 +470,18 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 			attemptErr = fmt.Errorf("upstream returned %s", resp.Status)
 		}
 		timedOut := isTimeoutError(err)
+		originFailed := telemetryFailed && !clientCanceled
+		originTimedOut := timedOut && !clientCanceled
 		if !operationalProbe {
 			h.metrics.RecordUpstream(rt.cfg.Name, node.url.String(), metrics.UpstreamObservation{
 				Status:   status,
 				Duration: elapsed,
-				Failed:   telemetryFailed,
-				Timeout:  timedOut,
+				Failed:   originFailed,
+				Canceled: clientCanceled,
+				Timeout:  originTimedOut,
 				Retry:    attempt > 0,
 			})
-			h.recordUpstreamAttempt(req, rt.cfg.Name, id, node.url.String(), attempt+1, status, elapsed, attempt > 0, timedOut, attemptErr, telemetryFailed)
+			h.recordUpstreamAttempt(req, rt.cfg.Name, id, node.url.String(), attempt+1, status, elapsed, attempt > 0, originTimedOut, attemptErr, originFailed, clientCanceled)
 		}
 
 		if !failed {
@@ -495,7 +499,7 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		// A cancellation or deadline inherited from the client request does not
 		// indicate an origin failure. Preserve the origin's health and stop here:
 		// every retry would inherit the same already-terminated context.
-		if err != nil && req.Context().Err() != nil {
+		if clientCanceled {
 			if !operationalProbe {
 				rt.pool.releaseActive(node)
 			}
@@ -809,21 +813,25 @@ func (h *Handler) recordResponseCopyError(result *requestResult, req *http.Reque
 	)
 }
 
-func (h *Handler) recordUpstreamAttempt(req *http.Request, route, requestID, upstreamURL string, attempt, status int, duration time.Duration, retry, timeout bool, err error, failed bool) {
+func (h *Handler) recordUpstreamAttempt(req *http.Request, route, requestID, upstreamURL string, attempt, status int, duration time.Duration, retry, timeout bool, err error, failed, canceled bool) {
 	if h.logs == nil {
 		return
 	}
 	level := "INFO"
+	message := "origin request attempt completed"
 	if failed {
 		level = "WARN"
 	}
-	if err != nil {
+	if err != nil && !canceled {
 		level = "ERROR"
+	}
+	if canceled {
+		message = "origin request attempt canceled with client request"
 	}
 	h.logs.Append(accesslog.Entry{
 		Level:              level,
 		Event:              "upstream_attempt",
-		Message:            "origin request attempt completed",
+		Message:            message,
 		RequestID:          requestID,
 		ClientIP:           clientIP(req),
 		Method:             req.Method,
@@ -837,6 +845,7 @@ func (h *Handler) recordUpstreamAttempt(req *http.Request, route, requestID, ups
 		Attempt:            attempt,
 		Retry:              retry,
 		Timeout:            timeout,
+		Canceled:           canceled,
 		Error:              errorText(err),
 		Tags:               []string{"origin", "upstream"},
 	})

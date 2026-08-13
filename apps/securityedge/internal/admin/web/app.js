@@ -317,7 +317,8 @@ function renderConnectivity() {
     const status = normalizedStatus(component.status);
     const error = component.error ? `<div class="component-error">${esc(component.error)}</div>` : '';
     const endpoint = component.endpoint ? `<code>${esc(component.endpoint)}</code>` : '<span class="muted">No network endpoint</span>';
-    return `<article class="component-check ${status}"><div class="component-check-head"><div><span class="node-dot"></span><strong>${esc(component.name)}</strong></div>${statusBadge(status)}</div><p>${esc(component.message || 'No detail')}</p>${error}<div class="component-meta"><span>${endpoint}</span><span>Latency <strong>${compactLatency(component.latency_ms)}</strong></span><span>Availability <strong>${Number(component.availability_percent || 0).toFixed(1)}%</strong></span><span>Failures <strong>${fmt(component.consecutive_failures)}</strong></span></div><div class="component-times"><span>Last success: ${esc(dateText(component.last_success_at))}</span><span>Last failure: ${esc(dateText(component.last_failure_at))}</span></div></article>`;
+    const availability = Number(component.checks || 0) > 0 ? `${Number(component.availability_percent || 0).toFixed(1)}%` : '—';
+    return `<article class="component-check ${status}"><div class="component-check-head"><div><span class="node-dot"></span><strong>${esc(component.name)}</strong></div>${statusBadge(status)}</div><p>${esc(component.message || 'No detail')}</p>${error}<div class="component-meta"><span>${endpoint}</span><span>Latency <strong>${compactLatency(component.latency_ms)}</strong></span><span>Availability <strong>${availability}</strong></span><span>Failures <strong>${fmt(component.consecutive_failures)}</strong></span></div><div class="component-times"><span>Last success: ${esc(dateText(component.last_success_at))}</span><span>Last failure: ${esc(dateText(component.last_failure_at))}</span></div></article>`;
   }).join('') : '<div class="empty-state">No component checks are available.</div>';
 
   const history = [...(connectivity.history || [])].reverse().slice(0, 12);
@@ -786,9 +787,9 @@ function renderRoutes() {
       const healthKnown = typeof live?.healthy === 'boolean';
       const healthClass = healthKnown ? (live.healthy ? 'ready' : 'error') : '';
       const healthText = healthKnown ? (live.healthy ? 'healthy' : 'unhealthy') : 'unknown';
-      const originCalls = Number(om?.calls || 0), latencyAvailable = Number(latency.count || 0) > 0;
+      const latencyAvailable = Number(latency.count || 0) > 0;
       const metricsCells = om
-        ? `<td>${fmt(om.calls)}</td><td>${pctIf(om.success_rate, originCalls > 0)}<small class="table-subline">${fmt(om.failures)} failures</small></td><td>${fmt(om.timeouts)} / ${fmt(om.retries)}</td><td>${msIf(latency.p50, latencyAvailable)} / ${msIf(latency.p95, latencyAvailable)} / ${msIf(latency.p99, latencyAvailable)}</td>`
+        ? `<td>${fmt(om.calls)}<small class="table-subline">${fmt(om.canceled)} canceled</small></td><td>${pctIf(om.success_rate, latencyAvailable)}<small class="table-subline">${fmt(om.failures)} failures</small></td><td>${fmt(om.timeouts)} / ${fmt(om.retries)}</td><td>${msIf(latency.p50, latencyAvailable)} / ${msIf(latency.p95, latencyAvailable)} / ${msIf(latency.p99, latencyAvailable)}</td>`
         : '<td colspan="4" class="muted">EdgeProxy telemetry unavailable.</td>';
       const runtimeCells = live
         ? `<td>${fmt(live.active_requests)} / ${msIf(live.ewma_latency_ms, Number(live.scheduler_selections || 0) > 0)}</td><td>${fmt(live.scheduler_selections)}<small class="table-subline">${fmt(live.health_failures)} fail · ${fmt(live.health_recoveries)} recovery</small></td>`
@@ -934,7 +935,7 @@ async function openTelemetryDialog(routeName, originName = '') {
     const m = data.metrics || {}, latency = originName ? (m.latency_ms || {}) : (m.response_latency_ms || {}), runtime = data.runtime || {};
     const items = originName ? [
       ['Endpoint',data.origin?.url||'—'],['Health',runtime.healthy ? 'Healthy':'Unhealthy'],['Weight / priority',`${fmt(data.origin?.weight)} / ${fmt(data.origin?.priority)}`],
-      ['Calls',fmt(m.calls)],['Success / failures',`${fmt(m.success)} / ${fmt(m.failures)}`],['Success / error rate',Number(m.calls || 0) > 0 ? `${pct(m.success_rate)} / ${pct(m.error_rate)}` : '— / —'],
+      ['Calls / canceled',`${fmt(m.calls)} / ${fmt(m.canceled)}`],['Success / failures',`${fmt(m.success)} / ${fmt(m.failures)}`],['Success / error rate',Number(m.success || 0) + Number(m.failures || 0) > 0 ? `${pct(m.success_rate)} / ${pct(m.error_rate)}` : '— / —'],
       ['Timeouts / retries',`${fmt(m.timeouts)} / ${fmt(m.retries)}`],['Min / average / max',`${msIf(latency.minimum, Number(latency.count || 0) > 0)} / ${msIf(latency.average, Number(latency.count || 0) > 0)} / ${msIf(latency.maximum, Number(latency.count || 0) > 0)}`],
       ['P50 / P95 / P99',`${msIf(latency.p50, Number(latency.count || 0) > 0)} / ${msIf(latency.p95, Number(latency.count || 0) > 0)} / ${msIf(latency.p99, Number(latency.count || 0) > 0)}`],['Active requests',fmt(runtime.active_requests)],
       ['EWMA latency',msIf(runtime.ewma_latency_ms, Number(runtime.scheduler_selections || 0) > 0)],['Scheduler selections',fmt(runtime.scheduler_selections)],['Health failures / recoveries',`${fmt(runtime.health_failures)} / ${fmt(runtime.health_recoveries)}`]

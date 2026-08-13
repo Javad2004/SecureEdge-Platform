@@ -535,21 +535,27 @@ func probeDNS(ctx context.Context, cfg config.DNSProbeConfig) probeResult {
 }
 
 func updateComponent(previous Component, result probeResult, now time.Time) Component {
+	evaluable := result.status != StatusNotApplicable && result.status != StatusUnknown
 	component := Component{
 		ID: result.id, Name: result.name, Layer: result.layer, Status: result.status, Critical: result.critical,
 		Endpoint: result.endpoint, Message: result.message, Error: result.err, HTTPStatus: result.httpStatus,
 		LatencyMS: durationMS(result.latency), LastCheckedAt: timestamp(now), Details: cloneMap(result.details),
 		LastSuccessAt: previous.LastSuccessAt, LastFailureAt: previous.LastFailureAt,
-		Checks: previous.Checks + 1, SuccessfulChecks: previous.SuccessfulChecks,
+		Checks: previous.Checks, SuccessfulChecks: previous.SuccessfulChecks,
+	}
+	if evaluable {
+		component.Checks++
 	}
 	if successfulStatus(result.status) {
 		component.SuccessfulChecks++
 		component.ConsecutiveSuccesses = previous.ConsecutiveSuccesses + 1
 		component.ConsecutiveFailures = 0
 		component.LastSuccessAt = timestamp(now)
-	} else if result.status == StatusNotApplicable || result.status == StatusUnknown {
-		component.ConsecutiveSuccesses = previous.ConsecutiveSuccesses
-		component.ConsecutiveFailures = previous.ConsecutiveFailures
+	} else if !evaluable {
+		// Unknown/N/A is not a failed check and also interrupts any current
+		// success/failure streak. Keep historical timestamps and availability.
+		component.ConsecutiveSuccesses = 0
+		component.ConsecutiveFailures = 0
 	} else {
 		component.ConsecutiveFailures = previous.ConsecutiveFailures + 1
 		component.ConsecutiveSuccesses = 0

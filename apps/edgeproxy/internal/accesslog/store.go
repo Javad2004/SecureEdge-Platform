@@ -41,6 +41,7 @@ type Entry struct {
 	Retry              bool     `json:"retry,omitempty"`
 	ProxyError         bool     `json:"proxy_error,omitempty"`
 	Timeout            bool     `json:"timeout,omitempty"`
+	Canceled           bool     `json:"canceled,omitempty"`
 	Healthy            *bool    `json:"healthy,omitempty"`
 	Error              string   `json:"error,omitempty"`
 	UserAgent          string   `json:"user_agent,omitempty"`

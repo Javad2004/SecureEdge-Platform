@@ -232,6 +232,12 @@ function rejectedCount(total) {
   return Number(total.blocked || 0) + Number(total.rate_limited || 0) + Number(total.overload_rejected || 0) + Number(total.banned_rejected || 0);
 }
 
+function completedSecurityDecisions(total) {
+  const requests = Math.max(0, Number(total?.requests || 0));
+  const canceled = Math.max(0, Number(total?.canceled_requests || 0));
+  return Math.max(0, requests - canceled);
+}
+
 function normalizedStatus(value) {
   const status = String(value || 'unknown').toLowerCase();
   return ['healthy','degraded','down','unknown','not_applicable'].includes(status) ? status : 'unknown';
@@ -346,7 +352,7 @@ function renderRecentTraffic() {
   $('recent-traffic-status').textContent = active ? String(request.status || '—') : '—';
   $('recent-traffic-cache').textContent = active ? `${request.cache_status || 'Not reported'} cache` : '— cache';
   $('recent-traffic-count').textContent = fmt(traffic.requests_in_window);
-  $('recent-traffic-clients').textContent = `${fmt(traffic.unique_clients)} unique clients · ${fmt(traffic.allowed)} allowed · ${fmt(traffic.rejected)} rejected`;
+  $('recent-traffic-clients').textContent = `${fmt(traffic.unique_clients)} unique clients · ${fmt(traffic.allowed)} allowed · ${fmt(traffic.rejected)} rejected · ${fmt(traffic.canceled)} canceled`;
 }
 
 function edgeMetricsSnapshot(overview = state.overview || {}) {
@@ -373,17 +379,20 @@ function renderOverview() {
   const edgeStatus = edgeStatusSnapshot(overview);
   const edgeStatusAvailable = Boolean(edgeStatus);
   const securityRequests = Number(total.requests || 0);
+  const securityCanceled = Number(total.canceled_requests || 0);
+  const securityDecisions = completedSecurityDecisions(total);
+  const cancellationSuffix = securityCanceled > 0 ? ` · ${fmt(securityCanceled)} canceled` : '';
   const cacheLookups = Number(edgeTotal.cache_hits || 0) + Number(edgeTotal.cache_misses || 0);
   const upstreamSamples = Number(edgeTotal.upstream?.latency_ms?.count || 0);
   $('kpi-requests').textContent = edgeMetricsAvailable ? fmt(edgeTotal.requests) : '—';
   $('kpi-rps').textContent = edgeMetricsAvailable ? `${Number(edgeMetrics.requests_per_second || 0).toFixed(2)} req/s avg since start · ${fmt(edgeTotal.canceled_requests)} canceled` : 'EdgeProxy metrics unavailable';
   $('kpi-blocked').textContent = fmt(rejectedCount(total));
-  $('kpi-block-rate').textContent = securityRequests > 0 ? `${pct(total.block_rate)} rejection rate` : 'No requests yet';
+  $('kpi-block-rate').textContent = securityDecisions > 0 ? `${pct(total.block_rate)} rejection rate${cancellationSuffix}` : securityRequests > 0 ? `${fmt(securityCanceled)} canceled · no completed decisions` : 'No requests yet';
   $('kpi-detections').textContent = fmt(total.detections);
-  $('kpi-detection-rate').textContent = securityRequests > 0 ? `${pct(total.detection_rate)} detection rate` : 'No requests yet';
+  $('kpi-detection-rate').textContent = securityDecisions > 0 ? `${pct(total.detection_rate)} detection rate${cancellationSuffix}` : securityRequests > 0 ? 'No completed security decisions' : 'No requests yet';
   $('kpi-cache').textContent = edgeMetricsAvailable ? pctIf(edgeTotal.cache_hit_ratio, cacheLookups > 0) : '—';
   $('kpi-cache-counts').textContent = edgeMetricsAvailable ? `${fmt(edgeTotal.cache_hits)} hits · ${fmt(edgeTotal.cache_misses)} misses${cacheLookups > 0 ? '' : ' · no cache lookups'}` : 'No cache telemetry';
-  $('kpi-p95').textContent = msIf(total.latency?.p95_ms, securityRequests > 0);
+  $('kpi-p95').textContent = msIf(total.latency?.p95_ms, securityDecisions > 0);
   $('kpi-upstream').textContent = edgeMetricsAvailable ? (upstreamSamples > 0 ? `${ms(edgeTotal.upstream?.latency_ms?.average)} upstream avg` : 'No upstream samples') : 'EdgeProxy metrics unavailable';
   const routes = edgeStatus?.routes || [];
   const origins = routes.flatMap(route => route.upstreams || []);
@@ -511,7 +520,7 @@ function renderProtection() {
   $('protect-buckets').textContent = fmt(status.rate_limit_buckets);
   $('protect-inflight').textContent = fmt(status.admission?.global_active ?? state.overview?.security_metrics?.inflight);
   $('protect-tracked').textContent = `${fmt(status.admission?.tracked_clients)} tracked clients`;
-  const latency = total.latency || {}, latencyAvailable = Number(total.requests || 0) > 0;
+  const latency = total.latency || {}, latencyAvailable = completedSecurityDecisions(total) > 0;
   $('security-latency').innerHTML = metricRows([
     ['Average', msIf(latency.average_ms, latencyAvailable)], ['Maximum', msIf(latency.maximum_ms, latencyAvailable)],
     ['P50', msIf(latency.p50_ms, latencyAvailable)], ['P95', msIf(latency.p95_ms, latencyAvailable)], ['P99', msIf(latency.p99_ms, latencyAvailable)]

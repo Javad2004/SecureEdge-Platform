@@ -755,6 +755,60 @@ func TestChunkedRequestReportsActualInboundBytes(t *testing.T) {
 	}
 }
 
+type cancelingUploadBody struct {
+	payload []byte
+	cancel  context.CancelFunc
+	sent    bool
+}
+
+func (b *cancelingUploadBody) Read(p []byte) (int, error) {
+	if !b.sent {
+		b.sent = true
+		return copy(p, b.payload), nil
+	}
+	b.cancel()
+	return 0, context.Canceled
+}
+
+func (b *cancelingUploadBody) Close() error { return nil }
+
+func TestKnownLengthCanceledUploadReportsOnlyConsumedInboundBytes(t *testing.T) {
+	const declaredLength = int64(100000)
+	const actualLength = 700
+	origin := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+	}))
+	defer origin.Close()
+
+	registry := metrics.New()
+	logs := accesslog.New(10)
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), registry, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	body := &cancelingUploadBody{payload: bytes.Repeat([]byte("x"), actualLength), cancel: cancel}
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.test/upload", body).WithContext(ctx)
+	req.ContentLength = declaredLength
+	req.GetBody = nil
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	snapshot := registry.Snapshot().Routes["test"]
+	if snapshot.Requests != 1 || snapshot.CanceledRequests != 1 || snapshot.BytesIn != actualLength {
+		t.Fatalf("canceled upload telemetry=%#v, want requests=1 canceled=1 bytes_in=%d", snapshot.CounterSnapshot, actualLength)
+	}
+	if snapshot.BytesIn == uint64(declaredLength) {
+		t.Fatalf("bytes_in used declared Content-Length %d instead of consumed bytes", declaredLength)
+	}
+	entries := logs.Query(accesslog.Filter{Event: "request_completed", Limit: 10}).Entries
+	if len(entries) != 1 || !entries[0].Canceled || entries[0].BytesIn != actualLength {
+		t.Fatalf("access log entries=%#v, want canceled bytes_in=%d", entries, actualLength)
+	}
+}
+
 func TestSuccessfulUnsafeRequestInvalidatesCachedVariants(t *testing.T) {
 	var value atomic.Value
 	value.Store("v1")

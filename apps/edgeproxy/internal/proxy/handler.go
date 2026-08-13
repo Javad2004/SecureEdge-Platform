@@ -230,12 +230,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("X-Request-ID", id)
 
 	bytesIn := uint64(0)
-	var streamedBody *countingReadCloser
-	if req.ContentLength > 0 {
-		bytesIn = uint64(req.ContentLength)
-	} else if req.ContentLength < 0 && req.Body != nil && req.Body != http.NoBody {
-		streamedBody = &countingReadCloser{ReadCloser: req.Body}
-		req.Body = streamedBody
+	var countedBody *countingReadCloser
+	if req.Body != nil && req.Body != http.NoBody {
+		// Count bytes that the proxy actually consumes instead of trusting the
+		// declared Content-Length. This keeps traffic telemetry truthful when a
+		// client disconnects part-way through a known-length upload.
+		countedBody = &countingReadCloser{ReadCloser: req.Body}
+		req.Body = countedBody
 	}
 	var finish func(metrics.RequestObservation)
 	if !operationalProbe {
@@ -244,8 +245,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	rw := &responseCapture{ResponseWriter: w}
 	result := requestResult{cacheStatus: "BYPASS"}
 	defer func() {
-		if streamedBody != nil {
-			bytesIn = streamedBody.BytesRead()
+		if countedBody != nil {
+			bytesIn = countedBody.BytesRead()
 		}
 		bytesIn = saturatingAddUint64(bytesIn, result.tunnelBytesIn)
 		bytesOut := saturatingAddUint64(uint64(maxInt64(rw.bytes, 0)), result.tunnelBytesOut)
@@ -1085,10 +1086,9 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%.3fms", float64(d.Microseconds())/1000)
 }
 
-// countingReadCloser records bytes consumed from a request body whose size was
-// not declared up front (for example, an HTTP/1.1 chunked upload). The atomic
-// counter remains safe if the transport finishes reading or closing the body
-// concurrently with response processing.
+// countingReadCloser records request-body bytes actually consumed by the proxy.
+// The atomic counter remains safe if the transport finishes reading or closing
+// the body concurrently with response processing.
 type countingReadCloser struct {
 	io.ReadCloser
 	bytes atomic.Uint64

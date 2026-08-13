@@ -37,6 +37,7 @@ type Snapshot struct {
 	UniqueClients    int    `json:"unique_clients"`
 	Allowed          int    `json:"allowed"`
 	Rejected         int    `json:"rejected"`
+	Canceled         int    `json:"canceled"`
 	LastRequest      *Event `json:"last_request,omitempty"`
 }
 
@@ -103,6 +104,8 @@ func (t *Tracker) Snapshot(now time.Time) Snapshot {
 		}
 		if event.Action == "ALLOW" || event.Action == "LOG" {
 			out.Allowed++
+		} else if event.Action == "CANCELED" {
+			out.Canceled++
 		} else {
 			out.Rejected++
 		}
@@ -110,7 +113,7 @@ func (t *Tracker) Snapshot(now time.Time) Snapshot {
 	out.UniqueClients = len(clients)
 	if out.LastRequest != nil {
 		out.Status = "traffic_observed"
-		out.Summary = "Recent client traffic is reaching SecurityEdge and being processed by the active security policy."
+		out.Summary = "Recent client traffic is reaching SecurityEdge; completed security decisions and cancellations are summarized separately."
 	}
 	return out
 }

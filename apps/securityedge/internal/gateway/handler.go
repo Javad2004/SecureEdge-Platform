@@ -161,6 +161,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var processingErr error
 	var retryAfter time.Duration
 	autoBanned := false
+	canceled := false
+	rateLimitScope := ""
 	cacheStatus := ""
 	securityDuration := time.Duration(0)
 
@@ -171,8 +173,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			metricDuration = fullDuration
 		}
 		ruleIDs, categories := ruleData(matches)
-		finish(metrics.Observation{Route: routeName, Method: req.Method, Action: action, Reason: reason, Duration: metricDuration, Score: score, RuleIDs: ruleIDs, Categories: categories, BodyInspected: bodyInspected, BodyTruncated: bodyTruncated, Error: processingErr != nil, AutoBan: autoBanned})
-		if action != "ALLOW" || len(matches) > 0 || processingErr != nil {
+		finish(metrics.Observation{Route: routeName, Method: req.Method, Action: action, Reason: reason, RateLimitScope: rateLimitScope, Duration: metricDuration, Score: score, RuleIDs: ruleIDs, Categories: categories, BodyInspected: bodyInspected, BodyTruncated: bodyTruncated, Error: processingErr != nil, AutoBan: autoBanned, Canceled: canceled})
+		if !canceled && (action != "ALLOW" || len(matches) > 0 || processingErr != nil) {
 			h.appendLog(req, requestID, client, routeName, status, action, reason, score, matches, processingErr, metricDuration, retryAfter, autoBanned, matchLimit)
 		}
 		if h.traffic != nil {
@@ -214,6 +216,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 					autoBanned, _ = h.recordViolation(client, policy, time.Now())
 					setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
 					writeBlocked(w, status, "header_value_too_large", requestID)
+					return false
+				}
+				if req.Context().Err() != nil {
+					canceled = true
+					action, reason, status = "CANCELED", "client_canceled", 0
 					return false
 				}
 				processingErr = err
@@ -307,6 +314,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	decision := h.limiter.Allow(routeName, client, policy.RateLimit, time.Now())
 	if !decision.Allowed {
 		action, status, retryAfter = "RATE_LIMIT", http.StatusTooManyRequests, decision.RetryAfter
+		rateLimitScope = decision.Scope
 		if decision.Scope == "global" {
 			reason = "global_rate_limit"
 		} else {
@@ -335,6 +343,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			autoBanned, _ = h.recordViolation(client, policy, time.Now())
 			setDecisionHeaders(w, requestID, action, score, serverCfg.AddSecurityHeaders)
 			writeBlocked(w, status, "body_too_large", requestID)
+			return
+		}
+		if req.Context().Err() != nil {
+			canceled = true
+			action, reason, status = "CANCELED", "client_canceled", 0
 			return
 		}
 		// Oversized input is an expected client-policy violation, not an

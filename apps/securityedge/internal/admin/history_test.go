@@ -80,8 +80,8 @@ func TestTelemetryHistoryPersistsBoundsAndReloads(t *testing.T) {
 	if err := json.Unmarshal(persisted, &document); err != nil {
 		t.Fatal(err)
 	}
-	if document.SchemaVersion != "1.4" {
-		t.Fatalf("telemetry history schema=%q, want 1.4", document.SchemaVersion)
+	if document.SchemaVersion != "1.5" {
+		t.Fatalf("telemetry history schema=%q, want 1.5", document.SchemaVersion)
 	}
 
 	reloaded := newTelemetryHistoryStore(store.cfg)
@@ -128,6 +128,52 @@ func TestTelemetryHistoryMarksUndefinedDerivedMetricsUnavailable(t *testing.T) {
 	origin := route.Origins["origin-a"]
 	if route.CacheHitRatioAvailable || route.P95LatencyAvailable || origin.SuccessRateAvailable || origin.P95LatencyAvailable {
 		t.Fatalf("zero-sample Route/Origin derived metrics must remain unavailable: route=%#v origin=%#v", route, origin)
+	}
+}
+
+func TestTelemetryHistoryCanceledOnlySecurityRequestHasNoLatencySample(t *testing.T) {
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{Duration: time.Second},
+	})
+	store.observe(metrics.Snapshot{
+		StartedAt: "2026-08-13T08:00:00Z",
+		Total: metrics.CounterSnapshot{
+			Requests: 1, CanceledRequests: 1,
+			Latency: metrics.LatencySnapshot{AverageMS: 99, MaximumMS: 99, P50MS: 99, P95MS: 99, P99MS: 99},
+		},
+	}, nil)
+
+	point := store.snapshot(10).Samples[0].Security
+	if point.Requests != 1 || point.Canceled != 1 || point.Rejected != 0 || point.Errors != 0 {
+		t.Fatalf("unexpected canceled-only history point: %#v", point)
+	}
+	if point.P95LatencyAvailable || point.P95LatencyMS != 99 {
+		t.Fatalf("canceled-only security traffic must not make latency evaluable: %#v", point)
+	}
+}
+
+func TestTelemetryHistoryLoadsV14WithoutSecurityCanceledField(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.json")
+	document := telemetryHistoryDocument{
+		SchemaVersion: "1.4",
+		Samples: []telemetryHistoryPoint{{
+			GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano),
+			Security:    telemetrySecurityHistoryPoint{Requests: 20, P95LatencyMS: 9, P95LatencyAvailable: true},
+		}},
+	}
+	data, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{Duration: time.Second}, FilePath: path,
+	})
+	loaded := store.snapshot(10).Samples
+	if len(loaded) != 1 || loaded[0].Security.Canceled != 0 || !loaded[0].Security.P95LatencyAvailable {
+		t.Fatalf("schema 1.4 compatibility failed: %#v", loaded)
 	}
 }
 

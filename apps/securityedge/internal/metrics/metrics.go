@@ -18,6 +18,7 @@ var latencyBounds = []time.Duration{
 
 type counters struct {
 	requests          atomic.Uint64
+	canceledRequests  atomic.Uint64
 	allowed           atomic.Uint64
 	blocked           atomic.Uint64
 	logged            atomic.Uint64
@@ -52,12 +53,14 @@ type Registry struct {
 
 type Observation struct {
 	Route, Method, Action, Reason string
+	RateLimitScope                string
 	Duration                      time.Duration
 	Score                         int
 	RuleIDs, Categories           []string
 	BodyInspected, BodyTruncated  bool
 	Error                         bool
 	AutoBan                       bool
+	Canceled                      bool
 }
 
 type Snapshot struct {
@@ -81,6 +84,7 @@ type LatencySnapshot struct {
 
 type CounterSnapshot struct {
 	Requests          uint64            `json:"requests"`
+	CanceledRequests  uint64            `json:"canceled_requests"`
 	Allowed           uint64            `json:"allowed"`
 	Blocked           uint64            `json:"blocked"`
 	Logged            uint64            `json:"logged"`
@@ -121,6 +125,10 @@ func (r *Registry) Begin() func(Observation) {
 func (r *Registry) record(c *counters, o Observation) {
 	c.requests.Add(1)
 	add(&c.methods, metricMethod(o.Method), 1)
+	if o.Canceled {
+		c.canceledRequests.Add(1)
+		return
+	}
 	add(&c.actions, o.Action, 1)
 	add(&c.reasons, o.Reason, 1)
 	switch o.Action {
@@ -132,7 +140,8 @@ func (r *Registry) record(c *counters, o Observation) {
 		c.logged.Add(1)
 	case "RATE_LIMIT":
 		c.rateLimited.Add(1)
-		if o.Reason == "global_rate_limit" {
+		scope := strings.ToLower(strings.TrimSpace(o.RateLimitScope))
+		if scope == "global" || (scope == "" && o.Reason == "global_rate_limit") {
 			c.globalRateLimited.Add(1)
 		} else {
 			c.clientRateLimited.Add(1)
@@ -194,24 +203,31 @@ func (r *Registry) Snapshot() Snapshot {
 
 func snap(c *counters) CounterSnapshot {
 	requests := c.requests.Load()
+	canceledRequests := c.canceledRequests.Load()
+	evaluated := requests
+	if canceledRequests <= evaluated {
+		evaluated -= canceledRequests
+	} else {
+		evaluated = 0
+	}
 	detections := c.detections.Load()
 	out := CounterSnapshot{
-		Requests: requests, Allowed: c.allowed.Load(), Blocked: c.blocked.Load(), Logged: c.logged.Load(),
+		Requests: requests, CanceledRequests: canceledRequests, Allowed: c.allowed.Load(), Blocked: c.blocked.Load(), Logged: c.logged.Load(),
 		RateLimited: c.rateLimited.Load(), GlobalRateLimited: c.globalRateLimited.Load(), ClientRateLimited: c.clientRateLimited.Load(),
 		OverloadRejected: c.overloadRejected.Load(), BodyTooLarge: c.bodyTooLarge.Load(), BannedRejected: c.bannedRejected.Load(), AutoBans: c.autoBans.Load(),
 		Detections: detections, Errors: c.errors.Load(), InspectedBodies: c.inspectedBodies.Load(), TruncatedBodies: c.truncatedBodies.Load(),
 		Rules: snapshotMap(&c.rules), Categories: snapshotMap(&c.categories), Methods: snapshotMap(&c.methods), Actions: snapshotMap(&c.actions), Reasons: snapshotMap(&c.reasons),
 	}
-	if requests > 0 {
-		out.BlockRate = float64(out.Blocked+out.RateLimited+out.OverloadRejected+out.BannedRejected) / float64(requests)
-		out.DetectionRate = float64(detections) / float64(requests)
-		out.AverageScore = float64(c.scoreTotal.Load()) / float64(requests)
-		out.Latency.AverageMS = float64(c.durationNS.Load()) / float64(requests) / float64(time.Millisecond)
+	if evaluated > 0 {
+		out.BlockRate = float64(out.Blocked+out.RateLimited+out.OverloadRejected+out.BannedRejected) / float64(evaluated)
+		out.DetectionRate = float64(detections) / float64(evaluated)
+		out.AverageScore = float64(c.scoreTotal.Load()) / float64(evaluated)
+		out.Latency.AverageMS = float64(c.durationNS.Load()) / float64(evaluated) / float64(time.Millisecond)
 	}
 	out.Latency.MaximumMS = float64(c.maxDurationNS.Load()) / float64(time.Millisecond)
-	out.Latency.P50MS = percentile(c, requests, 0.50)
-	out.Latency.P95MS = percentile(c, requests, 0.95)
-	out.Latency.P99MS = percentile(c, requests, 0.99)
+	out.Latency.P50MS = percentile(c, evaluated, 0.50)
+	out.Latency.P95MS = percentile(c, evaluated, 0.95)
+	out.Latency.P99MS = percentile(c, evaluated, 0.99)
 	return out
 }
 
@@ -239,7 +255,7 @@ func writePromCounters(b *strings.Builder, labels string, c CounterSnapshot) {
 		labels = "{" + labels + "}"
 	}
 	values := map[string]uint64{
-		"requests_total": c.Requests, "allowed_total": c.Allowed, "blocked_total": c.Blocked,
+		"requests_total": c.Requests, "canceled_requests_total": c.CanceledRequests, "allowed_total": c.Allowed, "blocked_total": c.Blocked,
 		"rate_limited_total": c.RateLimited, "overload_rejected_total": c.OverloadRejected,
 		"banned_rejected_total": c.BannedRejected, "detections_total": c.Detections, "errors_total": c.Errors,
 	}

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -123,6 +124,33 @@ func TestRateLimitReturns429(t *testing.T) {
 		if i == 1 && rec.Code != 429 {
 			t.Fatalf("expected 429 got %d", rec.Code)
 		}
+	}
+}
+
+func TestGlobalRateLimitCapacityIsAttributedToGlobalScope(t *testing.T) {
+	p := config.Default().DefaultPolicy
+	p.RateLimit.RequestsPerSecond = 100
+	p.RateLimit.Burst = 100
+	p.RateLimit.GlobalRequestsPerSecond = 100
+	p.RateLimit.GlobalBurst = 100
+	p.RateLimit.MaxBuckets = 2
+	h := newTestHandler(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("next called") }), p)
+
+	// Fill the bounded map with another route's global and client buckets. The
+	// application request must then fail while allocating its global bucket.
+	if decision := h.limiter.Allow("preloaded-route", "seed-client", p.RateLimit, time.Now()); !decision.Allowed {
+		t.Fatalf("preload decision=%#v", decision)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://project.test/", nil)
+	req.RemoteAddr = "10.0.0.25:1234"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	s := h.metrics.Snapshot().Total
+	if s.RateLimited != 1 || s.GlobalRateLimited != 1 || s.ClientRateLimited != 0 || s.Reasons["rate_limit_capacity"] != 1 {
+		t.Fatalf("capacity rejection scope was misclassified: %#v", s)
 	}
 }
 func TestRepeatedViolationsTriggerTemporaryBan(t *testing.T) {
@@ -749,6 +777,45 @@ func TestChunkedMaliciousTrailerIsBlockedBeforeDownstream(t *testing.T) {
 
 type terminalErrorReader struct {
 	err error
+}
+
+func TestCanceledBodyReadDoesNotBecomeSecurityRejection(t *testing.T) {
+	policy := config.Default().DefaultPolicy
+	policy.RateLimit.Enabled = false
+	h, tracker := newTestHandlerWithTraffic(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next called after client cancellation")
+	}), policy)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	bodyReader := io.MultiReader(
+		strings.NewReader("partial-body"),
+		terminalErrorReader{err: io.ErrUnexpectedEOF},
+	)
+	req := httptest.NewRequest(http.MethodPost, "http://project.test/upload", io.NopCloser(bodyReader)).WithContext(ctx)
+	req.ContentLength = -1
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	s := h.metrics.Snapshot().Total
+	if s.Requests != 1 || s.CanceledRequests != 1 || s.Blocked != 0 || s.RateLimited != 0 || s.OverloadRejected != 0 || s.BannedRejected != 0 || s.Errors != 0 {
+		t.Fatalf("client cancellation became a security outcome: %#v", s)
+	}
+	if len(s.Actions) != 0 || len(s.Reasons) != 0 || s.Latency.P95MS != 0 || s.Latency.MaximumMS != 0 {
+		t.Fatalf("client cancellation polluted action/reason/latency telemetry: %#v", s)
+	}
+	if logs := h.logs.Query(securitylog.Filter{Limit: 10}); logs.Retained != 0 || logs.Returned != 0 {
+		t.Fatalf("client cancellation was written as a security event: %#v", logs)
+	}
+	trafficSnapshot := tracker.Snapshot(time.Now())
+	if trafficSnapshot.RequestsInWindow != 1 || trafficSnapshot.Canceled != 1 || trafficSnapshot.Allowed != 0 || trafficSnapshot.Rejected != 0 || trafficSnapshot.LastRequest == nil {
+		t.Fatalf("unexpected passive traffic snapshot: %#v", trafficSnapshot)
+	}
+	if trafficSnapshot.LastRequest.Action != "CANCELED" || trafficSnapshot.LastRequest.Reason != "client_canceled" || trafficSnapshot.LastRequest.Status != 0 {
+		t.Fatalf("unexpected cancellation traffic event: %#v", trafficSnapshot.LastRequest)
+	}
 }
 
 func (r terminalErrorReader) Read([]byte) (int, error) {

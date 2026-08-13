@@ -125,9 +125,9 @@ function fixturePayload(root) {
   };
   const overview = {
     generated_at:now, connectivity,
-    recent_client_traffic:{status:'no_recent_traffic',requests_in_window:0,unique_clients:0,allowed:0,rejected:0},
+    recent_client_traffic:{status:'no_recent_traffic',requests_in_window:0,unique_clients:0,allowed:0,rejected:0,canceled:0},
     security_metrics:{schema_version:'2.0',uptime_seconds:60,inflight:0,requests_per_second:20/60,total:{
-      requests:20,allowed:20,blocked:0,logged:0,rate_limited:0,client_rate_limited:0,global_rate_limited:0,overload_rejected:0,banned_rejected:0,
+      requests:20,canceled_requests:0,allowed:20,blocked:0,logged:0,rate_limited:0,client_rate_limited:0,global_rate_limited:0,overload_rejected:0,banned_rejected:0,
       block_rate:0,detections:0,detection_rate:0,latency:{average_ms:1,maximum_ms:2,p50_ms:1,p95_ms:2,p99_ms:2},rules:{},reasons:{}
     }},
     security_logs:{entries:[],retained:0,dropped:0,file_bytes:0,file_errors:0},
@@ -698,6 +698,59 @@ try {
     }
   }
 
+  let securityCanceledRequestContract = null;
+  if (fixtureRoot) {
+    securityCanceledRequestContract = await cdp.evaluate(`(() => {
+      const previous = state.overview;
+      const candidate = structuredClone(previous);
+      const total = candidate.security_metrics.total;
+      total.requests = 1;
+      total.canceled_requests = 1;
+      total.allowed = 0;
+      total.blocked = 0;
+      total.logged = 0;
+      total.rate_limited = 0;
+      total.overload_rejected = 0;
+      total.banned_rejected = 0;
+      total.detections = 0;
+      total.errors = 0;
+      total.block_rate = 0.75;
+      total.detection_rate = 0.50;
+      total.latency = {average_ms:99, maximum_ms:99, p50_ms:99, p95_ms:99, p99_ms:99};
+      candidate.recent_client_traffic = {
+        status:'traffic_observed', window_seconds:300, requests_in_window:1, unique_clients:1,
+        allowed:0, rejected:0, canceled:1, last_observed_at:new Date().toISOString(),
+        last_request:{method:'POST',path:'/upload',host:'project.test',client_ip:'198.51.100.5',route:'demo-app',action:'CANCELED',reason:'client_canceled',status:0}
+      };
+      state.overview = candidate;
+      renderOverview();
+      renderProtection();
+      const text = id => document.getElementById(id).textContent.replace(/\\s+/g,' ').trim();
+      const result = {
+        blockRate:text('kpi-block-rate'),
+        detectionRate:text('kpi-detection-rate'),
+        p95:text('kpi-p95'),
+        latency:text('security-latency'),
+        traffic:text('recent-traffic-clients')
+      };
+      state.overview = previous;
+      renderAll();
+      return result;
+    })()`);
+    const securityCanceledFailures = {
+      block_rate: securityCanceledRequestContract.blockRate !== '1 canceled · no completed decisions',
+      detection_rate: securityCanceledRequestContract.detectionRate !== 'No completed security decisions',
+      p95: securityCanceledRequestContract.p95 !== '—',
+      latency: securityCanceledRequestContract.latency.includes(' ms'),
+      traffic: !securityCanceledRequestContract.traffic.includes('0 rejected · 1 canceled'),
+      stale_block_rate: securityCanceledRequestContract.blockRate.includes('75.0%'),
+      stale_detection_rate: securityCanceledRequestContract.detectionRate.includes('50.0%')
+    };
+    if (Object.values(securityCanceledFailures).some(Boolean)) {
+      throw new Error(`SecurityEdge client cancellation polluted completed-decision telemetry rendering: ${JSON.stringify({contract:securityCanceledRequestContract,failures:securityCanceledFailures})}`);
+    }
+  }
+
   let telemetryTrendGapContract = null;
   if (fixtureRoot) {
     telemetryTrendGapContract = await cdp.evaluate(`(() => {
@@ -776,6 +829,7 @@ try {
       const candidate = structuredClone(previous);
       const securityTotal = candidate.security_metrics.total;
       securityTotal.requests = 0;
+      securityTotal.canceled_requests = 0;
       securityTotal.block_rate = 0.75;
       securityTotal.detection_rate = 0.50;
       securityTotal.latency = {average_ms:99, maximum_ms:99, p50_ms:99, p95_ms:99, p99_ms:99};
@@ -1839,7 +1893,7 @@ try {
     connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
     authentication_ui_contract:authenticationUIContract, telemetry_availability_contract:telemetryAvailabilityContract,
-    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, telemetry_trend_gap_contract:telemetryTrendGapContract,
+    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, telemetry_trend_gap_contract:telemetryTrendGapContract,
     undefined_metric_rendering_contract:undefinedMetricRenderingContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
   }, null, 2));
 } catch (error) {

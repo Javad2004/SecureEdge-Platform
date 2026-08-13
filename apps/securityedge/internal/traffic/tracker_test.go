@@ -13,8 +13,9 @@ func TestSnapshotReportsRecentTrafficWithoutTreatingIdleAsFailure(t *testing.T) 
 		t.Fatalf("idle snapshot=%#v", idle)
 	}
 	tracker.Observe(Event{ObservedAt: now.Add(-10 * time.Second).Format(time.RFC3339Nano), ClientIP: "10.0.0.5", Action: "ALLOW", Status: 200, Route: "demo"})
+	tracker.Observe(Event{ObservedAt: now.Add(-5 * time.Second).Format(time.RFC3339Nano), ClientIP: "10.0.0.6", Action: "CANCELED", Reason: "client_canceled", Route: "demo"})
 	active := tracker.Snapshot(now)
-	if active.Status != "traffic_observed" || active.RequestsInWindow != 1 || active.UniqueClients != 1 || active.Allowed != 1 {
+	if active.Status != "traffic_observed" || active.RequestsInWindow != 2 || active.UniqueClients != 2 || active.Allowed != 1 || active.Rejected != 0 || active.Canceled != 1 {
 		t.Fatalf("active snapshot=%#v", active)
 	}
 }

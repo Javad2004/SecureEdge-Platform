@@ -217,6 +217,28 @@ func TestDashboardClientCancellationsStayOutOfCompletedOutcomeRates(t *testing.T
 	}
 }
 
+func TestDashboardSecurityCancellationsStayOutOfDecisionRatesAndLatency(t *testing.T) {
+	app, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	javascript := string(app)
+	for _, required := range []string{
+		"function completedSecurityDecisions(total)",
+		"const canceled = Math.max(0, Number(total?.canceled_requests || 0))",
+		"const securityDecisions = completedSecurityDecisions(total)",
+		"canceled · no completed decisions",
+		"No completed security decisions",
+		"msIf(total.latency?.p95_ms, securityDecisions > 0)",
+		"completedSecurityDecisions(total) > 0",
+		"${fmt(traffic.rejected)} rejected · ${fmt(traffic.canceled)} canceled",
+	} {
+		if !strings.Contains(javascript, required) {
+			t.Fatalf("dashboard SecurityEdge-cancellation telemetry contract is missing %q", required)
+		}
+	}
+}
+
 func TestDashboardTrendPreservesTelemetryRateGaps(t *testing.T) {
 	app, err := webAssets.ReadFile("web/app.js")
 	if err != nil {
@@ -362,7 +384,7 @@ func TestDashboardPreservesAuthAndTelemetryTruthfulness(t *testing.T) {
 		"Runtime health unavailable.",
 		"req/s avg since start",
 		"pctIf(edgeTotal.cache_hit_ratio, cacheLookups > 0)",
-		"msIf(total.latency?.p95_ms, securityRequests > 0)",
+		"msIf(total.latency?.p95_ms, securityDecisions > 0)",
 		"point.security?.rejected_rate_available === true",
 		"pctIf(m.cache_hit_ratio, cacheLookups > 0)",
 		"Number(component.checks || 0) > 0",

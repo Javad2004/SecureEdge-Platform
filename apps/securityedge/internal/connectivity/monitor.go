@@ -150,10 +150,8 @@ func (m *Monitor) Snapshot(ctx context.Context, force bool) Snapshot {
 	m.mu.RLock()
 	cached := cloneSnapshot(m.last)
 	m.mu.RUnlock()
-	if !force && cached.GeneratedAt != "" {
-		if checked, err := time.Parse(time.RFC3339Nano, cached.GeneratedAt); err == nil && time.Since(checked) < cfg.CheckInterval.Duration {
-			return cached
-		}
+	if !force && connectivitySnapshotFresh(cached, cfg.CheckInterval.Duration, time.Now().UTC()) {
+		return cached
 	}
 
 	m.checkMu.Lock()
@@ -162,10 +160,8 @@ func (m *Monitor) Snapshot(ctx context.Context, force bool) Snapshot {
 	m.mu.RLock()
 	cached = cloneSnapshot(m.last)
 	m.mu.RUnlock()
-	if !force && cached.GeneratedAt != "" {
-		if checked, err := time.Parse(time.RFC3339Nano, cached.GeneratedAt); err == nil && time.Since(checked) < cfg.CheckInterval.Duration {
-			return cached
-		}
+	if !force && connectivitySnapshotFresh(cached, cfg.CheckInterval.Duration, time.Now().UTC()) {
+		return cached
 	}
 
 	// Connectivity is shared operational state, so an individual dashboard or API
@@ -175,6 +171,21 @@ func (m *Monitor) Snapshot(ctx context.Context, force bool) Snapshot {
 	checkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.Timeout.Duration)
 	defer cancel()
 	return m.run(checkCtx, cfg)
+}
+
+func connectivitySnapshotFresh(snapshot Snapshot, interval time.Duration, now time.Time) bool {
+	if snapshot.GeneratedAt == "" || interval <= 0 {
+		return false
+	}
+	checked, err := time.Parse(time.RFC3339Nano, snapshot.GeneratedAt)
+	if err != nil {
+		return false
+	}
+	age := now.UTC().Sub(checked.UTC())
+	// A future-dated cached snapshot indicates a wall-clock rollback or clock
+	// correction. Treat it as stale immediately instead of reusing it until the
+	// local clock eventually catches up.
+	return age >= 0 && age < interval
 }
 
 func (m *Monitor) Cached() Snapshot {

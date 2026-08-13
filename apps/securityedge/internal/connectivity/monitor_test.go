@@ -624,3 +624,49 @@ func TestLoopbackDialAddressPreservesWildcardAddressFamily(t *testing.T) {
 		t.Fatalf("IPv6 wildcard probe address=%q", got)
 	}
 }
+
+func TestMonitorRefreshesFutureDatedCachedSnapshotAfterClockRollback(t *testing.T) {
+	dataPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-ID", "connectivity-test")
+		w.Header().Set(edgeprobe.HeaderName, edgeprobe.ResponseValue)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer dataPlane.Close()
+
+	source := &fakeSource{cfg: healthyConfig(t, dataPlane), edgeDown: true}
+	monitor := New(source)
+	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
+	monitor.last = Snapshot{GeneratedAt: future, OverallStatus: StatusHealthy, Summary: "future cached snapshot"}
+
+	got := monitor.Snapshot(context.Background(), false)
+	if got.Summary == "future cached snapshot" || got.GeneratedAt == future {
+		t.Fatalf("future-dated connectivity snapshot was reused after clock rollback: %#v", got)
+	}
+	if got.OverallStatus != StatusDown {
+		t.Fatalf("refreshed dependency failure was not observed: overall=%s components=%#v", got.OverallStatus, got.Components)
+	}
+}
+
+func TestConnectivitySnapshotFreshRejectsFutureAndExpiredTimestamps(t *testing.T) {
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	interval := time.Second
+	cases := []struct {
+		name      string
+		generated string
+		want      bool
+	}{
+		{name: "current", generated: now.Format(time.RFC3339Nano), want: true},
+		{name: "within interval", generated: now.Add(-500 * time.Millisecond).Format(time.RFC3339Nano), want: true},
+		{name: "expired", generated: now.Add(-time.Second).Format(time.RFC3339Nano), want: false},
+		{name: "future", generated: now.Add(time.Nanosecond).Format(time.RFC3339Nano), want: false},
+		{name: "invalid", generated: "not-a-time", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := connectivitySnapshotFresh(Snapshot{GeneratedAt: tc.generated}, interval, now)
+			if got != tc.want {
+				t.Fatalf("fresh=%v, want %v for %q", got, tc.want, tc.generated)
+			}
+		})
+	}
+}

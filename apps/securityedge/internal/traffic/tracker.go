@@ -104,14 +104,34 @@ func (t *Tracker) noteEvicted(observed time.Time) {
 }
 
 func (t *Tracker) Snapshot(now time.Time) Snapshot {
-	t.mu.RLock()
+	now = now.UTC()
+
+	t.mu.Lock()
+	// Wall-clock rollback can leave retained events timestamped in the future.
+	// Those events cannot truthfully belong to the current recent-activity
+	// window and must not reappear later when the wall clock catches up.
+	write := 0
+	for _, event := range t.events {
+		observed, err := time.Parse(time.RFC3339Nano, event.ObservedAt)
+		if err != nil || observed.After(now) {
+			continue
+		}
+		t.events[write] = event
+		write++
+	}
+	clear(t.events[write:])
+	t.events = t.events[:write]
+	if t.latestEvictedAt.After(now) {
+		// The previous truncation marker belongs to the invalid future timeline.
+		// Reset it rather than inventing a lower bound for the current window.
+		t.latestEvictedAt = time.Time{}
+	}
 	events := append([]Event(nil), t.events...)
 	window := t.window
 	capacity := t.capacity
 	latestEvictedAt := t.latestEvictedAt
-	t.mu.RUnlock()
+	t.mu.Unlock()
 
-	now = now.UTC()
 	cutoff := now.Add(-window)
 	windowTruncated := !latestEvictedAt.IsZero() && !latestEvictedAt.Before(cutoff)
 	out := Snapshot{

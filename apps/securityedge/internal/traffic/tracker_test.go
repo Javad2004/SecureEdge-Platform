@@ -112,3 +112,28 @@ func TestTrackerRetainsNewestEventsWhenOlderObservationArrivesAtCapacity(t *test
 		t.Fatalf("discarded in-window observation must preserve a conservative lower bound: %#v", snapshot)
 	}
 }
+
+func TestSnapshotDiscardsFutureDatedEventsAfterClockRollback(t *testing.T) {
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	tracker := New(10, 5*time.Minute)
+	tracker.Observe(Event{ObservedAt: now.Add(time.Hour).Format(time.RFC3339Nano), RequestID: "future", Action: "ALLOW"})
+	tracker.Observe(Event{ObservedAt: now.Format(time.RFC3339Nano), RequestID: "current", Action: "ALLOW"})
+	tracker.latestEvictedAt = now.Add(30 * time.Minute)
+
+	snapshot := tracker.Snapshot(now)
+	if snapshot.LastRequest == nil || snapshot.LastRequest.RequestID != "current" {
+		t.Fatalf("future-dated event dominated current activity snapshot: %#v", snapshot)
+	}
+	if snapshot.RequestsInWindow != 1 || snapshot.MinimumRequestsInWindow != 1 || snapshot.WindowTruncated {
+		t.Fatalf("future timeline polluted current activity counts: %#v", snapshot)
+	}
+	recent := tracker.Recent(10)
+	if len(recent) != 1 || recent[0].RequestID != "current" {
+		t.Fatalf("future-dated event was not permanently pruned: %#v", recent)
+	}
+
+	later := tracker.Snapshot(now.Add(2 * time.Hour))
+	if later.RequestsInWindow != 0 || later.LastRequest != nil {
+		t.Fatalf("discarded future event reappeared after wall clock caught up: %#v", later)
+	}
+}

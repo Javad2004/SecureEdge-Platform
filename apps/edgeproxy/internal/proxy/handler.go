@@ -463,6 +463,7 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		}
 		retryableResponse := err == nil && resp != nil && retryableStatus(resp.StatusCode)
 		failed := err != nil || retryableResponse
+		telemetryFailed := err != nil || (resp != nil && resp.StatusCode >= http.StatusInternalServerError)
 		attemptErr := err
 		if retryableResponse {
 			attemptErr = fmt.Errorf("upstream returned %s", resp.Status)
@@ -472,11 +473,11 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 			h.metrics.RecordUpstream(rt.cfg.Name, node.url.String(), metrics.UpstreamObservation{
 				Status:   status,
 				Duration: elapsed,
-				Failed:   failed,
+				Failed:   telemetryFailed,
 				Timeout:  timedOut,
 				Retry:    attempt > 0,
 			})
-			h.recordUpstreamAttempt(req, rt.cfg.Name, id, node.url.String(), attempt+1, status, elapsed, attempt > 0, timedOut, attemptErr, failed)
+			h.recordUpstreamAttempt(req, rt.cfg.Name, id, node.url.String(), attempt+1, status, elapsed, attempt > 0, timedOut, attemptErr, telemetryFailed)
 		}
 
 		if !failed {

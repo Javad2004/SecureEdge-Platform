@@ -59,8 +59,8 @@ func TestTelemetryHistoryPersistsBoundsAndReloads(t *testing.T) {
 	if err := json.Unmarshal(persisted, &document); err != nil {
 		t.Fatal(err)
 	}
-	if document.SchemaVersion != "1.1" {
-		t.Fatalf("telemetry history schema=%q, want 1.1", document.SchemaVersion)
+	if document.SchemaVersion != "1.2" {
+		t.Fatalf("telemetry history schema=%q, want 1.2", document.SchemaVersion)
 	}
 
 	reloaded := newTelemetryHistoryStore(store.cfg)
@@ -91,6 +91,64 @@ func TestTelemetryHistoryRejectsEdgeProxyPayloadWithoutMetricsSchema(t *testing.
 	}
 	if snapshot.Samples[0].EdgeProxy.Available {
 		t.Fatal("EdgeProxy payload without metrics schema must remain unavailable")
+	}
+}
+
+func TestTelemetryHistoryDoesNotDoubleCountProxyErrors(t *testing.T) {
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{Duration: time.Second},
+	})
+
+	edge := json.RawMessage(`{"schema_version":"2.0","total":{"requests":10,"client_errors":2,"server_errors":3,"proxy_errors":3},"routes":{"demo":{"requests":5,"client_errors":1,"server_errors":2,"proxy_errors":2}}}`)
+	store.observe(metrics.Snapshot{Total: metrics.CounterSnapshot{Requests: 1}}, edge)
+
+	samples := store.snapshot(10).Samples
+	if len(samples) != 1 {
+		t.Fatalf("history samples=%d, want 1", len(samples))
+	}
+	if got := samples[0].EdgeProxy.Errors; got != 5 {
+		t.Fatalf("EdgeProxy client-facing errors=%d, want 5 without overlapping proxy-error causes", got)
+	}
+	if !samples[0].EdgeProxy.ErrorCountAvailable {
+		t.Fatal("new EdgeProxy history sample must mark corrected error counts as available")
+	}
+	if got := samples[0].Routes["demo"].Errors; got != 3 {
+		t.Fatalf("Route client-facing errors=%d, want 3 without overlapping proxy-error causes", got)
+	}
+	if !samples[0].Routes["demo"].ErrorCountAvailable {
+		t.Fatal("new Route history sample must mark corrected error counts as available")
+	}
+}
+
+func TestTelemetryHistoryLoadsLegacyErrorCountsAsUnverified(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.json")
+	document := telemetryHistoryDocument{
+		SchemaVersion: "1.1",
+		Samples: []telemetryHistoryPoint{{
+			GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano),
+			EdgeProxy:   telemetryEdgeHistoryPoint{Available: true, Errors: 99, ErrorCountAvailable: true},
+			Routes: map[string]telemetryRouteHistory{
+				"demo": {Errors: 88, ErrorCountAvailable: true},
+			},
+		}},
+	}
+	data, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{Duration: time.Second}, FilePath: path,
+	})
+	samples := store.snapshot(10).Samples
+	if len(samples) != 1 {
+		t.Fatalf("legacy history samples=%d, want 1", len(samples))
+	}
+	if samples[0].EdgeProxy.ErrorCountAvailable || samples[0].Routes["demo"].ErrorCountAvailable {
+		t.Fatalf("legacy error counts must remain explicitly unverified: %#v", samples[0])
 	}
 }
 

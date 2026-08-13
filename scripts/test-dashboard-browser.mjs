@@ -632,6 +632,31 @@ try {
     }
   }
 
+  let clientFacingErrorContract = null;
+  if (fixtureRoot) {
+    clientFacingErrorContract = await cdp.evaluate(`(() => {
+      const previous = state.overview;
+      const candidate = structuredClone(previous);
+      const routeName = Object.keys(candidate.edgeproxy_metrics?.routes || {})[0];
+      if (!routeName) return {routeName:'', text:''};
+      const metric = candidate.edgeproxy_metrics.routes[routeName];
+      metric.client_errors = 1;
+      metric.server_errors = 2;
+      metric.proxy_errors = 2;
+      state.overview = candidate;
+      renderRoutes();
+      const text = document.getElementById('route-telemetry-table').textContent;
+      state.overview = previous;
+      renderAll();
+      return {routeName, text};
+    })()`);
+    if (!clientFacingErrorContract.routeName ||
+        !clientFacingErrorContract.text.includes('3 client-facing errors') ||
+        clientFacingErrorContract.text.includes('5 client-facing errors')) {
+      throw new Error(`Dashboard double-counted proxy-error causes as additional client-facing requests: ${JSON.stringify(clientFacingErrorContract)}`);
+    }
+  }
+
   let telemetryTrendGapContract = null;
   if (fixtureRoot) {
     telemetryTrendGapContract = await cdp.evaluate(`(() => {
@@ -1664,7 +1689,7 @@ try {
     connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
     authentication_ui_contract:authenticationUIContract, telemetry_availability_contract:telemetryAvailabilityContract,
-    telemetry_trend_gap_contract:telemetryTrendGapContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
+    client_facing_error_contract:clientFacingErrorContract, telemetry_trend_gap_contract:telemetryTrendGapContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
   }, null, 2));
 } catch (error) {
   console.error(error.stack || error.message);

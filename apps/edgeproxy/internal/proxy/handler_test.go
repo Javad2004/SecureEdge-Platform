@@ -781,6 +781,43 @@ func TestFailedUnsafeRequestKeepsCachedRepresentation(t *testing.T) {
 	}
 }
 
+func TestOriginHTTP500CountsAsUpstreamFailureWithoutChangingRetryPolicy(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "origin failed", http.StatusInternalServerError)
+	}))
+	defer origin.Close()
+
+	registry := metrics.New()
+	logs := accesslog.New(10)
+	h, err := NewHandler(testConfig(origin.URL), slog.Default(), registry, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://proxy.test/failure", nil))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+
+	snapshot := registry.Snapshot()
+	if snapshot.Total.Upstream.Calls != 1 || snapshot.Total.Upstream.Failures != 1 || snapshot.Total.Upstream.Success != 0 {
+		t.Fatalf("unexpected upstream aggregate for HTTP 500: %#v", snapshot.Total.Upstream)
+	}
+	originMetrics := snapshot.Routes["test"].Upstreams[origin.URL]
+	if originMetrics.Calls != 1 || originMetrics.Failures != 1 || originMetrics.Success != 0 || originMetrics.Retries != 0 {
+		t.Fatalf("unexpected per-Origin telemetry for HTTP 500: %#v", originMetrics)
+	}
+	if snapshot.Total.ServerErrors != 1 || snapshot.Total.ProxyErrors != 0 {
+		t.Fatalf("unexpected client-facing error counters: %#v", snapshot.Total)
+	}
+	attempts := logs.Query(accesslog.Filter{Event: "upstream_attempt", Limit: 10}).Entries
+	if len(attempts) != 1 || attempts[0].Level != "WARN" || attempts[0].UpstreamStatus != http.StatusInternalServerError {
+		t.Fatalf("unexpected upstream-attempt log: %#v", attempts)
+	}
+}
+
 func TestNoStoreBypassesCache(t *testing.T) {
 	var calls atomic.Int64
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

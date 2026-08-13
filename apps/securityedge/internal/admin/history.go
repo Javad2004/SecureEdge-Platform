@@ -47,6 +47,7 @@ type telemetryEdgeHistoryPoint struct {
 	InstanceStartedAt    string  `json:"instance_started_at,omitempty"`
 	Requests             uint64  `json:"requests"`
 	Errors               uint64  `json:"errors"`
+	ErrorCountAvailable  bool    `json:"error_count_available"`
 	CacheHitRatio        float64 `json:"cache_hit_ratio"`
 	RequestsPerSecond    float64 `json:"requests_per_second"`
 	RequestRateAvailable bool    `json:"request_rate_available"`
@@ -57,6 +58,7 @@ type telemetryEdgeHistoryPoint struct {
 type telemetryRouteHistory struct {
 	Requests             uint64                            `json:"requests"`
 	Errors               uint64                            `json:"errors"`
+	ErrorCountAvailable  bool                              `json:"error_count_available"`
 	CacheHitRatio        float64                           `json:"cache_hit_ratio"`
 	RequestsPerSecond    float64                           `json:"requests_per_second"`
 	RequestRateAvailable bool                              `json:"request_rate_available"`
@@ -173,21 +175,23 @@ func (s *telemetryHistoryStore) observe(security metrics.Snapshot, edgeRaw json.
 	var edge edgeMetricsHistoryInput
 	if len(edgeRaw) > 0 && json.Unmarshal(edgeRaw, &edge) == nil && strings.TrimSpace(edge.SchemaVersion) != "" {
 		point.EdgeProxy = telemetryEdgeHistoryPoint{
-			Available:         true,
-			InstanceStartedAt: strings.TrimSpace(edge.StartedAt),
-			Requests:          edge.Total.Requests,
-			Errors:            edge.Total.ClientErrors + edge.Total.ServerErrors + edge.Total.ProxyErrors,
-			CacheHitRatio:     edge.Total.CacheHitRatio,
-			P95LatencyMS:      edge.Total.ResponseLatencyMS.P95,
-			Inflight:          edge.Inflight,
+			Available:           true,
+			InstanceStartedAt:   strings.TrimSpace(edge.StartedAt),
+			Requests:            edge.Total.Requests,
+			Errors:              edge.Total.ClientErrors + edge.Total.ServerErrors,
+			ErrorCountAvailable: true,
+			CacheHitRatio:       edge.Total.CacheHitRatio,
+			P95LatencyMS:        edge.Total.ResponseLatencyMS.P95,
+			Inflight:            edge.Inflight,
 		}
 		for routeName, route := range edge.Routes {
 			routePoint := telemetryRouteHistory{
-				Requests:      route.Requests,
-				Errors:        route.ClientErrors + route.ServerErrors + route.ProxyErrors,
-				CacheHitRatio: route.CacheHitRatio,
-				P95LatencyMS:  route.ResponseLatencyMS.P95,
-				Origins:       map[string]telemetryOriginHistory{},
+				Requests:            route.Requests,
+				Errors:              route.ClientErrors + route.ServerErrors,
+				ErrorCountAvailable: true,
+				CacheHitRatio:       route.CacheHitRatio,
+				P95LatencyMS:        route.ResponseLatencyMS.P95,
+				Origins:             map[string]telemetryOriginHistory{},
 			}
 			for originName, origin := range route.Upstreams {
 				routePoint.Origins[originName] = telemetryOriginHistory{
@@ -323,11 +327,20 @@ func (s *telemetryHistoryStore) load() error {
 	if err := decoder.Decode(&document); err != nil {
 		return fmt.Errorf("decode telemetry history: %w", err)
 	}
-	if document.SchemaVersion != "1.0" && document.SchemaVersion != "1.1" {
+	if document.SchemaVersion != "1.0" && document.SchemaVersion != "1.1" && document.SchemaVersion != "1.2" {
 		return fmt.Errorf("unsupported telemetry history schema %q", document.SchemaVersion)
 	}
 	if err := ensureJSONEOF(decoder); err != nil {
 		return fmt.Errorf("decode telemetry history: %w", err)
+	}
+	if document.SchemaVersion != "1.2" {
+		for i := range document.Samples {
+			document.Samples[i].EdgeProxy.ErrorCountAvailable = false
+			for name, route := range document.Samples[i].Routes {
+				route.ErrorCountAvailable = false
+				document.Samples[i].Routes[name] = route
+			}
+		}
 	}
 	valid := document.Samples[:0]
 	for _, sample := range document.Samples {
@@ -397,7 +410,7 @@ func readBoundedTelemetryHistoryFile(path string) ([]byte, error) {
 }
 
 func (s *telemetryHistoryStore) persistLocked() error {
-	document := telemetryHistoryDocument{SchemaVersion: "1.1", Samples: s.samples}
+	document := telemetryHistoryDocument{SchemaVersion: "1.2", Samples: s.samples}
 	data, err := json.Marshal(document)
 	if err != nil {
 		return fmt.Errorf("encode telemetry history: %w", err)

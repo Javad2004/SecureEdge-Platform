@@ -42,6 +42,20 @@ func TestRegistryCapturesRouteAndPerUpstreamMetrics(t *testing.T) {
 	}
 }
 
+func TestProxyErrorsRemainDiagnosticSubsetOfClientFacingErrors(t *testing.T) {
+	registry := New()
+	finish := registry.Begin("demo", "GET")
+	finish(RequestObservation{Status: 502, ProxyError: true})
+
+	snapshot := registry.Snapshot().Total
+	if snapshot.Requests != 1 || snapshot.ServerErrors != 1 || snapshot.ProxyErrors != 1 {
+		t.Fatalf("unexpected overlapping error counters: %#v", snapshot)
+	}
+	if snapshot.ErrorRate != 1 {
+		t.Fatalf("error_rate=%v, want 1 based on the single client-facing request", snapshot.ErrorRate)
+	}
+}
+
 func TestHistogramEmptySnapshot(t *testing.T) {
 	var h histogram
 	snapshot := h.Snapshot()

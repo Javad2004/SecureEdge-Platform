@@ -318,6 +318,8 @@ POST    /api/v1/cache/purge
 
 Request, cache-hit/miss, upstream-latency, Route, scheduler, and retained access-log telemetry describe **application traffic**. Synthetic SecurityEdge connectivity probes are deliberately excluded so a five-second dependency check cannot dilute the cache hit ratio, inflate request or MISS totals, skew upstream latency, or look like user traffic in the Dashboard. Origin health-check counters remain health telemetry by design and are separate from these application counters.
 
+Client-facing error totals are derived from HTTP `4xx` and `5xx` request counters. `proxy_errors` is a diagnostic subset/cause flag for requests that failed inside proxy processing and can overlap a `5xx` response, so it must not be added to `client_errors + server_errors` as though it represented another request. Origin `success`/`failures` telemetry uses completed HTTP semantics independently of retry policy: any Origin `5xx` response is a failed Origin attempt for observability, while the retry policy remains limited to its configured retryable statuses.
+
 Log-filter values are bounded before the in-memory ring is scanned: named filters accept at most 512 bytes and the free-text `q` search accepts at most 2,048 bytes. Search normalization is performed once per request rather than once per retained event, preventing an oversized authenticated query from amplifying CPU and allocation work across a large log store.
 
 Authenticated configuration Control Plane:

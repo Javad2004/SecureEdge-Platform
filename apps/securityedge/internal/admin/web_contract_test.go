@@ -183,6 +183,20 @@ func TestDashboardThemeContract(t *testing.T) {
 	}
 }
 
+func TestDashboardClientFacingErrorsDoNotDoubleCountProxyCauses(t *testing.T) {
+	app, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	javascript := string(app)
+	if !strings.Contains(javascript, "Number(m.client_errors||0)+Number(m.server_errors||0)") {
+		t.Fatal("dashboard must derive client-facing errors from HTTP 4xx/5xx request counters")
+	}
+	if strings.Contains(javascript, "Number(m.client_errors||0)+Number(m.server_errors||0)+Number(m.proxy_errors||0)") {
+		t.Fatal("dashboard must not double-count proxy_errors as additional client-facing requests")
+	}
+}
+
 func TestDashboardTrendPreservesTelemetryRateGaps(t *testing.T) {
 	app, err := webAssets.ReadFile("web/app.js")
 	if err != nil {

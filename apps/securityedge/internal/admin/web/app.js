@@ -405,15 +405,7 @@ function renderOverview() {
   $('kpi-origins').textContent = edgeStatusAvailable ? `${healthy}/${origins.length}` : '—';
   $('kpi-routes').textContent = edgeStatusAvailable ? `${routes.filter(route => route.ready).length}/${routes.length} routes ready` : 'EdgeProxy status unavailable';
   const history = overview.telemetry_history?.samples || [];
-  state.trend = history.map(point => ({
-    requests: point.edgeproxy?.available === true && point.edgeproxy?.request_rate_available === true
-      ? Number(point.edgeproxy.requests_per_second || 0)
-      : null,
-    blocked: point.security?.rejected_rate_available === true
-      ? Number(point.security.rejected_per_second || 0)
-      : null,
-    time: Date.parse(point.generated_at) || Date.now()
-  }));
+  state.trend = normalizeTrendHistory(history);
   drawTrend();
   renderBars($('rule-bars'), total.rules || {});
   renderSecurityRows($('recent-security'), overview.security_logs?.entries || [], false, 7);
@@ -423,39 +415,259 @@ function cssColor(name, fallback) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 }
 
+function nonNegativeRate(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
+}
+
+function normalizeTrendHistory(history) {
+  const mapped = (Array.isArray(history) ? history : []).map(point => {
+    const parsedTime = Date.parse(point.generated_at);
+    return {
+      requests: point.edgeproxy?.available === true && point.edgeproxy?.request_rate_available === true
+        ? nonNegativeRate(point.edgeproxy.requests_per_second)
+        : null,
+      blocked: point.security?.rejected_rate_available === true
+        ? nonNegativeRate(point.security.rejected_per_second)
+        : null,
+      time: Number.isFinite(parsedTime) ? parsedTime : null
+    };
+  });
+  const hasRate = point => Number.isFinite(point.requests) || Number.isFinite(point.blocked);
+  const first = mapped.findIndex(hasRate);
+  if (first < 0) return [];
+  let last = mapped.length - 1;
+  while (last > first && !hasRate(mapped[last])) last -= 1;
+  return mapped.slice(first, last + 1);
+}
+
+function niceTrendMaximum(value) {
+  const maximum = Math.max(0, Number(value) || 0);
+  if (maximum === 0) return 0.1;
+  const padded = maximum * 1.08;
+  const exponent = Math.floor(Math.log10(padded));
+  const magnitude = 10 ** exponent;
+  const fraction = padded / magnitude;
+  const steps = [1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 7.5, 10];
+  const step = steps.find(candidate => fraction <= candidate) || 10;
+  return step * magnitude;
+}
+
+function trendQuantile(sortedValues, quantile) {
+  if (!sortedValues.length) return 0;
+  const bounded = Math.min(1, Math.max(0, Number(quantile) || 0));
+  const position = (sortedValues.length - 1) * bounded;
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) return sortedValues[lower];
+  const weight = position - lower;
+  return sortedValues[lower] * (1 - weight) + sortedValues[upper] * weight;
+}
+
+function trendScaleModel(values) {
+  const finite = values.map(nonNegativeRate).filter(Number.isFinite);
+  const rawMaximum = finite.length ? Math.max(...finite) : 0;
+  const positive = finite.filter(value => value > 0).sort((a, b) => a - b);
+  if (positive.length < 8 || rawMaximum <= 0) {
+    return {maximum:niceTrendMaximum(rawMaximum), rawMaximum, outlierCount:0, clipped:false};
+  }
+
+  const median = trendQuantile(positive, 0.5);
+  const deviations = positive.map(value => Math.abs(value - median)).sort((a, b) => a - b);
+  const mad = trendQuantile(deviations, 0.5);
+  const robustUpper = mad > 0 ? median + 6 * 1.4826 * mad : median * 3;
+  const ordinary = positive.filter(value => value <= robustUpper);
+  const outlierCount = positive.length - ordinary.length;
+  const ordinaryMaximum = ordinary.length ? Math.max(...ordinary) : median;
+  const outlierLimit = Math.max(2, Math.ceil(positive.length * 0.15));
+  const clearlySeparated = ordinaryMaximum > 0 && rawMaximum >= ordinaryMaximum * 2.5;
+
+  if (outlierCount > 0 && outlierCount <= outlierLimit && clearlySeparated) {
+    const maximum = niceTrendMaximum(ordinaryMaximum * 1.18);
+    if (maximum > 0 && maximum < rawMaximum) {
+      return {maximum, rawMaximum, outlierCount, clipped:true};
+    }
+  }
+  return {maximum:niceTrendMaximum(rawMaximum), rawMaximum, outlierCount:0, clipped:false};
+}
+
+function trendRateLabel(value, scaleMaximum = value) {
+  const numeric = Math.max(0, Number(value) || 0);
+  const scale = Math.max(0, Number(scaleMaximum) || 0);
+  let decimals = 0;
+  if (scale < 0.01) decimals = 4;
+  else if (scale < 0.1) decimals = 3;
+  else if (scale < 10) decimals = 2;
+  else if (scale < 100) decimals = 1;
+  const fixed = numeric.toFixed(decimals);
+  return fixed.replace(/\.0+$/, '').replace(/(\.\d*?[1-9])0+$/, '$1');
+}
+
+function trendTimeLabel(timestamp, includeSeconds = false) {
+  if (!Number.isFinite(timestamp)) return '—';
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: '2-digit', minute: '2-digit', ...(includeSeconds ? {second: '2-digit'} : {})
+  });
+}
+
+function trendTimeBounds(points) {
+  const times = points.map(point => point.time).filter(Number.isFinite);
+  if (!times.length) return {minimum:null, maximum:null};
+  return {minimum:Math.min(...times), maximum:Math.max(...times)};
+}
+
+function trendLatestValue(key) {
+  for (let index = state.trend.length - 1; index >= 0; index -= 1) {
+    if (Number.isFinite(state.trend[index][key])) return state.trend[index][key];
+  }
+  return null;
+}
+
 function drawTrend() {
   const canvas = $('trend-chart');
+  if (!canvas) return;
   const dpr = devicePixelRatio || 1;
-  const width = canvas.clientWidth || 600;
+  const width = Math.max(280, canvas.clientWidth || 600);
   const height = 240;
-  canvas.width = width * dpr;
-  canvas.height = height * dpr;
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
   const context = canvas.getContext('2d');
+  if (!context) return;
   context.scale(dpr, dpr);
   context.clearRect(0, 0, width, height);
+
+  const compact = width < 460;
+  const plot = {
+    left: compact ? 46 : 58,
+    right: width - 12,
+    top: 20,
+    bottom: height - 34
+  };
+  const plotWidth = Math.max(1, plot.right - plot.left);
+  const plotHeight = Math.max(1, plot.bottom - plot.top);
+  const values = state.trend.flatMap(point => [point.requests, point.blocked]).filter(Number.isFinite);
+  const scaleModel = trendScaleModel(values);
+  const rawMaximum = scaleModel.rawMaximum;
+  const maximum = scaleModel.maximum;
+  const bounds = trendTimeBounds(state.trend);
+  const timeSpan = Number.isFinite(bounds.minimum) && Number.isFinite(bounds.maximum)
+    ? Math.max(0, bounds.maximum - bounds.minimum)
+    : 0;
+  const includeSeconds = timeSpan > 0 && timeSpan < 10 * 60 * 1000;
+
+  context.font = `${compact ? 10 : 11}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+  context.fillStyle = cssColor('--muted', '#98a6bd');
   context.strokeStyle = cssColor('--chart-grid', '#25324c');
   context.lineWidth = 1;
-  for (let i = 0; i < 5; i++) {
-    const y = 20 + i * (height - 40) / 4;
-    context.beginPath(); context.moveTo(0, y); context.lineTo(width, y); context.stroke();
+  context.textBaseline = 'middle';
+  const yTickCount = 4;
+  for (let index = 0; index <= yTickCount; index += 1) {
+    const ratio = index / yTickCount;
+    const y = plot.top + ratio * plotHeight;
+    const value = maximum * (1 - ratio);
+    context.beginPath();
+    context.moveTo(plot.left, y);
+    context.lineTo(plot.right, y);
+    context.stroke();
+    context.textAlign = 'right';
+    context.fillText(trendRateLabel(value, maximum), plot.left - 7, y);
   }
-  const values = state.trend.flatMap(point => [point.requests, point.blocked]).filter(Number.isFinite);
-  const maximum = Math.max(1, ...values);
+  context.textAlign = 'left';
+  context.textBaseline = 'alphabetic';
+  context.fillText('req/s', 4, 11);
+
+  if (Number.isFinite(bounds.minimum) && Number.isFinite(bounds.maximum)) {
+    const singleTimestamp = bounds.minimum === bounds.maximum;
+    const tickCount = singleTimestamp ? 1 : compact ? 2 : 3;
+    context.textBaseline = 'alphabetic';
+    for (let index = 0; index < tickCount; index += 1) {
+      const ratio = singleTimestamp ? 0.5 : index / (tickCount - 1);
+      const timestamp = singleTimestamp ? bounds.minimum : bounds.minimum + (bounds.maximum - bounds.minimum) * ratio;
+      const x = plot.left + plotWidth * ratio;
+      context.textAlign = singleTimestamp ? 'center' : index === 0 ? 'left' : index === tickCount - 1 ? 'right' : 'center';
+      context.fillText(trendTimeLabel(timestamp, includeSeconds), x, height - 8);
+    }
+  }
+
+  const xForPoint = (point, index) => {
+    if (Number.isFinite(point.time) && Number.isFinite(bounds.minimum) && Number.isFinite(bounds.maximum) && bounds.maximum > bounds.minimum) {
+      return plot.left + ((point.time - bounds.minimum) / (bounds.maximum - bounds.minimum)) * plotWidth;
+    }
+    return state.trend.length <= 1 ? plot.left + plotWidth / 2 : plot.left + index * (plotWidth / (state.trend.length - 1));
+  };
+  const yForValue = value => plot.bottom - (Math.min(maximum, Math.max(0, value)) / maximum) * plotHeight;
+
   const draw = (key, color) => {
-    context.strokeStyle = color; context.lineWidth = 2; context.beginPath();
+    context.strokeStyle = color;
+    context.fillStyle = color;
+    context.lineWidth = 2;
+    context.lineJoin = 'round';
+    context.lineCap = 'round';
+    context.beginPath();
     let segmentStarted = false;
     state.trend.forEach((point, index) => {
       const value = point[key];
       if (!Number.isFinite(value)) { segmentStarted = false; return; }
-      const x = state.trend.length === 1 ? width / 2 : index * (width / (state.trend.length - 1));
-      const y = height - 20 - (value / maximum) * (height - 40);
+      const x = xForPoint(point, index);
+      const y = yForValue(value);
       if (segmentStarted) context.lineTo(x, y);
       else { context.moveTo(x, y); segmentStarted = true; }
     });
     context.stroke();
+    state.trend.forEach((point, index) => {
+      const value = point[key];
+      if (!Number.isFinite(value)) return;
+      const x = xForPoint(point, index);
+      context.beginPath();
+      context.arc(x, yForValue(value), compact ? 1.6 : 2, 0, Math.PI * 2);
+      context.fill();
+      if (scaleModel.clipped && value > maximum) {
+        context.save();
+        context.font = `${compact ? 11 : 12}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+        context.textAlign = 'center';
+        context.textBaseline = 'top';
+        context.fillText('▲', x, plot.top + 2);
+        context.restore();
+      }
+    });
   };
   draw('requests', cssColor('--chart-requests', '#67a6ff'));
   draw('blocked', cssColor('--chart-blocked', '#ff7188'));
+
+  const requestCount = state.trend.filter(point => Number.isFinite(point.requests)).length;
+  const blockedCount = state.trend.filter(point => Number.isFinite(point.blocked)).length;
+  const requestLatest = trendLatestValue('requests');
+  const blockedLatest = trendLatestValue('blocked');
+  const rateText = value => Number.isFinite(value) ? `${trendRateLabel(value, Math.max(value, rawMaximum))} req/s` : 'Unavailable';
+  $('trend-requests-latest').textContent = rateText(requestLatest);
+  $('trend-blocked-latest').textContent = rateText(blockedLatest);
+
+  const hasTimeRange = Number.isFinite(bounds.minimum) && Number.isFinite(bounds.maximum);
+  const rangeText = hasTimeRange
+    ? bounds.minimum === bounds.maximum
+      ? trendTimeLabel(bounds.minimum, true)
+      : `${trendTimeLabel(bounds.minimum, includeSeconds)}–${trendTimeLabel(bounds.maximum, includeSeconds)}`
+    : 'Time unavailable';
+  $('trend-window').textContent = values.length
+    ? `${rangeText} · ${state.trend.length} retained sample${state.trend.length === 1 ? '' : 's'}`
+    : 'Waiting for rate history';
+  $('trend-scale').textContent = values.length
+    ? scaleModel.clipped
+      ? `Display scale 0–${trendRateLabel(maximum, maximum)} req/s · ${scaleModel.outlierCount} peak${scaleModel.outlierCount === 1 ? '' : 's'} above scale · max ${trendRateLabel(rawMaximum, rawMaximum)} req/s`
+      : `Scale 0–${trendRateLabel(maximum, maximum)} req/s`
+    : 'Scale unavailable';
+
+  const empty = $('trend-empty');
+  empty.hidden = values.length > 0;
+  if (!values.length) empty.textContent = 'No interval-rate history available yet.';
+  const peakSummary = scaleModel.clipped
+    ? ` ${scaleModel.outlierCount} peak${scaleModel.outlierCount === 1 ? ' exceeds' : 's exceed'} the display scale; exact values are preserved, marked at the top edge, and the highest observed rate is ${rateText(rawMaximum)}.`
+    : '';
+  const summary = values.length
+    ? `Request-rate history from ${rangeText}. EdgeProxy latest ${rateText(requestLatest)} with ${requestCount} available sample${requestCount === 1 ? '' : 's'}; SecurityEdge rejection latest ${rateText(blockedLatest)} with ${blockedCount} available sample${blockedCount === 1 ? '' : 's'}. Missing telemetry intervals are shown as gaps.${peakSummary}`
+    : 'No interval-rate history is available yet. The chart will populate after contiguous telemetry samples establish valid interval rates.';
+  $('trend-chart-summary').textContent = summary;
 }
 
 function renderBars(element, values, limit = 8) {

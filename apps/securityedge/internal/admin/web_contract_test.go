@@ -525,11 +525,54 @@ func TestDashboardAccessibilityLabelsContract(t *testing.T) {
 		`name="client_ip" placeholder="Client IP" aria-label="Filter by client IP"`,
 		`id="purge-form" class="filters" aria-label="Cache purge controls"`,
 		`id="purge-route" required aria-label="Route to purge"`,
-		`id="trend-chart" height="240" role="img" aria-label="Recent EdgeProxy request-rate and SecurityEdge rejection-rate trend"`,
+		`id="trend-chart" height="240" role="img" aria-label="Recent EdgeProxy request-rate and SecurityEdge rejection-rate trend" aria-describedby="trend-chart-summary"`,
+		`id="trend-scale"`,
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("dashboard accessibility contract is missing %q", required)
 		}
+	}
+}
+
+func TestDashboardTrendPresentationContract(t *testing.T) {
+	index, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles, err := webAssets.ReadFile("web/styles.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(index) + "\n" + string(styles) + "\n" + string(app)
+	for _, required := range []string{
+		`class="panel trend-panel"`,
+		`class="trend-legend" aria-label="Request-rate trend legend"`,
+		`id="trend-requests-latest"`,
+		`id="trend-blocked-latest"`,
+		`id="trend-window"`,
+		`id="trend-empty" class="trend-empty" hidden`,
+		`id="trend-chart-summary" class="trend-chart-summary"`,
+		`function normalizeTrendHistory(history)`,
+		`function niceTrendMaximum(value)`,
+		`function trendQuantile(sortedValues, quantile)`,
+		`function trendScaleModel(values)`,
+		`id="trend-scale"`,
+		`above scale · max`,
+		`Missing telemetry intervals are shown as gaps.`,
+		`function trendTimeBounds(points)`,
+		`.trend-chart-wrap`,
+		`.trend-swatch.blocked`,
+	} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("dashboard trend presentation contract is missing %q", required)
+		}
+	}
+	if strings.Contains(string(app), `Math.max(1, ...values)`) {
+		t.Fatal("trend chart still forces a 1 req/s minimum scale")
 	}
 }
 

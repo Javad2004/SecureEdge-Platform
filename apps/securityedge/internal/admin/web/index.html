@@ -102,7 +102,21 @@
           <article class="kpi"><span>Origins healthy</span><strong id="kpi-origins">—</strong><small id="kpi-routes">— routes</small></article>
         </div>
         <div class="grid two">
-          <article class="panel"><div class="panel-head"><div><h2>Request-rate trend</h2><p>Persisted EdgeProxy request rate and SecurityEdge rejection rate across recent samples.</p></div></div><canvas id="trend-chart" height="240" role="img" aria-label="Recent EdgeProxy request-rate and SecurityEdge rejection-rate trend"></canvas></article>
+          <article class="panel trend-panel">
+            <div class="panel-head"><div><h2>Request-rate trend</h2><p>Persisted EdgeProxy request rate and SecurityEdge rejection rate across recent samples.</p></div></div>
+            <div class="trend-toolbar">
+              <div class="trend-legend" aria-label="Request-rate trend legend">
+                <span class="trend-legend-item"><span class="trend-swatch requests" aria-hidden="true"></span><span>EdgeProxy requests</span><strong id="trend-requests-latest">—</strong></span>
+                <span class="trend-legend-item"><span class="trend-swatch blocked" aria-hidden="true"></span><span>SecurityEdge rejections</span><strong id="trend-blocked-latest">—</strong></span>
+              </div>
+              <div class="trend-meta muted"><span id="trend-window">Waiting for rate history</span><span id="trend-scale">Scale unavailable</span></div>
+            </div>
+            <div class="trend-chart-wrap">
+              <canvas id="trend-chart" height="240" role="img" aria-label="Recent EdgeProxy request-rate and SecurityEdge rejection-rate trend" aria-describedby="trend-chart-summary"></canvas>
+              <div id="trend-empty" class="trend-empty" hidden>No interval-rate history available yet.</div>
+            </div>
+            <p id="trend-chart-summary" class="trend-chart-summary">No interval-rate history available yet.</p>
+          </article>
           <article class="panel"><div class="panel-head"><div><h2>Top security rules</h2><p>Most frequently matched built-in and custom rules.</p></div></div><div id="rule-bars" class="bar-list empty">No detections yet.</div></article>
         </div>
         <article class="panel"><div class="panel-head"><div><h2>Recent security decisions</h2><p>Payloads are not retained. Only bounded metadata and SHA-256 fingerprints are stored.</p></div><button data-go="security">Open event explorer</button></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Action</th><th>Reason</th><th>Route</th><th>Client</th><th>Request</th><th>Rules</th><th>Score</th></tr></thead><tbody id="recent-security"></tbody></table></div></article>

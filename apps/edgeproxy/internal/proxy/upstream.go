@@ -295,18 +295,23 @@ func (p *upstreamPool) closeIdleConnections() {
 	}
 }
 
-func (p *upstreamPool) healthSnapshot() []map[string]any {
+func (p *upstreamPool) healthSnapshot() (bool, []map[string]any) {
 	out := make([]map[string]any, 0, len(p.nodes))
+	ready := false
 	for _, node := range p.nodes {
+		healthy := node.healthy.Load()
+		if healthy {
+			ready = true
+		}
 		out = append(out, map[string]any{
-			"name": node.name, "url": node.url.String(), "healthy": node.healthy.Load(),
+			"name": node.name, "url": node.url.String(), "healthy": healthy,
 			"weight": node.weight, "priority": node.priority, "active_requests": node.active.Load(),
 			"scheduler_selections": node.selections.Load(), "health_failures": node.healthFailures.Load(),
 			"health_recoveries": node.healthRecoveries.Load(), "ewma_latency_ms": node.ewmaMS(),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i]["url"].(string) < out[j]["url"].(string) })
-	return out
+	return ready, out
 }
 
 func (p *upstreamPool) schedulerSnapshot() map[string]any {

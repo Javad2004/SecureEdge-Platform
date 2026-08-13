@@ -2928,3 +2928,44 @@ func TestEarlyHintsThenOKKeepsFinalResponseTelemetry(t *testing.T) {
 		t.Fatalf("final response telemetry inconsistent after Early Hints: %#v", total)
 	}
 }
+
+func TestRouteStatusesReadyMatchesCapturedOriginHealthUnderConcurrentTransition(t *testing.T) {
+	originURL, err := url.Parse("http://origin.internal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := &upstream{name: "origin", url: originURL, weight: 1}
+	node.healthy.Store(true)
+	pool := &upstreamPool{nodes: []*upstream{node}, algorithm: "round_robin"}
+	h := &Handler{routes: map[string]*routeRuntime{
+		"test": {cfg: &config.RouteConfig{Name: "test"}, pool: pool},
+	}}
+
+	var stop atomic.Bool
+	flipperDone := make(chan struct{})
+	go func() {
+		defer close(flipperDone)
+		for !stop.Load() {
+			node.healthy.Store(false)
+			node.healthy.Store(true)
+		}
+	}()
+	defer func() {
+		stop.Store(true)
+		<-flipperDone
+	}()
+
+	for i := 0; i < 100_000; i++ {
+		statuses := h.RouteStatuses()
+		if len(statuses) != 1 || len(statuses[0].Upstreams) != 1 {
+			t.Fatalf("route statuses=%#v", statuses)
+		}
+		capturedHealthy, ok := statuses[0].Upstreams[0]["healthy"].(bool)
+		if !ok {
+			t.Fatalf("captured healthy value=%#v", statuses[0].Upstreams[0]["healthy"])
+		}
+		if statuses[0].Ready != capturedHealthy {
+			t.Fatalf("torn route status at iteration %d: ready=%v captured_origin_healthy=%v", i, statuses[0].Ready, capturedHealthy)
+		}
+	}
+}

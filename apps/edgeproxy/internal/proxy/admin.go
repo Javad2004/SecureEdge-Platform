@@ -39,11 +39,12 @@ func (h *Handler) RouteStatuses() []RouteStatus {
 	out := make([]RouteStatus, 0, len(names))
 	for _, name := range names {
 		rt := routes[name]
+		ready, upstreams := rt.pool.healthSnapshot()
 		status := RouteStatus{
 			Name:      rt.cfg.Name,
-			Ready:     rt.pool.hasHealthy(),
+			Ready:     ready,
 			Scheduler: rt.pool.schedulerSnapshot(),
-			Upstreams: rt.pool.healthSnapshot(),
+			Upstreams: upstreams,
 		}
 		if rt.cache != nil {
 			stats := rt.cache.Stats()

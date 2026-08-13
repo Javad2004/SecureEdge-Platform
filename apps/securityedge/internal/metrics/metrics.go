@@ -45,10 +45,14 @@ type counters struct {
 }
 
 type Registry struct {
-	startedAt time.Time
-	inflight  atomic.Int64
-	total     counters
-	routes    sync.Map
+	// snapshotMu keeps completed-request updates concurrent with each other but
+	// gives Snapshot a short exclusive boundary so scalar counters, dimensions,
+	// Route totals, and derived rates all represent one coherent generation.
+	snapshotMu sync.RWMutex
+	startedAt  time.Time
+	inflight   atomic.Int64
+	total      counters
+	routes     sync.Map
 }
 
 type Observation struct {
@@ -113,8 +117,12 @@ type CounterSnapshot struct {
 func New() *Registry { return &Registry{startedAt: time.Now()} }
 
 func (r *Registry) Begin() func(Observation) {
+	r.snapshotMu.RLock()
 	r.inflight.Add(1)
+	r.snapshotMu.RUnlock()
 	return func(o Observation) {
+		r.snapshotMu.RLock()
+		defer r.snapshotMu.RUnlock()
 		defer r.inflight.Add(-1)
 		r.record(&r.total, o)
 		value, _ := r.routes.LoadOrStore(o.Route, &counters{})
@@ -185,6 +193,8 @@ func (r *Registry) record(c *counters, o Observation) {
 }
 
 func (r *Registry) Snapshot() Snapshot {
+	r.snapshotMu.Lock()
+	defer r.snapshotMu.Unlock()
 	up := time.Since(r.startedAt)
 	out := Snapshot{
 		SchemaVersion: "2.0", GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano),

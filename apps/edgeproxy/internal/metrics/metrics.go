@@ -144,12 +144,16 @@ type routeMetrics struct {
 }
 
 type Registry struct {
-	startedAt time.Time
-	inflight  atomic.Int64
-	total     Counters
-	mu        sync.RWMutex
-	routes    map[string]*routeMetrics
-	upstreams sync.Map // global map[string]*UpstreamCounters
+	// snapshotMu lets concurrent metric writers proceed together while giving
+	// Snapshot a short exclusive boundary so aggregate, Route, dimension, and
+	// derived values cannot be assembled from different update generations.
+	snapshotMu sync.RWMutex
+	startedAt  time.Time
+	inflight   atomic.Int64
+	total      Counters
+	mu         sync.RWMutex
+	routes     map[string]*routeMetrics
+	upstreams  sync.Map // global map[string]*UpstreamCounters
 }
 
 // RequestObservation finalizes one client request. Canceled marks a request that
@@ -284,13 +288,17 @@ func New() *Registry {
 // called exactly once when request processing terminates, including cancellation.
 func (r *Registry) Begin(route, method string) func(RequestObservation) {
 	method = metricMethod(method)
+	r.snapshotMu.RLock()
 	r.inflight.Add(1)
 	routeMetrics := r.route(route)
 	for _, target := range []*Counters{&r.total, &routeMetrics.counters} {
 		target.requests.Add(1)
 		target.methods.Add(method, 1)
 	}
+	r.snapshotMu.RUnlock()
 	return func(observation RequestObservation) {
+		r.snapshotMu.RLock()
+		defer r.snapshotMu.RUnlock()
 		defer r.inflight.Add(-1)
 		for _, target := range []*Counters{&r.total, &routeMetrics.counters} {
 			target.bytesIn.Add(observation.BytesIn)
@@ -335,6 +343,8 @@ func (r *Registry) Begin(route, method string) func(RequestObservation) {
 
 // RecordUpstream accounts for one physical request to one upstream origin.
 func (r *Registry) RecordUpstream(route, upstream string, observation UpstreamObservation) {
+	r.snapshotMu.RLock()
+	defer r.snapshotMu.RUnlock()
 	routeMetrics := r.route(route)
 	globalUpstream := upstreamCounter(&r.upstreams, upstream)
 	routeUpstream := upstreamCounter(&routeMetrics.upstreams, upstream)
@@ -383,6 +393,8 @@ func (r *Registry) RecordUpstream(route, upstream string, observation UpstreamOb
 }
 
 func (r *Registry) RecordCacheStore(route string) {
+	r.snapshotMu.RLock()
+	defer r.snapshotMu.RUnlock()
 	r.total.cacheStores.Add(1)
 	r.route(route).counters.cacheStores.Add(1)
 }
@@ -409,6 +421,8 @@ func upstreamCounter(container *sync.Map, name string) *UpstreamCounters {
 }
 
 func (r *Registry) Snapshot() Snapshot {
+	r.snapshotMu.Lock()
+	defer r.snapshotMu.Unlock()
 	uptime := time.Since(r.startedAt)
 	out := Snapshot{
 		SchemaVersion: "2.0",

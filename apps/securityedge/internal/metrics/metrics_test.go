@@ -3,6 +3,8 @@ package metrics
 import (
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -102,4 +104,61 @@ func TestUnknownMethodsUseBoundedMetricLabel(t *testing.T) {
 	if len(methods) != 1 || methods["OTHER"] != 1000 {
 		t.Fatalf("unbounded method labels: %#v", methods)
 	}
+}
+
+func TestConcurrentSnapshotsRemainInternallyConsistent(t *testing.T) {
+	registry := New()
+	var stop atomic.Bool
+	var workers sync.WaitGroup
+	actions := []string{"ALLOW", "BLOCK", "LOG", "RATE_LIMIT", "OVERLOAD", "BANNED"}
+	for worker := 0; worker < 4; worker++ {
+		workers.Add(1)
+		go func(worker int) {
+			defer workers.Done()
+			for i := 0; i < 5000 && !stop.Load(); i++ {
+				finish := registry.Begin()
+				if (i+worker)%17 == 0 {
+					finish(Observation{Route: "demo", Method: "GET", Canceled: true})
+				} else {
+					finish(Observation{Route: "demo", Method: "GET", Action: actions[(i+worker)%len(actions)], Duration: time.Microsecond})
+				}
+			}
+		}(worker)
+	}
+
+	check := func(snapshot Snapshot) {
+		total := snapshot.Total
+		route := snapshot.Routes["demo"]
+		outcomes := total.Allowed + total.Blocked + total.Logged + total.RateLimited + total.OverloadRejected + total.BannedRejected
+		if total.Requests != outcomes+total.CanceledRequests {
+			t.Fatalf("aggregate request partition came from different update generations: requests=%d outcomes=%d canceled=%d total=%#v", total.Requests, outcomes, total.CanceledRequests, total)
+		}
+		routeOutcomes := route.Allowed + route.Blocked + route.Logged + route.RateLimited + route.OverloadRejected + route.BannedRejected
+		if route.Requests != routeOutcomes+route.CanceledRequests || route.Requests != total.Requests {
+			t.Fatalf("Route and aggregate snapshots are inconsistent: total=%#v route=%#v", total, route)
+		}
+		if total.Methods["GET"] != total.Requests || route.Methods["GET"] != route.Requests {
+			t.Fatalf("method dimensions are not coherent with request totals: total=%#v route=%#v", total.Methods, route.Methods)
+		}
+		actionTotal := uint64(0)
+		for action, count := range total.Actions {
+			actionTotal += count
+			if route.Actions[action] != count {
+				t.Fatalf("aggregate and Route action dimensions came from different generations: action=%q total=%d route=%d", action, count, route.Actions[action])
+			}
+		}
+		if actionTotal != outcomes {
+			t.Fatalf("action dimensions are not coherent with scalar outcomes: actions=%#v outcomes=%d", total.Actions, outcomes)
+		}
+		if total.Latency.P50MS < 0 || route.Latency.P50MS < 0 {
+			t.Fatalf("invalid latency snapshot: total=%#v route=%#v", total.Latency, route.Latency)
+		}
+	}
+
+	for i := 0; i < 10000; i++ {
+		check(registry.Snapshot())
+	}
+	stop.Store(true)
+	workers.Wait()
+	check(registry.Snapshot())
 }

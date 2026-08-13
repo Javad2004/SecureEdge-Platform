@@ -2,6 +2,8 @@ package metrics
 
 import (
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -201,4 +203,61 @@ func TestUnknownMethodsUseBoundedMetricLabel(t *testing.T) {
 	if len(methods) != 1 || methods["OTHER"] != 1000 {
 		t.Fatalf("unbounded method labels: %#v", methods)
 	}
+}
+
+func TestConcurrentSnapshotsRemainInternallyConsistent(t *testing.T) {
+	registry := New()
+	var stop atomic.Bool
+	var workers sync.WaitGroup
+	for worker := 0; worker < 4; worker++ {
+		workers.Add(1)
+		go func(worker int) {
+			defer workers.Done()
+			for i := 0; i < 5000 && !stop.Load(); i++ {
+				finish := registry.Begin("demo", "GET")
+				registry.RecordUpstream("demo", "origin-a", UpstreamObservation{Status: 200, Duration: time.Microsecond})
+				if (i+worker)%5 == 0 {
+					registry.RecordCacheStore("demo")
+				}
+				if (i+worker)%17 == 0 {
+					finish(RequestObservation{Canceled: true})
+				} else {
+					finish(RequestObservation{Status: 200, Duration: time.Microsecond})
+				}
+			}
+		}(worker)
+	}
+
+	check := func(snapshot Snapshot) {
+		total := snapshot.Total
+		route := snapshot.Routes["demo"]
+		completed := total.Success + total.ClientErrors + total.ServerErrors + total.CanceledRequests
+		if snapshot.Inflight < 0 || total.Requests != completed+uint64(snapshot.Inflight) {
+			t.Fatalf("request/outcome snapshot is torn: requests=%d completed=%d inflight=%d total=%#v", total.Requests, completed, snapshot.Inflight, total)
+		}
+		if route.Requests != total.Requests {
+			t.Fatalf("Route and aggregate request counts came from different generations: total=%d route=%d", total.Requests, route.Requests)
+		}
+		if total.Methods["GET"] != total.Requests || route.Methods["GET"] != route.Requests {
+			t.Fatalf("method dimensions are not coherent with request totals: total=%#v route=%#v", total.Methods, route.Methods)
+		}
+		if total.ResponseLatencyMS.Count != total.Success || route.ResponseLatencyMS.Count != route.Success {
+			t.Fatalf("latency samples are not coherent with completed responses: total=%#v route=%#v", total.ResponseLatencyMS, route.ResponseLatencyMS)
+		}
+		globalOrigin := snapshot.Upstreams["origin-a"]
+		routeOrigin := route.Upstreams["origin-a"]
+		if total.UpstreamCalls != route.UpstreamCalls || total.Upstream.Calls != total.UpstreamCalls || route.Upstream.Calls != route.UpstreamCalls || globalOrigin.Calls != total.UpstreamCalls || routeOrigin.Calls != route.UpstreamCalls {
+			t.Fatalf("upstream aggregate/Route/origin counters came from different generations: total=%#v route=%#v global_origin=%#v route_origin=%#v", total.Upstream, route.Upstream, globalOrigin, routeOrigin)
+		}
+		if total.CacheStores != route.CacheStores {
+			t.Fatalf("cache-store counters came from different generations: total=%d route=%d", total.CacheStores, route.CacheStores)
+		}
+	}
+
+	for i := 0; i < 10000; i++ {
+		check(registry.Snapshot())
+	}
+	stop.Store(true)
+	workers.Wait()
+	check(registry.Snapshot())
 }

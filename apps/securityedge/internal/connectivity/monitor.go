@@ -419,6 +419,9 @@ func probeDataPlaneHTTP(ctx context.Context, cfg config.Config, configuredRoutes
 		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy data-plane HTTP(S)", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: u.String(), message: fmt.Sprintf("EdgeProxy returned HTTP %d without acknowledging a matched operational probe route", resp.StatusCode), httpStatus: resp.StatusCode, latency: latency, details: details}
 	}
 	details["probe_ack"] = ack
+	if resp.StatusCode >= http.StatusInternalServerError {
+		return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy data-plane HTTP(S)", layer: "edgeproxy", status: StatusDown, critical: true, endpoint: u.String(), message: fmt.Sprintf("EdgeProxy matched the configured route probe but the end-to-end path returned HTTP %d", resp.StatusCode), httpStatus: resp.StatusCode, latency: latency, details: details}
+	}
 	return probeResult{id: "edgeproxy_data_http", name: "EdgeProxy data-plane HTTP(S)", layer: "edgeproxy", status: StatusHealthy, critical: true, endpoint: u.String(), message: fmt.Sprintf("EdgeProxy acknowledged the configured route probe with HTTP %d", resp.StatusCode), httpStatus: resp.StatusCode, latency: latency, details: details}
 }
 

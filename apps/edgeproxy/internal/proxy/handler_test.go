@@ -311,6 +311,52 @@ func TestTrustedOperationalProbeFailureDoesNotMutateOriginHealth(t *testing.T) {
 	}
 }
 
+func TestTrustedOperationalProbePreservesRetryableResponseWhenNoAlternateOrigin(t *testing.T) {
+	var calls atomic.Int64
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "30")
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer origin.Close()
+
+	cfg := testConfig(origin.URL)
+	cfg.Routes[0].Proxy.RetryCount = 1
+	registry := metrics.New()
+	logs := accesslog.New(100)
+	h, err := NewHandler(cfg, slog.Default(), registry, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+
+	probe := httptest.NewRequest(http.MethodHead, "http://proxy.test/data", nil)
+	probe.RemoteAddr = "127.0.0.1:43210"
+	probe.Header.Set(internalProbeHeader, internalProbeValue)
+	probe.Header.Set("User-Agent", internalProbeUserAgent)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, probe)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d, want preserved %d", rr.Code, http.StatusServiceUnavailable)
+	}
+	if got := rr.Header().Get("Retry-After"); got != "30" {
+		t.Fatalf("Retry-After=%q, want preserved Origin header", got)
+	}
+	if got := rr.Header().Get(internalProbeHeader); got != internalProbeResponseValue {
+		t.Fatalf("probe acknowledgement=%q, want %q", got, internalProbeResponseValue)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("Origin calls=%d, want one call when no alternate Origin exists", calls.Load())
+	}
+	if snapshot := registry.Snapshot(); snapshot.Total.Requests != 0 || snapshot.Total.UpstreamCalls != 0 {
+		t.Fatalf("operational probe polluted metrics: %#v", snapshot.Total)
+	}
+	if stats := logs.Stats(); stats.Retained != 0 {
+		t.Fatalf("operational probe polluted retained logs: %#v", stats)
+	}
+}
+
 func TestUntrustedClientCannotHideTrafficWithOperationalProbeMarker(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get(internalProbeHeader); got != "" {

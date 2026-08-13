@@ -412,6 +412,29 @@ func TestProbeDataPlaneHTTPUsesConfiguredWildcardRoute(t *testing.T) {
 	}
 }
 
+func TestProbeDataPlaneHTTPRejectsMatchedServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Request-ID", "matched-but-failing")
+		w.Header().Set(edgeprobe.HeaderName, edgeprobe.ResponseValue)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Server.Mode = "gateway"
+	cfg.Server.UpstreamProxyURL = server.URL
+	cfg.Admin.Connectivity.Timeout = config.Duration{Duration: time.Second}
+	result := probeDataPlaneHTTP(context.Background(), cfg, []routes.Route{{
+		Name: "api", Hosts: []string{"project.test"}, PathPrefix: "/",
+	}})
+	if result.status != StatusDown || result.httpStatus != http.StatusServiceUnavailable {
+		t.Fatalf("matched 5xx probe=%#v, want DOWN", result)
+	}
+	if result.details["probe_ack"] != edgeprobe.ResponseValue || !strings.Contains(result.message, "end-to-end path returned HTTP 503") {
+		t.Fatalf("matched 5xx probe details/message are incomplete: %#v", result)
+	}
+}
+
 func TestProbeDataPlaneHTTPRejectsUnmatchedResponseWithRequestIDButNoProbeAcknowledgement(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("X-Request-ID", "unmatched-request")

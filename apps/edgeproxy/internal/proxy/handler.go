@@ -550,6 +550,17 @@ func (h *Handler) fetchAndServe(w http.ResponseWriter, req *http.Request, rt *ro
 		}
 
 		canRetry := attempt+1 < attempts
+		if retryableResponse && canRetry && operationalProbe && rt.pool.pickProbe(excluded) == nil {
+			activeNode = node
+			// Probe retries intentionally try a different configured Origin so synthetic
+			// health traffic cannot repeatedly hammer one failing backend. If no other
+			// Origin is eligible, preserve the complete response we already received
+			// instead of discarding it and synthesizing a misleading 502 on the next
+			// loop iteration.
+			lastErr = nil
+			result.errorMessage = ""
+			break
+		}
 		if retryableResponse && !canRetry {
 			activeNode = node
 			// The Origin produced a complete HTTP response. Once retries are exhausted,

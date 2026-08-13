@@ -550,14 +550,16 @@ func updateComponent(previous Component, result probeResult, now time.Time) Comp
 	if evaluable {
 		component.Checks++
 	}
-	if successfulStatus(result.status) {
+	if result.status == StatusHealthy {
 		component.SuccessfulChecks++
 		component.ConsecutiveSuccesses = previous.ConsecutiveSuccesses + 1
 		component.ConsecutiveFailures = 0
 		component.LastSuccessAt = timestamp(now)
-	} else if !evaluable {
-		// Unknown/N/A is not a failed check and also interrupts any current
-		// success/failure streak. Keep historical timestamps and availability.
+	} else if !evaluable || result.status == StatusDegraded {
+		// Unknown/N/A is not an evaluable check. Degraded is evaluable and
+		// therefore remains in the availability denominator, but it is neither a
+		// healthy success nor a hard failure. Both states interrupt the current
+		// success/failure streak while preserving historical outcome timestamps.
 		component.ConsecutiveSuccesses = 0
 		component.ConsecutiveFailures = 0
 	} else {
@@ -828,7 +830,6 @@ func containsAny(values, expected []string) bool {
 	return false
 }
 
-func successfulStatus(status string) bool { return status == StatusHealthy || status == StatusDegraded }
 func durationMS(value time.Duration) float64 {
 	if value <= 0 {
 		return 0

@@ -2779,3 +2779,99 @@ func TestCacheFillWaiterDoesNotServePurgedStaleEntry(t *testing.T) {
 		t.Fatalf("purged stale entry was served: result=%+v headers=%v", result, recorder.Header())
 	}
 }
+
+type informationalCaptureWriter struct {
+	header   http.Header
+	statuses []int
+}
+
+func (w *informationalCaptureWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *informationalCaptureWriter) WriteHeader(status int) {
+	w.statuses = append(w.statuses, status)
+}
+
+func (w *informationalCaptureWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+func TestResponseCaptureForwardsInformationalBeforeFinalStatus(t *testing.T) {
+	underlying := &informationalCaptureWriter{}
+	capture := &responseCapture{ResponseWriter: underlying}
+
+	capture.WriteHeader(http.StatusEarlyHints)
+	if capture.status != 0 {
+		t.Fatalf("informational response latched as final status: %d", capture.status)
+	}
+	capture.WriteHeader(http.StatusOK)
+
+	if capture.status != http.StatusOK {
+		t.Fatalf("captured final status=%d, want %d", capture.status, http.StatusOK)
+	}
+	if len(underlying.statuses) != 2 || underlying.statuses[0] != http.StatusEarlyHints || underlying.statuses[1] != http.StatusOK {
+		t.Fatalf("forwarded statuses=%v, want [%d %d]", underlying.statuses, http.StatusEarlyHints, http.StatusOK)
+	}
+}
+
+func TestResponseCaptureTreatsSwitchingProtocolsAsFinal(t *testing.T) {
+	underlying := &informationalCaptureWriter{}
+	capture := &responseCapture{ResponseWriter: underlying}
+
+	capture.WriteHeader(http.StatusSwitchingProtocols)
+	capture.WriteHeader(http.StatusOK)
+
+	if capture.status != http.StatusSwitchingProtocols {
+		t.Fatalf("captured protocol-upgrade status=%d, want %d", capture.status, http.StatusSwitchingProtocols)
+	}
+	if len(underlying.statuses) != 1 || underlying.statuses[0] != http.StatusSwitchingProtocols {
+		t.Fatalf("forwarded statuses=%v, want [%d]", underlying.statuses, http.StatusSwitchingProtocols)
+	}
+}
+
+func TestEarlyHintsThenOKKeepsFinalResponseTelemetry(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Add("Link", "</style.css>; rel=preload; as=style")
+		w.WriteHeader(http.StatusEarlyHints)
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer origin.Close()
+
+	cfg := testConfig(origin.URL)
+	registry := metrics.New()
+	h, err := NewHandler(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), registry, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	proxyServer := httptest.NewServer(h)
+	defer proxyServer.Close()
+
+	req, err := http.NewRequest(http.MethodGet, proxyServer.URL+"/early", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "proxy.test"
+	resp, err := proxyServer.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || string(body) != "ok" {
+		t.Fatalf("client response status=%d body=%q", resp.StatusCode, body)
+	}
+
+	total := registry.Snapshot().Total
+	if total.Requests != 1 || total.Success != 1 || total.ClientErrors != 0 || total.ServerErrors != 0 ||
+		total.CanceledRequests != 0 || total.StatusCodes["200"] != 1 || total.StatusCodes["103"] != 0 {
+		t.Fatalf("final response telemetry inconsistent after Early Hints: %#v", total)
+	}
+}

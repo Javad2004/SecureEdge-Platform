@@ -1111,6 +1111,14 @@ type responseCapture struct {
 }
 
 func (w *responseCapture) WriteHeader(status int) {
+	// HTTP permits one or more informational responses before the final
+	// response. Forward 1xx statuses without latching them as the completed
+	// client-facing outcome; 101 is final because the connection switches
+	// protocols and is tracked explicitly by the tunnel path.
+	if status >= 100 && status < 200 && status != http.StatusSwitchingProtocols {
+		w.ResponseWriter.WriteHeader(status)
+		return
+	}
 	if w.status != 0 {
 		return
 	}

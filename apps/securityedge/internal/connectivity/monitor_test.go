@@ -98,6 +98,25 @@ func TestUpdateComponentExcludesUnknownAndNotApplicableFromAvailability(t *testi
 	}
 }
 
+func TestUpdateComponentTreatsDegradedAsEvaluableButNotHealthy(t *testing.T) {
+	now := time.Date(2026, 8, 13, 10, 0, 0, 0, time.UTC)
+	previous := Component{
+		ID: "edgeproxy_metrics", Status: StatusHealthy, Checks: 4, SuccessfulChecks: 3, AvailabilityPercent: 75,
+		ConsecutiveSuccesses: 2, LastSuccessAt: "2026-08-13T09:59:00Z", LastFailureAt: "2026-08-13T09:55:00Z",
+	}
+
+	degraded := updateComponent(previous, probeResult{id: previous.ID, status: StatusDegraded}, now)
+	if degraded.Checks != 5 || degraded.SuccessfulChecks != 3 || degraded.AvailabilityPercent != 60 {
+		t.Fatalf("degraded check used incorrect availability accounting: %#v", degraded)
+	}
+	if degraded.ConsecutiveSuccesses != 0 || degraded.ConsecutiveFailures != 0 {
+		t.Fatalf("degraded check should interrupt healthy/down streaks: %#v", degraded)
+	}
+	if degraded.LastSuccessAt != previous.LastSuccessAt || degraded.LastFailureAt != previous.LastFailureAt {
+		t.Fatalf("degraded check changed historical success/failure timestamps: %#v", degraded)
+	}
+}
+
 func TestMonitorHealthySnapshot(t *testing.T) {
 	dataPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodHead || r.URL.Path != "/" || r.Host != "project.test" {
@@ -160,6 +179,10 @@ func TestMonitorDegradesMetricsWithoutDeclaredSchema(t *testing.T) {
 	}
 	if metricsComponent.Status != StatusDegraded || !strings.Contains(metricsComponent.Message, "schema version") {
 		t.Fatalf("metrics component=%#v, want degraded schema error", metricsComponent)
+	}
+	if metricsComponent.Checks != 1 || metricsComponent.SuccessfulChecks != 0 || metricsComponent.AvailabilityPercent != 0 ||
+		metricsComponent.LastSuccessAt != "" || metricsComponent.ConsecutiveSuccesses != 0 || metricsComponent.ConsecutiveFailures != 0 {
+		t.Fatalf("degraded schema check was counted as healthy availability: %#v", metricsComponent)
 	}
 	if snapshot.ObservabilityStatus != StatusDegraded || snapshot.EdgeProxyConnectionStatus != StatusDegraded {
 		t.Fatalf("invalid metrics schema was reported healthy: observability=%s edge=%s", snapshot.ObservabilityStatus, snapshot.EdgeProxyConnectionStatus)

@@ -631,6 +631,54 @@ try {
     }
   }
 
+  let latencyTruthfulnessContract = null;
+  if (fixtureRoot) {
+    latencyTruthfulnessContract = await cdp.evaluate(`(() => {
+      const previous = state.overview;
+      const candidate = structuredClone(previous);
+      candidate.security_metrics.total.requests = Math.max(1, Number(candidate.security_metrics.total.requests || 0));
+      candidate.security_metrics.total.canceled_requests = 0;
+      candidate.security_metrics.total.latency = {...(candidate.security_metrics.total.latency || {}), p95_ms:0.000004};
+      candidate.edgeproxy_metrics.total.upstream = {...(candidate.edgeproxy_metrics.total.upstream || {}), latency_ms:{...(candidate.edgeproxy_metrics.total.upstream?.latency_ms || {}), count:1, average:0.000004}};
+      candidate.connectivity.components[0].latency_ms = 0.000004;
+      state.overview = candidate;
+      renderOverview();
+      const result = {
+        securityP95:document.getElementById('kpi-p95').textContent.trim(),
+        upstreamAverage:document.getElementById('kpi-upstream').textContent.trim(),
+        componentText:document.querySelector('#connectivity-components .component-check')?.textContent || '',
+        low:ms(0.004),
+        tiny:ms(0.000004),
+        extreme:ms(0.0000000004),
+        compactLow:compactLatency(0.004),
+        compactTiny:compactLatency(0.000004),
+        compactExtreme:compactLatency(0.0000000004),
+        exactZero:ms(0),
+        compactZero:compactLatency(0),
+        normal:ms(1),
+        compactNormal:compactLatency(15)
+      };
+      state.overview = previous;
+      renderAll();
+      return result;
+    })()`);
+    if (latencyTruthfulnessContract.securityP95 !== '0.000004 ms' ||
+        latencyTruthfulnessContract.upstreamAverage !== '0.000004 ms upstream avg' ||
+        !latencyTruthfulnessContract.componentText.includes('Latency 0.000004 ms') ||
+        latencyTruthfulnessContract.low !== '0.004 ms' ||
+        latencyTruthfulnessContract.tiny !== '0.000004 ms' ||
+        latencyTruthfulnessContract.extreme !== '4e-10 ms' ||
+        latencyTruthfulnessContract.compactLow !== '0.004 ms' ||
+        latencyTruthfulnessContract.compactTiny !== '0.000004 ms' ||
+        latencyTruthfulnessContract.compactExtreme !== '4e-10 ms' ||
+        latencyTruthfulnessContract.exactZero !== '0.00 ms' ||
+        latencyTruthfulnessContract.compactZero !== '—' ||
+        latencyTruthfulnessContract.normal !== '1.00 ms' ||
+        latencyTruthfulnessContract.compactNormal !== '15.0 ms') {
+      throw new Error(`Latency truthfulness contract failed: ${JSON.stringify(latencyTruthfulnessContract)}`);
+    }
+  }
+
   let telemetryAvailabilityContract = null;
   if (fixtureRoot) {
     telemetryAvailabilityContract = await cdp.evaluate(`(() => {
@@ -976,7 +1024,7 @@ try {
         telemetryTrendGapContract.blockedLatest !== 'Unavailable' ||
         !telemetryTrendGapContract.windowText.includes('7 retained samples') ||
         !telemetryTrendGapContract.scaleText.startsWith('Scale 0–') ||
-        !telemetryTrendGapContract.summary.includes('Missing telemetry intervals are shown as gaps.') ||
+        !telemetryTrendGapContract.summary.includes('Interior missing telemetry intervals are shown as gaps; leading and trailing unavailable intervals remain part of retained-history and latest-state semantics without extending the plotted viewport.') ||
         telemetryTrendGapContract.emptyHidden !== true) {
       throw new Error(`Trend legend/range/accessibility summary contract failed: ${JSON.stringify(telemetryTrendGapContract)}`);
     }
@@ -1100,6 +1148,10 @@ try {
         summary:document.getElementById('trend-chart-summary').textContent,
         points:state.trend.length,
         displayPoints:trendDisplayPoints(state.trend).length,
+        retainedBounds:trendTimeBounds(state.trend),
+        displayBounds:trendTimeBounds(trendDisplayPoints(state.trend)),
+        expectedRetainedEnd:trendTimeLabel(baseTime + 30000, true),
+        expectedDisplayEnd:trendTimeLabel(baseTime + 20000, true),
         windowText:document.getElementById('trend-window').textContent,
         finalRequest:state.trend.at(-1)?.requests ?? null,
         finalBlocked:state.trend.at(-1)?.blocked ?? null
@@ -1114,7 +1166,10 @@ try {
         telemetryTrendLatestAvailabilityContract.finalBlocked !== null ||
         telemetryTrendLatestAvailabilityContract.requestLatest !== 'Unavailable' ||
         telemetryTrendLatestAvailabilityContract.blockedLatest !== 'Unavailable' ||
+        telemetryTrendLatestAvailabilityContract.retainedBounds.maximum - telemetryTrendLatestAvailabilityContract.displayBounds.maximum !== 10000 ||
         !telemetryTrendLatestAvailabilityContract.windowText.includes('4 retained samples') ||
+        !telemetryTrendLatestAvailabilityContract.windowText.includes(telemetryTrendLatestAvailabilityContract.expectedRetainedEnd) ||
+        telemetryTrendLatestAvailabilityContract.windowText.includes(telemetryTrendLatestAvailabilityContract.expectedDisplayEnd + ' · 4 retained samples') ||
         !telemetryTrendLatestAvailabilityContract.summary.includes('EdgeProxy latest Unavailable') ||
         !telemetryTrendLatestAvailabilityContract.summary.includes('SecurityEdge rejection latest Unavailable')) {
       throw new Error(`Trend latest-value availability contract failed: ${JSON.stringify(telemetryTrendLatestAvailabilityContract)}`);
@@ -1143,8 +1198,8 @@ try {
     })()`);
     if (telemetryTrendEmptyContract.points !== 1 || telemetryTrendEmptyContract.emptyHidden !== false ||
         telemetryTrendEmptyContract.emptyText !== 'No interval-rate history available yet.' ||
-        telemetryTrendEmptyContract.windowText !== 'Waiting for interval rates · 1 retained sample' ||
-        !telemetryTrendEmptyContract.summary.includes('No interval-rate history is available yet.')) {
+        !telemetryTrendEmptyContract.windowText.startsWith('Waiting for interval rates · 1 retained sample · ') ||
+        !telemetryTrendEmptyContract.summary.includes('No interval rate is available yet across 1 retained sample')) {
       throw new Error(`Trend empty-state contract failed: ${JSON.stringify(telemetryTrendEmptyContract)}`);
     }
   }
@@ -2219,7 +2274,7 @@ try {
     semantic_color_contract:semanticColorContract, topbar_layouts:topbarLayouts, security_explorer_layouts:securityExplorerLayouts,
     connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
-    authentication_ui_contract:authenticationUIContract, cumulative_rate_precision_contract:cumulativeRatePrecisionContract, percentage_truthfulness_contract:percentageTruthfulnessContract, telemetry_availability_contract:telemetryAvailabilityContract,
+    authentication_ui_contract:authenticationUIContract, cumulative_rate_precision_contract:cumulativeRatePrecisionContract, percentage_truthfulness_contract:percentageTruthfulnessContract, latency_truthfulness_contract:latencyTruthfulnessContract, telemetry_availability_contract:telemetryAvailabilityContract,
     client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract, telemetry_trend_outlier_contract:telemetryTrendOutlierContract, telemetry_trend_series_isolation_contract:telemetryTrendSeriesIsolationContract, telemetry_trend_latest_availability_contract:telemetryTrendLatestAvailabilityContract, telemetry_trend_empty_contract:telemetryTrendEmptyContract,
     undefined_metric_rendering_contract:undefinedMetricRenderingContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
   }, null, 2));

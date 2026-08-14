@@ -48,7 +48,22 @@ function percentageLabel(percent) {
   return `${fixed}%`;
 }
 const pct = n => percentageLabel(Number(n || 0) * 100);
-const ms = n => `${Number(n || 0).toFixed(2)} ms`;
+function millisecondLabel(value, initialDecimals = 2) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return '—';
+  let decimals = Math.max(0, Math.min(9, Number(initialDecimals) || 0));
+  let fixed = numeric.toFixed(decimals);
+  while (numeric > 0 && Number(fixed) === 0 && decimals < 9) {
+    decimals += 1;
+    fixed = numeric.toFixed(decimals);
+  }
+  if (numeric > 0 && Number(fixed) === 0) {
+    const scientific = numeric.toExponential(2).replace(/\.00e/, 'e').replace(/(\.\d*[1-9])0+e/, '$1e').replace('e+', 'e');
+    return `${scientific} ms`;
+  }
+  return `${fixed} ms`;
+}
+const ms = n => millisecondLabel(n, 2);
 const pctIf = (n, available) => available ? pct(n) : '—';
 const msIf = (n, available) => available ? ms(n) : '—';
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
@@ -277,8 +292,8 @@ function dateText(value, fallback = 'Never') {
 }
 
 function compactLatency(value) {
-  const latency = Number(value || 0);
-  return latency > 0 ? `${latency.toFixed(latency < 10 ? 2 : 1)} ms` : '—';
+  const latency = Number(value);
+  return Number.isFinite(latency) && latency > 0 ? millisecondLabel(latency, latency < 10 ? 2 : 1) : '—';
 }
 
 function componentByID(connectivity, id) {
@@ -594,9 +609,10 @@ function drawTrend() {
   const scaleModel = trendScaleModel([requestValues, blockedValues]);
   const rawMaximum = scaleModel.rawMaximum;
   const maximum = scaleModel.maximum;
-  const bounds = trendTimeBounds(displayTrend);
-  const timeSpan = Number.isFinite(bounds.minimum) && Number.isFinite(bounds.maximum)
-    ? Math.max(0, bounds.maximum - bounds.minimum)
+  const plotBounds = trendTimeBounds(displayTrend);
+  const retainedBounds = trendTimeBounds(state.trend);
+  const timeSpan = Number.isFinite(plotBounds.minimum) && Number.isFinite(plotBounds.maximum)
+    ? Math.max(0, plotBounds.maximum - plotBounds.minimum)
     : 0;
   const includeSeconds = timeSpan > 0 && timeSpan < 10 * 60 * 1000;
 
@@ -621,13 +637,13 @@ function drawTrend() {
   context.textBaseline = 'alphabetic';
   context.fillText('req/s', 4, 11);
 
-  if (Number.isFinite(bounds.minimum) && Number.isFinite(bounds.maximum)) {
-    const singleTimestamp = bounds.minimum === bounds.maximum;
+  if (Number.isFinite(plotBounds.minimum) && Number.isFinite(plotBounds.maximum)) {
+    const singleTimestamp = plotBounds.minimum === plotBounds.maximum;
     const tickCount = singleTimestamp ? 1 : compact ? 2 : 3;
     context.textBaseline = 'alphabetic';
     for (let index = 0; index < tickCount; index += 1) {
       const ratio = singleTimestamp ? 0.5 : index / (tickCount - 1);
-      const timestamp = singleTimestamp ? bounds.minimum : bounds.minimum + (bounds.maximum - bounds.minimum) * ratio;
+      const timestamp = singleTimestamp ? plotBounds.minimum : plotBounds.minimum + (plotBounds.maximum - plotBounds.minimum) * ratio;
       const x = plot.left + plotWidth * ratio;
       context.textAlign = singleTimestamp ? 'center' : index === 0 ? 'left' : index === tickCount - 1 ? 'right' : 'center';
       context.fillText(trendTimeLabel(timestamp, includeSeconds), x, height - 8);
@@ -635,8 +651,8 @@ function drawTrend() {
   }
 
   const xForPoint = (point, index) => {
-    if (Number.isFinite(point.time) && Number.isFinite(bounds.minimum) && Number.isFinite(bounds.maximum) && bounds.maximum > bounds.minimum) {
-      return plot.left + ((point.time - bounds.minimum) / (bounds.maximum - bounds.minimum)) * plotWidth;
+    if (Number.isFinite(point.time) && Number.isFinite(plotBounds.minimum) && Number.isFinite(plotBounds.maximum) && plotBounds.maximum > plotBounds.minimum) {
+      return plot.left + ((point.time - plotBounds.minimum) / (plotBounds.maximum - plotBounds.minimum)) * plotWidth;
     }
     return displayTrend.length <= 1 ? plot.left + plotWidth / 2 : plot.left + index * (plotWidth / (displayTrend.length - 1));
   };
@@ -687,16 +703,20 @@ function drawTrend() {
   $('trend-requests-latest').textContent = rateText(requestLatest);
   $('trend-blocked-latest').textContent = rateText(blockedLatest);
 
-  const hasTimeRange = Number.isFinite(bounds.minimum) && Number.isFinite(bounds.maximum);
-  const rangeText = hasTimeRange
-    ? bounds.minimum === bounds.maximum
-      ? trendTimeLabel(bounds.minimum, true)
-      : `${trendTimeLabel(bounds.minimum, includeSeconds)}–${trendTimeLabel(bounds.maximum, includeSeconds)}`
+  const retainedSpan = Number.isFinite(retainedBounds.minimum) && Number.isFinite(retainedBounds.maximum)
+    ? Math.max(0, retainedBounds.maximum - retainedBounds.minimum)
+    : 0;
+  const retainedIncludeSeconds = retainedSpan > 0 && retainedSpan < 10 * 60 * 1000;
+  const hasRetainedTimeRange = Number.isFinite(retainedBounds.minimum) && Number.isFinite(retainedBounds.maximum);
+  const retainedRangeText = hasRetainedTimeRange
+    ? retainedBounds.minimum === retainedBounds.maximum
+      ? trendTimeLabel(retainedBounds.minimum, true)
+      : `${trendTimeLabel(retainedBounds.minimum, retainedIncludeSeconds)}–${trendTimeLabel(retainedBounds.maximum, retainedIncludeSeconds)}`
     : 'Time unavailable';
   $('trend-window').textContent = values.length
-    ? `${rangeText} · ${state.trend.length} retained sample${state.trend.length === 1 ? '' : 's'}`
+    ? `${retainedRangeText} · ${state.trend.length} retained sample${state.trend.length === 1 ? '' : 's'}`
     : state.trend.length
-      ? `Waiting for interval rates · ${state.trend.length} retained sample${state.trend.length === 1 ? '' : 's'}`
+      ? `Waiting for interval rates · ${state.trend.length} retained sample${state.trend.length === 1 ? '' : 's'} · ${retainedRangeText}`
       : 'Waiting for rate history';
   $('trend-scale').textContent = values.length
     ? scaleModel.clipped
@@ -711,8 +731,10 @@ function drawTrend() {
     ? ` ${scaleModel.outlierCount} peak${scaleModel.outlierCount === 1 ? ' exceeds' : 's exceed'} the display scale; exact values are preserved, marked at the top edge, and the highest observed rate is ${rateText(rawMaximum)}.`
     : '';
   const summary = values.length
-    ? `Request-rate history from ${rangeText}. EdgeProxy latest ${rateText(requestLatest)} with ${requestCount} available sample${requestCount === 1 ? '' : 's'}; SecurityEdge rejection latest ${rateText(blockedLatest)} with ${blockedCount} available sample${blockedCount === 1 ? '' : 's'}. Missing telemetry intervals are shown as gaps.${peakSummary}`
-    : 'No interval-rate history is available yet. The chart will populate after contiguous telemetry samples establish valid interval rates.';
+    ? `Retained request-rate history from ${retainedRangeText}. EdgeProxy latest ${rateText(requestLatest)} with ${requestCount} available sample${requestCount === 1 ? '' : 's'}; SecurityEdge rejection latest ${rateText(blockedLatest)} with ${blockedCount} available sample${blockedCount === 1 ? '' : 's'}. Interior missing telemetry intervals are shown as gaps; leading and trailing unavailable intervals remain part of retained-history and latest-state semantics without extending the plotted viewport.${peakSummary}`
+    : state.trend.length
+      ? `No interval rate is available yet across ${state.trend.length} retained sample${state.trend.length === 1 ? '' : 's'} from ${retainedRangeText}. The chart will populate after contiguous telemetry samples establish valid interval rates.`
+      : 'No interval-rate history is available yet. The chart will populate after contiguous telemetry samples establish valid interval rates.';
   $('trend-chart-summary').textContent = summary;
 }
 

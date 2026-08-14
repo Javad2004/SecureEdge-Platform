@@ -17,13 +17,57 @@ case "$mode" in edgeproxy|securityedge|platform) ;; *) usage >&2; exit 64;; esac
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 prod_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 env_file="$prod_dir/.env"
-[[ -f "$env_file" ]] || { echo "missing $env_file; run bootstrap.sh first" >&2; exit 78; }
+[[ -f "$env_file" ]] || { echo "missing $env_file; copy .env.example to .env and review it before migration" >&2; exit 78; }
+
+validate_env_file() {
+  python3 - "$env_file" <<'PYENV'
+from pathlib import Path
+import re, sys
+path = Path(sys.argv[1])
+seen = set()
+for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    line = raw.strip()
+    if not line or line.startswith("#"):
+        continue
+    if "=" not in raw:
+        raise SystemExit(f"{path}:{lineno}: expected KEY=value")
+    key, value = raw.split("=", 1)
+    key = key.strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+        raise SystemExit(f"{path}:{lineno}: invalid environment key {key!r}")
+    if key in seen:
+        raise SystemExit(f"{path}:{lineno}: duplicate environment key {key}")
+    seen.add(key)
+    if value != value.strip():
+        raise SystemExit(f"{path}:{lineno}: surrounding whitespace in {key} is not allowed")
+    if value.startswith(("'", '"')) or value.endswith(("'", '"')):
+        raise SystemExit(f"{path}:{lineno}: use unquoted KEY=value syntax for {key}")
+    if " #" in value or "\t#" in value:
+        raise SystemExit(f"{path}:{lineno}: inline comments are not allowed after {key}")
+    if "$" in value:
+        raise SystemExit(f"{path}:{lineno}: variable interpolation is not allowed in {key}; write the resolved value")
+PYENV
+}
+validate_env_file
 
 getv() { awk -F= -v key="$1" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$env_file"; }
 root=$(getv SECUREEDGE_DATA_ROOT)
 edge_uid=$(getv EDGEPROXY_UID); edge_gid=$(getv EDGEPROXY_GID)
 security_uid=$(getv SECURITYEDGE_UID); security_gid=$(getv SECURITYEDGE_GID)
 [[ "$root" == /* ]] || { echo "SECUREEDGE_DATA_ROOT must be absolute" >&2; exit 78; }
+[[ "$root" != / ]] || { echo "SECUREEDGE_DATA_ROOT must not be the filesystem root" >&2; exit 78; }
+for n in "$edge_uid" "$edge_gid" "$security_uid" "$security_gid"; do
+  [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "non-zero numeric UID/GID required in $env_file" >&2; exit 78; }
+done
+case "$mode" in
+  platform)
+    [[ "$edge_uid" != "$security_uid" ]] || { echo "EDGEPROXY_UID and SECURITYEDGE_UID must be different" >&2; exit 78; }
+    [[ "$edge_gid" != "$security_gid" ]] || { echo "EDGEPROXY_GID and SECURITYEDGE_GID must be different" >&2; exit 78; }
+    ;;
+  securityedge)
+    [[ "$edge_gid" != "$security_gid" ]] || { echo "EDGEPROXY_GID and SECURITYEDGE_GID must be different" >&2; exit 78; }
+    ;;
+esac
 
 # Defaults match the repository systemd deployment. Environment overrides make
 # the importer testable and usable for an equivalent installation rooted at a
@@ -50,25 +94,35 @@ require_inactive() {
     exit 75
   fi
 }
-require_inactive edgeproxy.service
-if [[ "$mode" == securityedge || "$mode" == platform ]]; then require_inactive securityedge.service; fi
+case "$mode" in
+  edgeproxy)
+    require_inactive edgeproxy.service
+    ;;
+  securityedge)
+    # The independently operated EdgeProxy may remain online. Its config file is
+    # atomically replaced by EdgeProxy, so copying config.json yields either the
+    # previous or next complete snapshot without stopping that peer.
+    require_inactive securityedge.service
+    ;;
+  platform)
+    require_inactive edgeproxy.service
+    require_inactive securityedge.service
+    ;;
+esac
 
-# Ensure the independent target tree exists without importing anything itself.
-bash "$script_dir/bootstrap.sh" "$mode" >/dev/null || {
-  if [[ "$mode" == securityedge ]]; then
-    # bootstrap may intentionally wait for the real EdgeProxy token; migration
-    # below supplies it, so create only the target directories here.
-    "${sudo_cmd[@]}" install -d -o 0 -g 0 -m 0755 "$root"
-    "${sudo_cmd[@]}" install -d -o "$edge_uid" -g "$edge_gid" -m 0750 "$root/edgeproxy"
-    "${sudo_cmd[@]}" install -d -o "$security_uid" -g "$security_gid" -m 0750 "$root/securityedge" "$root/logs/securityedge"
-    "${sudo_cmd[@]}" install -d -o 0 -g "$edge_gid" -m 0750 "$root/tls/edgeproxy"
-    "${sudo_cmd[@]}" install -d -o 0 -g "$security_gid" -m 0750 "$root/tls/securityedge"
-    "${sudo_cmd[@]}" install -d -o 0 -g 0 -m 0755 "$root/ca"
-    "${sudo_cmd[@]}" install -d -o 0 -g 0 -m 0700 "$root/secrets"
-  else
-    exit 1
-  fi
-}
+# Initialize only the independent target directories needed by the selected
+# migration mode. Do not call bootstrap.sh here: migration already has real
+# source configuration/tokens, and invoking fresh-install seeding would create
+# unnecessary placeholders or transient credentials.
+"${sudo_cmd[@]}" install -d -o 0 -g 0 -m 0755 "$root"
+"${sudo_cmd[@]}" install -d -o "$edge_uid" -g "$edge_gid" -m 0750 "$root/edgeproxy"
+"${sudo_cmd[@]}" install -d -o 0 -g "$edge_gid" -m 0750 "$root/tls/edgeproxy"
+"${sudo_cmd[@]}" install -d -o 0 -g 0 -m 0755 "$root/ca"
+"${sudo_cmd[@]}" install -d -o 0 -g 0 -m 0700 "$root/secrets"
+if [[ "$mode" == securityedge || "$mode" == platform ]]; then
+  "${sudo_cmd[@]}" install -d -o "$security_uid" -g "$security_gid" -m 0750 "$root/securityedge" "$root/logs/securityedge"
+  "${sudo_cmd[@]}" install -d -o 0 -g "$security_gid" -m 0750 "$root/tls/securityedge"
+fi
 
 ts=$(date -u +%Y%m%dT%H%M%SZ)
 backup="$root/migration-backups/$ts"
@@ -90,9 +144,21 @@ copy_tree_if_present() {
   fi
 }
 
-# SecurityEdge always needs the EdgeProxy route/config mirror.
-copy_tree_if_present "$src_edge_state" "$root/edgeproxy"
-copy_tree_if_present "$src_edge_tls" "$root/tls/edgeproxy"
+# SecurityEdge-only needs only a local read-only mirror of EdgeProxy routing
+# configuration; it does not own or need the remote EdgeProxy TLS/private state.
+if [[ "$mode" == securityedge ]]; then
+  if "${sudo_cmd[@]}" test -f "$src_edge_state/config.json"; then
+    "${sudo_cmd[@]}" install -o "$edge_uid" -g "$edge_gid" -m 0640 \
+      "$src_edge_state/config.json" "$root/edgeproxy/config.json"
+    echo "imported $src_edge_state/config.json -> $root/edgeproxy/config.json"
+  else
+    echo "missing EdgeProxy config required for SecurityEdge mirror: $src_edge_state/config.json" >&2
+    exit 78
+  fi
+else
+  copy_tree_if_present "$src_edge_state" "$root/edgeproxy"
+  copy_tree_if_present "$src_edge_tls" "$root/tls/edgeproxy"
+fi
 if [[ "$mode" == securityedge || "$mode" == platform ]]; then
   copy_tree_if_present "$src_security_state" "$root/securityedge"
   copy_tree_if_present "$src_security_logs" "$root/logs/securityedge"

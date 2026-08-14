@@ -80,7 +80,10 @@ host addresses; the defaults are loopback:
 Change `SECUREEDGE_DATA_ROOT` in `.env` before bootstrap when another absolute
 host path is required. No matching host user accounts are necessary: the
 containers and bind mounts use numeric identities (`10001:10001` and
-`10002:10002` by default).
+`10002:10002` by default). `doctor.sh` requires those selected UIDs/GIDs to be
+unassigned on the host and keeps the two services' UIDs/GIDs distinct. If a
+fresh server already uses one of the defaults, choose unused values in `.env`
+before bootstrap rather than sharing a host identity with a container.
 
 Mutable config is mounted as a **directory**, not a single file. This preserves
 atomic Control Plane updates, timestamped backups and file replacement. TLS and
@@ -88,6 +91,11 @@ CA directories are read-only inside containers. Container root filesystems are
 read-only; `/tmp` is a bounded `tmpfs`.
 
 ## Security baseline
+
+Host prerequisites include a rootful Docker Engine **28.0.0 or newer** and
+Docker Compose v2. Engine 28+ is required because the deployment relies on
+loopback-only Admin port publication as a security boundary; `doctor.sh` checks
+the server version before rendering/starting production Compose.
 
 Production services use:
 
@@ -99,6 +107,8 @@ Production services use:
 - Docker log rotation;
 - an init process and graceful `SIGTERM` shutdown;
 - Docker secrets rather than raw Admin-token environment values;
+- fail-closed bind mounts (`create_host_path: false`) provisioned only by bootstrap;
+- root-owned data/CA/secret roots and non-group-writable shared config state;
 - TLS and private-CA validation before deployment;
 - Origin HTTPS + certificate verification by default;
 - Admin publication restricted to non-public host addresses;
@@ -118,7 +128,12 @@ cp .env.example .env
 ```
 
 Review `.env`, especially hostnames, ports and resource limits, then bootstrap
-the required mode:
+the required mode. Production helpers intentionally accept a strict, unambiguous
+`KEY=value` subset: keep one definition per key, do not quote values, do not add
+inline comments after values, and write resolved values instead of `$VAR`
+interpolation. This prevents the preflight parser and Docker Compose from
+interpreting the same deployment setting differently.
+
 
 ```bash
 bash ./scripts/bootstrap.sh edgeproxy
@@ -148,8 +163,14 @@ SecurityEdge-only also needs an accurate read-only EdgeProxy config mirror at:
 $SECUREEDGE_DATA_ROOT/edgeproxy/config.json
 ```
 
-Keep that mirror synchronized with the external EdgeProxy so route-specific
-Dashboard/policy semantics remain accurate.
+Keep that mirror **continuously synchronized** with the external EdgeProxy so
+route-specific WAF, Dashboard and policy semantics remain accurate. SecurityEdge
+watches this file at runtime; a one-time copy is not sufficient after the
+external EdgeProxy route table changes. For a co-located independently managed
+EdgeProxy, provide a safely synchronized/shared copy of its committed config;
+for a remote EdgeProxy, use an atomic replication mechanism. If that live route
+mirror cannot be guaranteed, use `compose.platform.yml` so both containers share
+the same persistent EdgeProxy state directly.
 
 ## 2. Replace template placeholders
 
@@ -164,7 +185,10 @@ from `templates/`. The templates are syntactically valid but intentionally use
 `.example.invalid` hosts. `doctor.sh` refuses to deploy them unchanged.
 
 At minimum update the EdgeProxy route hosts and real Origin URL. Keep production
-Origins HTTPS unless an explicit documented exception is required.
+Origins HTTPS unless an explicit documented exception is required. Preflight
+rejects placeholder/local Origin names (including canonicalized trailing-dot
+forms), missing Origin hostnames, loopback/unspecified/multicast IPs, malformed
+ports, and insecure TLS verification.
 
 For SecurityEdge-only also set in `.env`:
 
@@ -175,6 +199,10 @@ SECURITYEDGE_EXTERNAL_EDGEPROXY_ADMIN_URL=http://...
 
 EdgeProxy Admin does not provide native TLS. A remote Admin URL therefore must
 travel only over a trusted private/VPN/Tailscale path, never the public Internet.
+`doctor.sh` enforces this baseline: an IP literal must be non-global, while a
+hostname must resolve during preflight and every resolved address must remain
+private/VPN-scoped. Loopback, unspecified, multicast, reserved and globally
+routable Admin endpoints are rejected.
 
 ## 3. TLS and CA material
 
@@ -251,6 +279,18 @@ the real independently operated peer.
 
 ### Full platform
 
+Before the first start, choose `SECUREEDGE_PROD_SUBNET`,
+`SECUREEDGE_PROD_GATEWAY`, `SECURITYEDGE_CONTAINER_IPV4` and
+`SECUREEDGE_PROD_NETWORK_NAME` so they do not collide with cloud/LAN/VPN or
+existing Docker networks. The current fixed-address production contract is
+IPv4-only and `SECURITYEDGE_TRUSTED_PROXY_CIDR` must be exactly the selected
+SecurityEdge address as a `/32`. `EDGEPROXY_INTERNAL_HOSTNAME` must be a real
+DNS hostname (not an IP literal) because Compose registers it as the private
+network alias and SecurityEdge uses the same name for TLS/SNI. `doctor.sh`
+rejects supernet/subnet host-route overlaps and conflicting Docker networks; an
+already-running network owned by this same production deployment is recognized
+and allowed for safe updates.
+
 ```bash
 docker compose --env-file .env -f compose.platform.yml up -d --build
 ```
@@ -317,7 +357,31 @@ cp .env secureedge-production.env.backup
 Protect backups because they contain Admin secrets and private keys. For a
 custom `SECUREEDGE_DATA_ROOT`, back up that directory instead.
 
-## 9. Reboot behavior
+## 9. Credential and certificate rotation
+
+Treat token and TLS rotation as explicit production operations rather than
+editing values inside running containers. Back up the independent data root
+first and run `doctor.sh` after replacing material.
+
+For TLS renewal, replace the certificate/key files **inside the mounted TLS
+directory** while preserving the expected ownership and restrictive modes. Then
+run the mode-specific doctor and restart only the service that terminates that
+certificate so it reopens the files. In full-platform mode, rotate EdgeProxy and
+SecurityEdge certificates independently. Verify `/healthz`, `/readyz`, the
+certificate hostname/expiry, and the complete HTTPS request path afterwards.
+
+For Admin-token rotation, write the new token atomically to the corresponding
+file under `$SECUREEDGE_DATA_ROOT/secrets`, restore `root:<service-gid> 0440`,
+and make the same token authoritative at the service that authenticates it. A
+SecurityEdge token requires recreating/restarting SecurityEdge. An EdgeProxy
+Admin-token rotation requires recreating/restarting EdgeProxy **and**
+SecurityEdge because SecurityEdge authenticates to EdgeProxy with that secret.
+Use `docker compose up -d --force-recreate <service...>` after the secret files
+are updated so file-backed secret mounts and process environments are rebuilt,
+then rerun the normal health/readiness and control-plane checks. Never place
+rotated credentials in `.env` or Compose `environment:` entries.
+
+## 10. Reboot behavior
 
 The services use `restart: unless-stopped`; ensure Docker itself is enabled at
 boot. After a host reboot verify `docker compose ps`, both `/healthz` endpoints,
@@ -329,19 +393,36 @@ This is only for an already-installed host such as a VPS migrating from the
 repository's systemd deployment. It is **not** part of fresh Docker bootstrap.
 
 1. Commit/pull this standalone Docker deployment.
-2. Run `bootstrap.sh` for the intended mode.
+2. Create the standalone environment without seeding fresh-install placeholders:
+
+```bash
+cp .env.example .env
+chmod 0600 .env
+```
+
+Review `.env`, especially `SECUREEDGE_DATA_ROOT`, the numeric container IDs,
+ports, hostnames and resource limits. The importer uses this environment
+directly and does **not** run `bootstrap.sh`. This matters particularly for
+`securityedge` mode because the real EdgeProxy Admin token is imported from the
+existing deployment rather than generated as a fresh-install placeholder.
 3. Validate that the old systemd deployment is healthy and take a backup.
-4. Stop the relevant systemd service(s) to freeze mutable state.
+4. Stop only the service(s) whose mutable state will move into Docker:
+   - `edgeproxy`: stop `edgeproxy.service`; SecurityEdge may remain online.
+   - `securityedge`: stop `securityedge.service`; EdgeProxy may remain online.
+     The importer snapshots only EdgeProxy `config.json` plus its Admin token for
+     the local read-only mirror; it does not import the remote EdgeProxy TLS/state.
+   - `platform`: stop both services.
 5. Run:
 
 ```bash
 bash ./scripts/import-systemd.sh platform
 ```
 
-The importer copies the old `/var/lib`, `/var/log`, TLS and credential state
-into `SECUREEDGE_DATA_ROOT`, normalizes numeric Docker ownership, and does not
-start, enable, disable or delete systemd units. Then run `doctor.sh` and
-`validate.sh` before `docker compose up`.
+The importer copies only the state owned by the selected Docker mode into
+`SECUREEDGE_DATA_ROOT`, normalizes numeric Docker ownership, and does not start,
+enable, disable or delete systemd units. Full-platform migration includes both
+services' state/TLS/logs; single-service migration keeps the other service
+independent. Then run `doctor.sh` and `validate.sh` before `docker compose up`.
 
 If Docker validation fails, the old systemd units remain available for rollback.
 After the Docker deployment has passed full traffic tests and at least one

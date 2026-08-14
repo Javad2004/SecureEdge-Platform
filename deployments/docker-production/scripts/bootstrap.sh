@@ -29,9 +29,40 @@ env_file="$prod_dir/.env"
 
 if [[ ! -f "$env_file" ]]; then
   cp "$prod_dir/.env.example" "$env_file"
-  chmod 0644 "$env_file"
+  chmod 0600 "$env_file"
   echo "created $env_file"
 fi
+
+validate_env_file() {
+  python3 - "$env_file" <<'PYENV'
+from pathlib import Path
+import re, sys
+path = Path(sys.argv[1])
+seen = set()
+for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    line = raw.strip()
+    if not line or line.startswith("#"):
+        continue
+    if "=" not in raw:
+        raise SystemExit(f"{path}:{lineno}: expected KEY=value")
+    key, value = raw.split("=", 1)
+    key = key.strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+        raise SystemExit(f"{path}:{lineno}: invalid environment key {key!r}")
+    if key in seen:
+        raise SystemExit(f"{path}:{lineno}: duplicate environment key {key}")
+    seen.add(key)
+    if value != value.strip():
+        raise SystemExit(f"{path}:{lineno}: surrounding whitespace in {key} is not allowed")
+    if value.startswith(("'", '"')) or value.endswith(("'", '"')):
+        raise SystemExit(f"{path}:{lineno}: use unquoted KEY=value syntax for {key}")
+    if " #" in value or "\t#" in value:
+        raise SystemExit(f"{path}:{lineno}: inline comments are not allowed after {key}")
+    if "$" in value:
+        raise SystemExit(f"{path}:{lineno}: variable interpolation is not allowed in {key}; write the resolved value")
+PYENV
+}
+validate_env_file
 
 read_env_value() {
   local key=$1
@@ -71,6 +102,7 @@ security_uid=$(read_env_value SECURITYEDGE_UID)
 security_gid=$(read_env_value SECURITYEDGE_GID)
 
 [[ "$root" == /* ]] || { echo "SECUREEDGE_DATA_ROOT must be an absolute path: $root" >&2; exit 78; }
+[[ "$root" != / ]] || { echo "SECUREEDGE_DATA_ROOT must not be the filesystem root" >&2; exit 78; }
 for n in "$edge_uid" "$edge_gid" "$security_uid" "$security_gid"; do
   [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "non-zero numeric UID/GID required in $env_file" >&2; exit 78; }
 done

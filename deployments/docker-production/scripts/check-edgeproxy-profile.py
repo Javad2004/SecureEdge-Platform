@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import json
+import re
 import sys
 from urllib.parse import urlparse
 
@@ -19,23 +20,58 @@ def parse_bool(value: str) -> bool:
     raise argparse.ArgumentTypeError("expected true or false")
 
 
+def canonical_host(raw: str) -> str:
+    return raw.strip().lower().rstrip(".")
+
+
 def is_demo_or_local_host(raw: str) -> bool:
-    host = raw.strip().lower().rstrip(".")
+    host = canonical_host(raw)
     if not host:
         return True
-    if host in {"localhost", "localhost.localdomain", "127.0.0.1", "::1", "example.com", "example.net", "example.org", "example.invalid"}:
+    if host in {
+        "localhost",
+        "localhost.localdomain",
+        "127.0.0.1",
+        "::1",
+        "example.com",
+        "example.net",
+        "example.org",
+        "example.invalid",
+    }:
         return True
-    return host.endswith((".local", ".test", ".invalid", ".example.com", ".example.net", ".example.org"))
+    return host.endswith((".localhost", ".local", ".test", ".invalid", ".example.com", ".example.net", ".example.org"))
 
 
-def is_loopback_hostname(raw: str) -> bool:
-    host = raw.strip().lower()
-    if host in {"localhost", "localhost.localdomain"}:
-        return True
+def invalid_origin_address(raw: str) -> str | None:
+    """Return a rejection reason for addresses that cannot be real Origins."""
+    host = canonical_host(raw)
+    if not host:
+        return "missing hostname"
+    if is_demo_or_local_host(host):
+        return f"placeholder/local hostname {raw!r}"
     try:
-        return ipaddress.ip_address(host).is_loopback
+        ip = ipaddress.ip_address(host)
     except ValueError:
-        return False
+        if len(host) > 253:
+            return f"hostname is too long: {raw!r}"
+        labels = host.split(".")
+        if any(
+            not label
+            or len(label) > 63
+            or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label)
+            for label in labels
+        ):
+            return f"invalid DNS hostname {raw!r}"
+        return None
+    if ip.is_loopback:
+        return f"loopback address {ip}"
+    if ip.is_unspecified:
+        return f"unspecified address {ip}"
+    if ip.is_multicast:
+        return f"multicast address {ip}"
+    if ip.is_link_local:
+        return f"link-local address {ip}"
+    return None
 
 
 def main() -> int:
@@ -55,20 +91,62 @@ def main() -> int:
     problems: list[str] = []
     real_hosts: list[str] = []
 
-    for route in cfg.get("routes", []):
+    routes = cfg.get("routes", [])
+    if not isinstance(routes, list):
+        print("production EdgeProxy profile rejected: routes must be an array", file=sys.stderr)
+        return 1
+
+    for route in routes:
+        if not isinstance(route, dict):
+            problems.append("route entry must be an object")
+            continue
         route_name = str(route.get("name") or "<unnamed>")
-        for raw_host in route.get("hosts", []):
+        hosts = route.get("hosts", [])
+        if not isinstance(hosts, list):
+            problems.append(f"{route_name}: hosts must be an array")
+            hosts = []
+        for raw_host in hosts:
             host = str(raw_host)
             if not is_demo_or_local_host(host):
                 real_hosts.append(host)
 
-        for upstream in route.get("upstreams", []):
+        upstreams = route.get("upstreams", [])
+        if not isinstance(upstreams, list):
+            problems.append(f"{route_name}: upstreams must be an array")
+            continue
+        for upstream in upstreams:
+            if not isinstance(upstream, dict):
+                problems.append(f"{route_name}: upstream entry must be an object")
+                continue
             raw_url = str(upstream.get("url") or "").strip()
-            parsed = urlparse(raw_url)
-            hostname = (parsed.hostname or "").strip()
-            if args.reject_loopback and is_loopback_hostname(hostname):
-                problems.append(f"{route_name}: loopback Origin {raw_url}")
-            if args.require_https and parsed.scheme.lower() != "https":
+            try:
+                parsed = urlparse(raw_url)
+                # Accessing .port forces malformed/non-numeric/out-of-range ports
+                # to raise ValueError instead of being silently accepted here.
+                _ = parsed.port
+            except ValueError as exc:
+                problems.append(f"{route_name}: invalid Origin URL {raw_url!r}: {exc}")
+                continue
+
+            scheme = parsed.scheme.lower()
+            hostname = parsed.hostname or ""
+            if scheme not in {"http", "https"} or not hostname:
+                problems.append(f"{route_name}: invalid Origin URL {raw_url!r}")
+                continue
+            if parsed.username is not None or parsed.password is not None:
+                problems.append(f"{route_name}: Origin URL must not contain credentials: {raw_url}")
+            if parsed.fragment:
+                problems.append(f"{route_name}: Origin URL must not contain a fragment: {raw_url}")
+
+            address_problem = invalid_origin_address(hostname)
+            if address_problem is not None:
+                # reject_loopback is retained as an explicit CLI contract for
+                # callers, but production placeholders/unspecified/multicast
+                # endpoints are never useful and are always rejected.
+                if args.reject_loopback or "loopback" not in address_problem:
+                    problems.append(f"{route_name}: invalid production Origin {raw_url}: {address_problem}")
+
+            if args.require_https and scheme != "https":
                 problems.append(f"{route_name}: Origin must use https: {raw_url}")
             if not args.allow_insecure and bool(upstream.get("insecure_skip_verify", False)):
                 problems.append(

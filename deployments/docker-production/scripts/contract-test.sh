@@ -19,6 +19,26 @@ for path in sys.argv[1:]:
         json.load(fh)
 PY
 
+python3 - <<'PY' "$prod_dir/.env.example"
+from pathlib import Path
+import re, sys
+path = Path(sys.argv[1])
+seen = set()
+for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    line = raw.strip()
+    if not line or line.startswith("#"):
+        continue
+    if "=" not in raw:
+        raise SystemExit(f"{path}:{lineno}: expected KEY=value")
+    key, value = raw.split("=", 1)
+    key = key.strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) or key in seen:
+        raise SystemExit(f"{path}:{lineno}: invalid/duplicate key {key!r}")
+    seen.add(key)
+    if value != value.strip() or value.startswith(("'", '"')) or value.endswith(("'", '"')) or " #" in value or "\t#" in value or "$" in value:
+        raise SystemExit(f"{path}:{lineno}: non-canonical production env value for {key}")
+PY
+
 # Core standalone files must not depend on systemd runtime paths or host
 # networking. The explicit import-systemd.sh helper is intentionally excluded.
 core=(
@@ -37,6 +57,12 @@ fi
 
 for compose in "$prod_dir"/compose.*.yml; do
   grep -q 'read_only: true' "$compose"
+  bind_count=$(grep -c 'type: bind' "$compose" || true)
+  guarded_bind_count=$(grep -c 'create_host_path: false' "$compose" || true)
+  [[ "$bind_count" -eq "$guarded_bind_count" ]] || {
+    echo "every production bind mount must set create_host_path: false: $compose" >&2
+    exit 1
+  }
   grep -q 'cap_drop:' "$compose"
   grep -q 'no-new-privileges:true' "$compose"
   grep -q '/healthz' "$compose"
@@ -47,6 +73,13 @@ for compose in "$prod_dir"/compose.*.yml; do
 done
 
 grep -q 'condition: service_healthy' "$prod_dir/compose.platform.yml"
+grep -q '28, 0, 0' "$script_dir/doctor.sh"
+grep -q 'EDGEPROXY_UID and SECURITYEDGE_UID must be different' "$script_dir/doctor.sh"
+grep -q 'EDGEPROXY_GID and SECURITYEDGE_GID must be different' "$script_dir/doctor.sh"
+grep -q 'already assigned to a host account' "$script_dir/doctor.sh"
+grep -q 'already assigned to a host group' "$script_dir/doctor.sh"
+grep -q 'Full Platform Docker network is IPv4-only' "$script_dir/doctor.sh"
+grep -q 'must be a DNS hostname, not an IP literal' "$script_dir/doctor.sh"
 # Full platform must not expose EdgeProxy data plane.
 python3 - "$prod_dir/compose.platform.yml" <<'PY'
 from pathlib import Path
@@ -60,10 +93,53 @@ PY
 ! grep -q 'network_mode:' "$prod_dir/compose.edgeproxy.yml"
 ! grep -q 'network_mode:' "$prod_dir/compose.securityedge.yml"
 
+
+# Published ports use Compose long syntax with an explicit host_ip. This keeps
+# host binding unambiguous for both IPv4 and IPv6 literals and makes exposure
+# boundaries machine-auditable.
+grep -q 'host_ip: "${EDGEPROXY_HTTPS_BIND_IP' "$prod_dir/compose.edgeproxy.yml"
+grep -q 'host_ip: "${EDGEPROXY_ADMIN_BIND_IP' "$prod_dir/compose.edgeproxy.yml"
+grep -q 'host_ip: "${SECURITYEDGE_HTTPS_BIND_IP' "$prod_dir/compose.securityedge.yml"
+grep -q 'host_ip: "${SECURITYEDGE_ADMIN_BIND_IP' "$prod_dir/compose.securityedge.yml"
+grep -q 'host_ip: "${EDGEPROXY_ADMIN_BIND_IP' "$prod_dir/compose.platform.yml"
+grep -q 'host_ip: "${SECURITYEDGE_HTTPS_BIND_IP' "$prod_dir/compose.platform.yml"
+grep -q 'host_ip: "${SECURITYEDGE_ADMIN_BIND_IP' "$prod_dir/compose.platform.yml"
+
 # Existing demo Docker workflows must not be referenced as build/runtime state.
 ! grep -q 'origin-demo' "$prod_dir"/compose.*.yml
 
 # Runtime credentials stay outside the build context by default.
 grep -q 'deployments/docker-production/secrets/' "$repo_root/.dockerignore"
+
+# Production Origin guardrails must reject placeholder/canonicalized local or
+# structurally invalid endpoints before Docker is started.
+checker="$script_dir/check-edgeproxy-profile.py"
+valid_profile='{"routes":[{"name":"prod","hosts":["app.prod.secureedge"],"upstreams":[{"url":"https://origin.prod.secureedge:443","insecure_skip_verify":false}]}]}'
+printf '%s\n' "$valid_profile" | python3 "$checker" --require-https true --allow-insecure false --require-real-hosts true --reject-loopback true
+for bad_origin in \
+  'https://origin.example.invalid:443' \
+  'https://foo.localhost:443' \
+  'https://localhost.:443' \
+  'https://0.0.0.0:443' \
+  'https://169.254.10.20:443' \
+  'https://bad host:443' \
+  'https:///missing-host'; do
+  bad_profile=$(python3 - "$bad_origin" <<'PYBAD'
+import json, sys
+print(json.dumps({"routes":[{"name":"prod","hosts":["app.prod.secureedge"],"upstreams":[{"url":sys.argv[1],"insecure_skip_verify":False}]}]}))
+PYBAD
+)
+  if printf '%s\n' "$bad_profile" | python3 "$checker" --require-https true --allow-insecure false --require-real-hosts true --reject-loopback true >/dev/null 2>&1; then
+    echo "production Origin guardrail accepted invalid endpoint: $bad_origin" >&2
+    exit 1
+  fi
+done
+
+# The fixed full-platform address has an explicit gateway/network identity so
+# upgrades can distinguish the deployment's own existing bridge from conflicts.
+grep -q '^SECUREEDGE_PROD_NETWORK_NAME=' "$prod_dir/.env.example"
+grep -q '^SECUREEDGE_PROD_GATEWAY=' "$prod_dir/.env.example"
+grep -q 'name: "${SECUREEDGE_PROD_NETWORK_NAME' "$prod_dir/compose.platform.yml"
+grep -q 'gateway: "${SECUREEDGE_PROD_GATEWAY' "$prod_dir/compose.platform.yml"
 
 echo "production Docker standalone contract: PASS"

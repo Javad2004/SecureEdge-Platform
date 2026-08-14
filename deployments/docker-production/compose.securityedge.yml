@@ -36,27 +36,45 @@ services:
       - securityedge_admin_token
       - edgeproxy_admin_token
     ports:
-      - "${SECURITYEDGE_HTTPS_BIND_IP:-0.0.0.0}:${SECURITYEDGE_HTTPS_PORT:-443}:${SECURITYEDGE_CONTAINER_HTTPS_PORT:-8443}"
-      - "${SECURITYEDGE_ADMIN_BIND_IP:-127.0.0.1}:${SECURITYEDGE_ADMIN_PORT:-9191}:9191"
+      - name: securityedge-https
+        target: ${SECURITYEDGE_CONTAINER_HTTPS_PORT:-8443}
+        published: "${SECURITYEDGE_HTTPS_PORT:-443}"
+        host_ip: "${SECURITYEDGE_HTTPS_BIND_IP:-0.0.0.0}"
+        protocol: tcp
+      - name: securityedge-admin
+        target: 9191
+        published: "${SECURITYEDGE_ADMIN_PORT:-9191}"
+        host_ip: "${SECURITYEDGE_ADMIN_BIND_IP:-127.0.0.1}"
+        protocol: tcp
     volumes:
       - type: bind
         source: "${SECUREEDGE_DATA_ROOT:-/srv/secureedge}/securityedge"
         target: /app/config
+        bind:
+          create_host_path: false
       - type: bind
         source: "${SECUREEDGE_DATA_ROOT:-/srv/secureedge}/logs/securityedge"
         target: /app/logs
+        bind:
+          create_host_path: false
       - type: bind
         source: "${SECUREEDGE_DATA_ROOT:-/srv/secureedge}/tls/securityedge"
         target: /etc/securityedge/tls
         read_only: true
+        bind:
+          create_host_path: false
       - type: bind
         source: "${SECUREEDGE_DATA_ROOT:-/srv/secureedge}/ca"
         target: /etc/secureedge/ca
         read_only: true
+        bind:
+          create_host_path: false
       - type: bind
         source: "${SECUREEDGE_DATA_ROOT:-/srv/secureedge}/edgeproxy"
         target: /edgeproxy-config
         read_only: true
+        bind:
+          create_host_path: false
     working_dir: /app/config
     init: true
     read_only: true

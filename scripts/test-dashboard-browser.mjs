@@ -1856,6 +1856,15 @@ try {
       // serialize into the active generation plus one queued generation.
       (window.__fixtureIntervals || []).forEach(id => clearInterval(id));
       window.__fixtureIntervals = [];
+      // An interval callback can already be in flight when clearInterval() runs.
+      // Let that generation and refreshAll()'s outer finally settle before taking
+      // the fetch-count baseline; otherwise a correct queued refresh can appear
+      // as only one request because the active generation began before the baseline.
+      if (state.refreshPromise) {
+        await state.refreshPromise;
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      if (state.refreshPromise) throw new Error('fixture refresh did not settle before coalescing check');
       const before = window.__fixtureFetchCounts['/api/v1/dashboard/overview'] || 0;
       await Promise.all([refreshAll(), refreshAll(), refreshAll()]);
       const after = window.__fixtureFetchCounts['/api/v1/dashboard/overview'] || 0;

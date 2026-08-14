@@ -909,6 +909,7 @@ try {
 
   let telemetryTrendGapContract = null;
   let telemetryTrendOutlierContract = null;
+  let telemetryTrendZeroBaselineContract = null;
   let telemetryTrendSeriesIsolationContract = null;
   let telemetryTrendLatestAvailabilityContract = null;
   let telemetryTrendEmptyContract = null;
@@ -944,14 +945,15 @@ try {
       const originalGetContext = canvas.getContext;
       const operations = [];
       const context = {
-        _strokeStyle:'', _fillStyle:'', lineWidth:1, lineJoin:'', lineCap:'', font:'', textAlign:'', textBaseline:'',
+        _strokeStyle:'', _fillStyle:'', _lineDash:[], lineWidth:1, lineJoin:'', lineCap:'', font:'', textAlign:'', textBaseline:'',
         set strokeStyle(value) { this._strokeStyle = value; },
         get strokeStyle() { return this._strokeStyle; },
         set fillStyle(value) { this._fillStyle = value; },
         get fillStyle() { return this._fillStyle; },
+        setLineDash(values){ this._lineDash = Array.isArray(values) ? [...values] : []; },
         scale(){}, clearRect(){}, beginPath(){}, stroke(){}, fill(){}, save(){}, restore(){},
-        moveTo(x,y){ operations.push({type:'move', color:this._strokeStyle, x, y}); },
-        lineTo(x,y){ operations.push({type:'line', color:this._strokeStyle, x, y}); },
+        moveTo(x,y){ operations.push({type:'move', color:this._strokeStyle, dash:this._lineDash.join(','), x, y}); },
+        lineTo(x,y){ operations.push({type:'line', color:this._strokeStyle, dash:this._lineDash.join(','), x, y}); },
         arc(x,y){ operations.push({type:'point', color:this._fillStyle, x, y}); },
         fillText(text,x,y){ operations.push({type:'text', color:this._fillStyle, text, x, y}); }
       };
@@ -1068,12 +1070,13 @@ try {
       const originalGetContext = canvas.getContext;
       const operations = [];
       const context = {
-        _strokeStyle:'', _fillStyle:'', lineWidth:1, lineJoin:'', lineCap:'', font:'', textAlign:'', textBaseline:'',
+        _strokeStyle:'', _fillStyle:'', _lineDash:[], lineWidth:1, lineJoin:'', lineCap:'', font:'', textAlign:'', textBaseline:'',
         set strokeStyle(value) { this._strokeStyle = value; }, get strokeStyle() { return this._strokeStyle; },
         set fillStyle(value) { this._fillStyle = value; }, get fillStyle() { return this._fillStyle; },
+        setLineDash(values){ this._lineDash = Array.isArray(values) ? [...values] : []; },
         scale(){}, clearRect(){}, beginPath(){}, stroke(){}, fill(){}, save(){}, restore(){},
-        moveTo(x,y){ operations.push({type:'move', color:this._strokeStyle, x, y}); },
-        lineTo(x,y){ operations.push({type:'line', color:this._strokeStyle, x, y}); },
+        moveTo(x,y){ operations.push({type:'move', color:this._strokeStyle, dash:this._lineDash.join(','), x, y}); },
+        lineTo(x,y){ operations.push({type:'line', color:this._strokeStyle, dash:this._lineDash.join(','), x, y}); },
         arc(x,y){ operations.push({type:'point', color:this._fillStyle, x, y}); },
         fillText(text,x,y){ operations.push({type:'text', color:this._fillStyle, text, x, y}); }
       };
@@ -1083,6 +1086,7 @@ try {
       const blockedColor = cssColor('--chart-blocked', '#ff6b84');
       const markers = operations.filter(operation => operation.type === 'text' && operation.color === requestColor && operation.text === '▲');
       const blockedSeriesOps = operations.filter(operation => operation.color === blockedColor && ['move','line','point'].includes(operation.type));
+      const blockedLineOps = operations.filter(operation => operation.color === blockedColor && ['move','line'].includes(operation.type));
       const sustainedModel = trendScaleModel([0.10,0.14,0.18,0.22,0.28,0.34,0.42,0.51,0.60,0.70,0.78,0.86]);
       const result = {
         model, sustainedModel,
@@ -1093,7 +1097,9 @@ try {
         summary:document.getElementById('trend-chart-summary').textContent,
         latest:document.getElementById('trend-requests-latest').textContent,
         blockedCoverage:document.getElementById('trend-blocked-coverage').textContent,
-        blockedSeriesOps:blockedSeriesOps.length
+        blockedSeriesOps:blockedSeriesOps.length,
+        blockedLineOps:blockedLineOps.length,
+        blockedDash:[...new Set(blockedLineOps.map(operation => operation.dash))]
       };
       state.overview = previous;
       renderAll();
@@ -1107,9 +1113,73 @@ try {
         !telemetryTrendOutlierContract.scaleDetail.includes('max 0.92 req/s') ||
         !telemetryTrendOutlierContract.summary.includes('exact values remain in the scale summary') ||
         telemetryTrendOutlierContract.blockedCoverage !== 'No rejections · 20/20 intervals observed' ||
-        telemetryTrendOutlierContract.blockedSeriesOps !== 0 ||
+        telemetryTrendOutlierContract.blockedSeriesOps <= 0 || telemetryTrendOutlierContract.blockedLineOps !== 20 ||
+        JSON.stringify(telemetryTrendOutlierContract.blockedDash) !== JSON.stringify(['6,4']) ||
         telemetryTrendOutlierContract.latest !== '0.92 req/s') {
       throw new Error(`Trend outlier handling contract failed: ${JSON.stringify(telemetryTrendOutlierContract)}`);
+    }
+
+    telemetryTrendZeroBaselineContract = await cdp.evaluate(`(() => {
+      const previous = state.overview;
+      const baseTime = Date.now() - 50000;
+      const samples = Array.from({length:5}, (_, index) => ({
+        generated_at:new Date(baseTime + index * 10000).toISOString(),
+        security:{rejected_rate_available:true,rejected_per_second:0},
+        edgeproxy:{available:true,request_rate_available:true,requests_per_second:0}
+      }));
+      const candidate = structuredClone(previous);
+      candidate.telemetry_history = {samples};
+      state.overview = candidate;
+      renderOverview();
+
+      const canvas = document.getElementById('trend-chart');
+      const originalGetContext = canvas.getContext;
+      const operations = [];
+      const context = {
+        _strokeStyle:'', _fillStyle:'', _lineDash:[], lineWidth:1, lineJoin:'', lineCap:'', font:'', textAlign:'', textBaseline:'',
+        set strokeStyle(value) { this._strokeStyle = value; }, get strokeStyle() { return this._strokeStyle; },
+        set fillStyle(value) { this._fillStyle = value; }, get fillStyle() { return this._fillStyle; },
+        setLineDash(values){ this._lineDash = Array.isArray(values) ? [...values] : []; },
+        scale(){}, clearRect(){}, beginPath(){}, stroke(){}, fill(){}, save(){}, restore(){},
+        moveTo(x,y){ operations.push({type:'move', color:this._strokeStyle, dash:this._lineDash.join(','), x, y}); },
+        lineTo(x,y){ operations.push({type:'line', color:this._strokeStyle, dash:this._lineDash.join(','), x, y}); },
+        arc(x,y){ operations.push({type:'point', color:this._fillStyle, x, y}); },
+        fillText(text,x,y){ operations.push({type:'text', color:this._fillStyle, text, x, y}); }
+      };
+      canvas.getContext = () => context;
+      try { drawTrend(); } finally { canvas.getContext = originalGetContext; }
+
+      const requestColor = cssColor('--chart-requests', '#67a6ff');
+      const blockedColor = cssColor('--chart-blocked', '#ff6b84');
+      const requestLineOps = operations.filter(operation => operation.color === requestColor && ['move','line'].includes(operation.type));
+      const blockedLineOps = operations.filter(operation => operation.color === blockedColor && ['move','line'].includes(operation.type));
+      const result = {
+        requestLineOps:requestLineOps.length,
+        blockedLineOps:blockedLineOps.length,
+        requestYs:[...new Set(requestLineOps.map(operation => Number(operation.y.toFixed(4))))],
+        blockedYs:[...new Set(blockedLineOps.map(operation => Number(operation.y.toFixed(4))))],
+        requestDash:[...new Set(requestLineOps.map(operation => operation.dash))],
+        blockedDash:[...new Set(blockedLineOps.map(operation => operation.dash))],
+        requestLatest:document.getElementById('trend-requests-latest').textContent,
+        blockedLatest:document.getElementById('trend-blocked-latest').textContent,
+        requestCoverage:document.getElementById('trend-requests-coverage').textContent,
+        blockedCoverage:document.getElementById('trend-blocked-coverage').textContent,
+        emptyHidden:document.getElementById('trend-empty').hidden
+      };
+      state.overview = previous;
+      renderAll();
+      return result;
+    })()`);
+    if (telemetryTrendZeroBaselineContract.requestLineOps !== 5 || telemetryTrendZeroBaselineContract.blockedLineOps !== 5 ||
+        telemetryTrendZeroBaselineContract.requestYs.length !== 1 || telemetryTrendZeroBaselineContract.blockedYs.length !== 1 ||
+        telemetryTrendZeroBaselineContract.requestYs[0] !== telemetryTrendZeroBaselineContract.blockedYs[0] ||
+        JSON.stringify(telemetryTrendZeroBaselineContract.requestDash) !== JSON.stringify(['']) ||
+        JSON.stringify(telemetryTrendZeroBaselineContract.blockedDash) !== JSON.stringify(['6,4']) ||
+        telemetryTrendZeroBaselineContract.requestLatest !== '0 req/s' || telemetryTrendZeroBaselineContract.blockedLatest !== '0 req/s' ||
+        telemetryTrendZeroBaselineContract.requestCoverage !== 'No requests · 5/5 intervals observed' ||
+        telemetryTrendZeroBaselineContract.blockedCoverage !== 'No rejections · 5/5 intervals observed' ||
+        telemetryTrendZeroBaselineContract.emptyHidden !== true) {
+      throw new Error(`Measured zero-rate baselines were hidden, shifted, or conflated with unavailable telemetry: ${JSON.stringify(telemetryTrendZeroBaselineContract)}`);
     }
 
     telemetryTrendSeriesIsolationContract = await cdp.evaluate(`(() => {
@@ -2307,7 +2377,7 @@ try {
     connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
     authentication_ui_contract:authenticationUIContract, cumulative_rate_precision_contract:cumulativeRatePrecisionContract, percentage_truthfulness_contract:percentageTruthfulnessContract, latency_truthfulness_contract:latencyTruthfulnessContract, telemetry_availability_contract:telemetryAvailabilityContract,
-    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract, telemetry_trend_outlier_contract:telemetryTrendOutlierContract, telemetry_trend_series_isolation_contract:telemetryTrendSeriesIsolationContract, telemetry_trend_latest_availability_contract:telemetryTrendLatestAvailabilityContract, telemetry_trend_empty_contract:telemetryTrendEmptyContract,
+    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract, telemetry_trend_outlier_contract:telemetryTrendOutlierContract, telemetry_trend_zero_baseline_contract:telemetryTrendZeroBaselineContract, telemetry_trend_series_isolation_contract:telemetryTrendSeriesIsolationContract, telemetry_trend_latest_availability_contract:telemetryTrendLatestAvailabilityContract, telemetry_trend_empty_contract:telemetryTrendEmptyContract,
     undefined_metric_rendering_contract:undefinedMetricRenderingContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
   }, null, 2));
 } catch (error) {

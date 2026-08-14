@@ -740,14 +740,14 @@ function drawTrend() {
   };
   const yForValue = value => plot.bottom - (Math.min(maximum, Math.max(0, value)) / maximum) * plotHeight;
 
-  const draw = (key, color, suppressZeroOnly = false) => {
-    const seriesValues = displayTrend.map(point => point[key]).filter(Number.isFinite);
-    if (suppressZeroOnly && seriesValues.length && seriesValues.every(value => value === 0)) return;
+  const draw = (key, color, lineDash = []) => {
+    context.save();
     context.strokeStyle = color;
     context.fillStyle = color;
     context.lineWidth = 2;
     context.lineJoin = 'round';
     context.lineCap = 'round';
+    if (typeof context.setLineDash === 'function') context.setLineDash(lineDash);
     context.beginPath();
     let segmentStarted = false;
     displayTrend.forEach((point, index) => {
@@ -760,6 +760,7 @@ function drawTrend() {
       else { context.moveTo(x, y); segmentStarted = true; }
     });
     context.stroke();
+    if (typeof context.setLineDash === 'function') context.setLineDash([]);
     displayTrend.forEach((point, index) => {
       const value = point[key];
       if (!Number.isFinite(value)) return;
@@ -776,10 +777,10 @@ function drawTrend() {
         context.restore();
       }
     });
+    context.restore();
   };
   draw('requests', cssColor('--chart-requests', '#67a6ff'));
-  const blockedZeroOnly = blockedValues.length > 0 && blockedValues.every(value => value === 0);
-  draw('blocked', cssColor('--chart-blocked', '#ff7188'), blockedZeroOnly);
+  draw('blocked', cssColor('--chart-blocked', '#ff7188'), [6, 4]);
 
   if (temporalGaps.length && Number.isFinite(plotBounds.minimum) && Number.isFinite(plotBounds.maximum) && plotBounds.maximum > plotBounds.minimum) {
     context.save();

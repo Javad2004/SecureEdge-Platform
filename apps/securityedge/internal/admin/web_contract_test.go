@@ -581,7 +581,7 @@ func TestDashboardTrendPresentationContract(t *testing.T) {
 		`const value = state.trend[state.trend.length - 1][key];`,
 		`function trendTemporalGaps(points)`,
 		`function trendGapDurationLabel(milliseconds)`,
-		`const blockedZeroOnly = blockedValues.length > 0 && blockedValues.every(value => value === 0);`,
+		`draw('blocked', cssColor('--chart-blocked', '#ff7188'), [6, 4]);`,
 		`No rejections ·`,
 		`unavailable intervals left blank, never zero-filled.`,
 		`id="trend-scale"`,
@@ -592,6 +592,7 @@ func TestDashboardTrendPresentationContract(t *testing.T) {
 		`const retainedBounds = trendTimeBounds(state.trend)`,
 		`.trend-chart-wrap`,
 		`.trend-swatch.blocked`,
+		`border-top:3px dashed var(--chart-blocked)`,
 		`.trend-series-copy`,
 		`.trend-status-item`,
 	} {
@@ -607,6 +608,9 @@ func TestDashboardTrendPresentationContract(t *testing.T) {
 	}
 	if strings.Contains(string(app), `trendMetaCard('trend-viewport'`) {
 		t.Fatal("trend UI still renders a duplicate visible chart-viewport time card")
+	}
+	if strings.Contains(string(app), `blockedZeroOnly`) || strings.Contains(string(app), `suppressZeroOnly`) {
+		t.Fatal("trend chart still suppresses measured zero-valued series instead of drawing them on the zero baseline")
 	}
 }
 

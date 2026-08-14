@@ -740,14 +740,13 @@ canvas {
   white-space:nowrap
 }
 .trend-swatch {
-  width:18px;
-  height:3px;
-  flex:0 0 18px;
-  border-radius:999px;
-  background:var(--chart-requests)
+  width:20px;
+  height:0;
+  flex:0 0 20px;
+  border-top:3px solid var(--chart-requests)
 }
 .trend-swatch.blocked {
-  background:var(--chart-blocked)
+  border-top:3px dashed var(--chart-blocked)
 }
 .trend-meta {
   display:grid;

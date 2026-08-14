@@ -65,22 +65,25 @@ secret_ok() {
   fi
 }
 
-edge_state=$(getv EDGEPROXY_STATE_DIR)
-security_state=$(getv SECURITYEDGE_STATE_DIR)
-security_logs=$(getv SECURITYEDGE_LOG_DIR)
-edge_tls=$(getv EDGEPROXY_TLS_DIR)
-security_tls=$(getv SECURITYEDGE_TLS_DIR)
-ca_dir=$(getv SECUREEDGE_CA_DIR)
-edge_secret=$(getv EDGEPROXY_ADMIN_TOKEN_FILE)
-security_secret=$(getv SECURITYEDGE_ADMIN_TOKEN_FILE)
+data_root=$(getv SECUREEDGE_DATA_ROOT)
 edge_uid=$(getv EDGEPROXY_UID)
 edge_gid=$(getv EDGEPROXY_GID)
 security_uid=$(getv SECURITYEDGE_UID)
 security_gid=$(getv SECURITYEDGE_GID)
 
-# Resolve relative secret paths against the production directory.
-[[ "$edge_secret" = /* ]] || edge_secret="$prod_dir/${edge_secret#./}"
-[[ "$security_secret" = /* ]] || security_secret="$prod_dir/${security_secret#./}"
+[[ "$data_root" == /* ]] || {
+  echo "SECUREEDGE_DATA_ROOT must be an absolute path, got: ${data_root:-<empty>}" >&2
+  exit 78
+}
+
+edge_state="$data_root/edgeproxy"
+security_state="$data_root/securityedge"
+security_logs="$data_root/logs/securityedge"
+edge_tls="$data_root/tls/edgeproxy"
+security_tls="$data_root/tls/securityedge"
+ca_dir="$data_root/ca"
+edge_secret="$data_root/secrets/edgeproxy_admin_token"
+security_secret="$data_root/secrets/securityedge_admin_token"
 
 fail=0
 
@@ -131,31 +134,61 @@ validate_bool() {
   fi
 }
 validate_hostname_value() {
-  local key=$1 value
+  local key=$1 value lower
   value=$(getv "$key")
+  lower=${value,,}
   if [[ -z "$value" || "$value" == *://* || "$value" == */* || "$value" =~ [[:space:]] ]]; then
     echo "$key must be a hostname only (no scheme/path/whitespace), got: ${value:-<empty>}" >&2
     fail=1
+    return
   fi
+  case "$lower" in
+    example.invalid|*.example.invalid|example.com|*.example.com|example.net|*.example.net|example.org|*.example.org|localhost|*.local|*.test)
+      echo "$key still contains a non-production placeholder/local hostname: $value" >&2
+      fail=1
+      ;;
+  esac
 }
 
-for key in EDGEPROXY_UID EDGEPROXY_GID SECURITYEDGE_UID SECURITYEDGE_GID EDGEPROXY_PIDS_LIMIT SECURITYEDGE_PIDS_LIMIT; do
-  validate_positive_integer "$key"
-done
-for key in SECURITYEDGE_HTTPS_PORT SECURITYEDGE_ADMIN_PORT EDGEPROXY_ADMIN_PORT SECURITYEDGE_CONTAINER_HTTPS_PORT EDGEPROXY_INTERNAL_PORT; do
-  validate_port "$key"
-done
-for key in EDGEPROXY_INTERNAL_TLS_ENABLED EDGEPROXY_REQUIRE_HTTPS_ORIGINS EDGEPROXY_ALLOW_INSECURE_ORIGIN_TLS; do
-  validate_bool "$key"
-done
-for key in EDGEPROXY_CPUS SECURITYEDGE_CPUS; do
-  validate_positive_decimal "$key"
-done
-for key in EDGEPROXY_MEMORY_LIMIT SECURITYEDGE_MEMORY_LIMIT; do
-  validate_memory_limit "$key"
-done
-validate_hostname_value SECURITYEDGE_PUBLIC_HOSTNAME
-validate_hostname_value EDGEPROXY_INTERNAL_HOSTNAME
+case "$mode" in
+  edgeproxy)
+    for key in EDGEPROXY_UID EDGEPROXY_GID EDGEPROXY_PIDS_LIMIT; do validate_positive_integer "$key"; done
+    for key in EDGEPROXY_HTTPS_PORT EDGEPROXY_CONTAINER_HTTPS_PORT EDGEPROXY_ADMIN_PORT; do validate_port "$key"; done
+    validate_positive_decimal EDGEPROXY_CPUS
+    validate_memory_limit EDGEPROXY_MEMORY_LIMIT
+    ;;
+  securityedge)
+    for key in EDGEPROXY_GID SECURITYEDGE_UID SECURITYEDGE_GID SECURITYEDGE_PIDS_LIMIT; do validate_positive_integer "$key"; done
+    for key in SECURITYEDGE_HTTPS_PORT SECURITYEDGE_CONTAINER_HTTPS_PORT SECURITYEDGE_ADMIN_PORT; do validate_port "$key"; done
+    validate_positive_decimal SECURITYEDGE_CPUS
+    validate_memory_limit SECURITYEDGE_MEMORY_LIMIT
+    validate_bool SECURITYEDGE_REQUIRE_HTTPS_EDGEPROXY
+    validate_bool SECURITYEDGE_DNS_ENABLED
+    validate_bool SECURITYEDGE_DNS_CRITICAL
+    ;;
+  platform)
+    for key in EDGEPROXY_UID EDGEPROXY_GID SECURITYEDGE_UID SECURITYEDGE_GID EDGEPROXY_PIDS_LIMIT SECURITYEDGE_PIDS_LIMIT; do validate_positive_integer "$key"; done
+    for key in EDGEPROXY_INTERNAL_PORT EDGEPROXY_ADMIN_PORT SECURITYEDGE_HTTPS_PORT SECURITYEDGE_CONTAINER_HTTPS_PORT SECURITYEDGE_ADMIN_PORT; do validate_port "$key"; done
+    validate_positive_decimal EDGEPROXY_CPUS
+    validate_positive_decimal SECURITYEDGE_CPUS
+    validate_memory_limit EDGEPROXY_MEMORY_LIMIT
+    validate_memory_limit SECURITYEDGE_MEMORY_LIMIT
+    validate_bool EDGEPROXY_INTERNAL_TLS_ENABLED
+    validate_bool SECURITYEDGE_DNS_ENABLED
+    validate_bool SECURITYEDGE_DNS_CRITICAL
+    ;;
+esac
+validate_bool EDGEPROXY_REQUIRE_HTTPS_ORIGINS
+validate_bool EDGEPROXY_ALLOW_INSECURE_ORIGIN_TLS
+
+case "$mode" in
+  edgeproxy) validate_hostname_value EDGEPROXY_PUBLIC_HOSTNAME ;;
+  securityedge) validate_hostname_value SECURITYEDGE_PUBLIC_HOSTNAME ;;
+  platform)
+    validate_hostname_value SECURITYEDGE_PUBLIC_HOSTNAME
+    validate_hostname_value EDGEPROXY_INTERNAL_HOSTNAME
+    ;;
+esac
 
 json_field() {
   local file=$1 path=$2
@@ -437,14 +470,95 @@ validate_origin_policy() {
     --require-real-hosts "$require_real_hosts" \
     --reject-loopback "$reject_loopback"
 }
+
+validate_bind_ip() {
+  local key=$1 scope=${2:-public} value
+  value=$(getv "$key")
+  python3 - "$key" "$value" "$scope" <<'PY' || fail=1
+import ipaddress, sys
+key, raw, scope = sys.argv[1:]
+try:
+    ip = ipaddress.ip_address(raw)
+except ValueError:
+    raise SystemExit(f"{key} must be an IP literal, got: {raw or '<empty>'}")
+if ip.is_multicast:
+    raise SystemExit(f"{key} must not be multicast: {ip}")
+if scope == "admin":
+    if ip.is_unspecified:
+        raise SystemExit(f"{key} must not expose an Admin API on an unspecified address: {ip}")
+    # Global Admin exposure is never accepted by the production baseline. A
+    # loopback, RFC1918/ULA, link-local, or CGNAT/Tailscale-style address is OK.
+    if ip.is_global:
+        raise SystemExit(f"{key} must be loopback/private/VPN scoped, not globally routable: {ip}")
+PY
+}
+
+validate_external_url() {
+  local key=$1 required_scheme=${2:-} value
+  value=$(getv "$key")
+  python3 - "$key" "$value" "$required_scheme" <<'PY' || fail=1
+import ipaddress, sys
+from urllib.parse import urlparse
+key, raw, required = sys.argv[1:]
+try:
+    parsed = urlparse(raw)
+except Exception as exc:
+    raise SystemExit(f"{key} is not a valid URL: {exc}")
+if not parsed.scheme or not parsed.hostname:
+    raise SystemExit(f"{key} must include scheme and hostname: {raw}")
+if parsed.username or parsed.password:
+    raise SystemExit(f"{key} must not embed credentials")
+if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+    raise SystemExit(f"{key} must be an endpoint origin without path/query/fragment: {raw}")
+if required and parsed.scheme.lower() != required:
+    raise SystemExit(f"{key} must use {required}: {raw}")
+host = parsed.hostname.rstrip('.').lower()
+if host in {"localhost", "localhost.localdomain"} or host.endswith((".local", ".test", ".invalid", ".example.com", ".example.net", ".example.org")) or host in {"example.com", "example.net", "example.org", "example.invalid"}:
+    raise SystemExit(f"{key} still contains a local/placeholder hostname: {host}")
+try:
+    ip = ipaddress.ip_address(host)
+except ValueError:
+    pass
+else:
+    if ip.is_loopback or ip.is_unspecified:
+        raise SystemExit(f"{key} points at container-local/unspecified address: {ip}")
+PY
+}
+
+# Production Docker is intentionally Linux-first. No host service users or
+# systemd state are required, but fixed numeric bind-mount ownership and the
+# documented rootful Docker baseline are Linux host contracts.
+[[ "$(uname -s)" == Linux ]] || {
+  echo "production Docker deployment currently requires a Linux host" >&2
+  fail=1
+}
+
+case "$mode" in
+  edgeproxy)
+    validate_bind_ip EDGEPROXY_ADMIN_BIND_IP admin
+    validate_bind_ip EDGEPROXY_HTTPS_BIND_IP public
+    ;;
+  securityedge)
+    validate_bind_ip SECURITYEDGE_ADMIN_BIND_IP admin
+    validate_bind_ip SECURITYEDGE_HTTPS_BIND_IP public
+    ;;
+  platform)
+    validate_bind_ip EDGEPROXY_ADMIN_BIND_IP admin
+    validate_bind_ip SECURITYEDGE_ADMIN_BIND_IP admin
+    validate_bind_ip SECURITYEDGE_HTTPS_BIND_IP public
+    ;;
+esac
+
+# Common EdgeProxy config mirror/state is required in every mode. In
+# SecurityEdge-only mode it is a read-only local mirror of the independently
+# operated EdgeProxy route table.
+require_dir "$edge_state" || fail=1
+require_file "$edge_state/config.json" || fail=1
+if [[ -f "$edge_state/config.json" ]]; then json_valid "$edge_state/config.json" || fail=1; fi
+secret_ok "$edge_secret" "$edge_gid" "EdgeProxy Admin" || fail=1
+
 if [[ "$mode" == edgeproxy || "$mode" == platform ]]; then
-  require_dir "$edge_state" || fail=1
-  require_file "$edge_state/config.json" || fail=1
   require_dir "$edge_tls" || fail=1
-  secret_ok "$edge_secret" "$edge_gid" "EdgeProxy Admin" || fail=1
-  if [[ -f "$edge_state/config.json" ]]; then
-    json_valid "$edge_state/config.json" || fail=1
-  fi
 fi
 if [[ "$mode" == securityedge || "$mode" == platform ]]; then
   require_dir "$security_state" || fail=1
@@ -452,139 +566,86 @@ if [[ "$mode" == securityedge || "$mode" == platform ]]; then
   require_dir "$security_logs" || fail=1
   require_dir "$security_tls" || fail=1
   secret_ok "$security_secret" "$security_gid" "SecurityEdge Admin" || fail=1
-  secret_ok "$edge_secret" "$edge_gid" "EdgeProxy Admin" || fail=1
-  require_dir "$edge_state" || fail=1
-  require_file "$edge_state/config.json" || fail=1
-  if [[ -f "$security_state/securityedge.json" ]]; then
-    json_valid "$security_state/securityedge.json" || fail=1
-  fi
+  if [[ -f "$security_state/securityedge.json" ]]; then json_valid "$security_state/securityedge.json" || fail=1; fi
 fi
 
 validate_custom_ca_dir "$ca_dir" || fail=1
-
-# Validate host-side permissions required by the non-root container identities.
-# Directory write permission is required because both applications use atomic
-# file replacement rather than in-place mutation.
+reject_world_writable "$data_root" "production data root" || fail=1
 for guarded_dir in "$edge_state" "$security_state" "$security_logs" "$edge_tls" "$security_tls"; do
   if [[ -d "$guarded_dir" ]] || { [[ ${#sudo_cmd[@]} -gt 0 ]] && "${sudo_cmd[@]}" test -d "$guarded_dir" 2>/dev/null; }; then
     reject_world_writable "$guarded_dir" "production runtime directory" || fail=1
   fi
 done
+
+# EdgeProxy state is writable only when EdgeProxy itself is containerized.
 if [[ "$mode" == edgeproxy || "$mode" == platform ]]; then
   runtime_mode_allows "$edge_state" "$edge_uid" "$edge_gid" execute "EdgeProxy state directory" || fail=1
   runtime_mode_allows "$edge_state" "$edge_uid" "$edge_gid" write "EdgeProxy state directory" || fail=1
-  if [[ -f "$edge_state/config.json" ]]; then
-    runtime_mode_allows "$edge_state/config.json" "$edge_uid" "$edge_gid" read "EdgeProxy config" || fail=1
-  fi
+  runtime_mode_allows "$edge_state/config.json" "$edge_uid" "$edge_gid" read "EdgeProxy config" || fail=1
 fi
+
 if [[ "$mode" == securityedge || "$mode" == platform ]]; then
   runtime_mode_allows "$security_state" "$security_uid" "$security_gid" execute "SecurityEdge state directory" || fail=1
   runtime_mode_allows "$security_state" "$security_uid" "$security_gid" write "SecurityEdge state directory" || fail=1
   runtime_mode_allows "$security_logs" "$security_uid" "$security_gid" execute "SecurityEdge log directory" || fail=1
   runtime_mode_allows "$security_logs" "$security_uid" "$security_gid" write "SecurityEdge log directory" || fail=1
-  if [[ -f "$security_state/securityedge.json" ]]; then
-    runtime_mode_allows "$security_state/securityedge.json" "$security_uid" "$security_gid" read "SecurityEdge config" || fail=1
-  fi
-  # SecurityEdge reads EdgeProxy state through a read-only bind and the
-  # supplementary EdgeProxy group.
-  runtime_mode_allows "$edge_state" "$security_uid" "$edge_gid" execute "SecurityEdge EdgeProxy-state view" || fail=1
-  if [[ -f "$edge_state/config.json" ]]; then
-    runtime_mode_allows "$edge_state/config.json" "$security_uid" "$edge_gid" read "SecurityEdge EdgeProxy config view" || fail=1
-  fi
+  runtime_mode_allows "$security_state/securityedge.json" "$security_uid" "$security_gid" read "SecurityEdge config" || fail=1
+  runtime_mode_allows "$edge_state" "$security_uid" "$edge_gid" execute "SecurityEdge EdgeProxy-config mirror" || fail=1
+  runtime_mode_allows "$edge_state/config.json" "$security_uid" "$edge_gid" read "SecurityEdge EdgeProxy config mirror" || fail=1
 fi
 
-if [[ "$mode" == edgeproxy || "$mode" == securityedge ]]; then
-  [[ "$(uname -s)" == Linux ]] || {
-    echo "$mode mode uses Docker host networking and requires a Linux Docker Engine host" >&2
-    fail=1
-  }
-fi
+# All production modes reject placeholder route hosts, container-local Origins,
+# insecure Origin verification, and HTTP Origins unless the explicit guardrail
+# is relaxed in .env.
+validate_origin_policy "$edge_state/config.json" \
+  "$(getv EDGEPROXY_REQUIRE_HTTPS_ORIGINS)" \
+  "$(getv EDGEPROXY_ALLOW_INSECURE_ORIGIN_TLS)" \
+  true true || fail=1
 
-if [[ "$mode" == edgeproxy && -f "$edge_state/config.json" ]]; then
-  edge_admin_listen=$(json_field "$edge_state/config.json" admin.listen_addr)
-  edge_server_listen=$(json_field "$edge_state/config.json" server.listen_addr)
-  if ! is_loopback_listener "$edge_admin_listen"; then
-    echo "EdgeProxy-only Admin listener must remain loopback-only, got: $edge_admin_listen" >&2
-    fail=1
-  elif edge_admin_config_port=$(listener_port "$edge_admin_listen" 2>/dev/null); then
-    if [[ "$edge_admin_config_port" != "$(getv EDGEPROXY_ADMIN_PORT)" ]]; then
-      echo "EDGEPROXY_ADMIN_PORT must match the EdgeProxy-only config Admin port ($edge_admin_config_port) so the Docker health check targets the real listener" >&2
-      fail=1
-    fi
-  else
-    echo "cannot parse EdgeProxy-only Admin listener port: $edge_admin_listen" >&2
-    fail=1
-  fi
-  if ! is_loopback_listener "$edge_server_listen"; then
-    echo "WARNING: EdgeProxy-only data listener is not loopback-only ($edge_server_listen); this can bypass SecurityEdge in a hybrid deployment" >&2
-  fi
-  if [[ "$(json_field "$edge_state/config.json" server.tls.enabled)" == true ]]; then
-    validate_tls_material "$edge_tls" \
-      "$(json_field "$edge_state/config.json" server.tls.cert_file)" \
-      "$(json_field "$edge_state/config.json" server.tls.key_file)" \
-      /etc/edgeproxy/tls EdgeProxy "$(getv EDGEPROXY_INTERNAL_HOSTNAME)" "$edge_uid" "$edge_gid" || fail=1
-  fi
-fi
-
-if [[ ( "$mode" == edgeproxy || "$mode" == platform ) && -f "$edge_state/config.json" ]]; then
-  require_real_hosts=false
-  reject_loopback=false
-  if [[ "$mode" == platform ]]; then
-    require_real_hosts=true
-    reject_loopback=true
-  fi
-  validate_origin_policy "$edge_state/config.json" \
-    "$(getv EDGEPROXY_REQUIRE_HTTPS_ORIGINS)" \
-    "$(getv EDGEPROXY_ALLOW_INSECURE_ORIGIN_TLS)" \
-    "$require_real_hosts" "$reject_loopback" || fail=1
-fi
-
-if [[ "$mode" == securityedge && -f "$security_state/securityedge.json" ]]; then
-  security_admin_listen=$(json_field "$security_state/securityedge.json" admin.listen_addr)
-  if ! is_loopback_listener "$security_admin_listen"; then
-    echo "SecurityEdge-only Admin listener must remain loopback-only, got: $security_admin_listen" >&2
-    fail=1
-  elif security_admin_config_port=$(listener_port "$security_admin_listen" 2>/dev/null); then
-    if [[ "$security_admin_config_port" != "$(getv SECURITYEDGE_ADMIN_PORT)" ]]; then
-      echo "SECURITYEDGE_ADMIN_PORT must match the SecurityEdge-only config Admin port ($security_admin_config_port) so the Docker health check targets the real listener" >&2
-      fail=1
-    fi
-  else
-    echo "cannot parse SecurityEdge-only Admin listener port: $security_admin_listen" >&2
-    fail=1
-  fi
-  if [[ "$(json_field "$security_state/securityedge.json" server.tls.enabled)" == true ]]; then
-    validate_tls_material "$security_tls" \
-      "$(json_field "$security_state/securityedge.json" server.tls.cert_file)" \
-      "$(json_field "$security_state/securityedge.json" server.tls.key_file)" \
-      /etc/securityedge/tls SecurityEdge "$(getv SECURITYEDGE_PUBLIC_HOSTNAME)" "$security_uid" "$security_gid" || fail=1
-  else
-    echo "WARNING: SecurityEdge-only profile has native TLS disabled; ensure a trusted external TLS terminator is intentionally in front of it" >&2
-  fi
-fi
-
-if [[ "$mode" == platform ]]; then
-  validate_tls_material "$security_tls" \
-    "$(getv SECURITYEDGE_TLS_CERT_FILE_CONTAINER)" \
-    "$(getv SECURITYEDGE_TLS_KEY_FILE_CONTAINER)" \
-    /etc/securityedge/tls SecurityEdge "$(getv SECURITYEDGE_PUBLIC_HOSTNAME)" "$security_uid" "$security_gid" || fail=1
-  if [[ "$(getv EDGEPROXY_INTERNAL_TLS_ENABLED)" == true ]]; then
+case "$mode" in
+  edgeproxy)
     validate_tls_material "$edge_tls" \
       "$(getv EDGEPROXY_TLS_CERT_FILE_CONTAINER)" \
       "$(getv EDGEPROXY_TLS_KEY_FILE_CONTAINER)" \
-      /etc/edgeproxy/tls EdgeProxy "$(getv EDGEPROXY_INTERNAL_HOSTNAME)" "$edge_uid" "$edge_gid" || fail=1
-    [[ "$(getv EDGEPROXY_INTERNAL_SCHEME)" == https ]] || {
-      echo "EDGEPROXY_INTERNAL_TLS_ENABLED=true requires EDGEPROXY_INTERNAL_SCHEME=https" >&2
-      fail=1
-    }
-  else
-    [[ "$(getv EDGEPROXY_INTERNAL_SCHEME)" == http ]] || {
-      echo "EDGEPROXY_INTERNAL_TLS_ENABLED=false requires EDGEPROXY_INTERNAL_SCHEME=http" >&2
-      fail=1
-    }
-  fi
-fi
-
+      /etc/edgeproxy/tls EdgeProxy "$(getv EDGEPROXY_PUBLIC_HOSTNAME)" "$edge_uid" "$edge_gid" || fail=1
+    ;;
+  securityedge)
+    validate_tls_material "$security_tls" \
+      "$(getv SECURITYEDGE_TLS_CERT_FILE_CONTAINER)" \
+      "$(getv SECURITYEDGE_TLS_KEY_FILE_CONTAINER)" \
+      /etc/securityedge/tls SecurityEdge "$(getv SECURITYEDGE_PUBLIC_HOSTNAME)" "$security_uid" "$security_gid" || fail=1
+    if [[ "$(getv SECURITYEDGE_REQUIRE_HTTPS_EDGEPROXY)" == true ]]; then
+      validate_external_url SECURITYEDGE_EXTERNAL_EDGEPROXY_URL https
+    else
+      validate_external_url SECURITYEDGE_EXTERNAL_EDGEPROXY_URL
+    fi
+    # EdgeProxy Admin has no native TLS listener. This endpoint must therefore
+    # be reachable only through a trusted private/VPN network when remote.
+    validate_external_url SECURITYEDGE_EXTERNAL_EDGEPROXY_ADMIN_URL http
+    echo "NOTE: SecurityEdge-only EdgeProxy Admin URL is HTTP; keep that path private/VPN-only." >&2
+    ;;
+  platform)
+    validate_tls_material "$security_tls" \
+      "$(getv SECURITYEDGE_TLS_CERT_FILE_CONTAINER)" \
+      "$(getv SECURITYEDGE_TLS_KEY_FILE_CONTAINER)" \
+      /etc/securityedge/tls SecurityEdge "$(getv SECURITYEDGE_PUBLIC_HOSTNAME)" "$security_uid" "$security_gid" || fail=1
+    if [[ "$(getv EDGEPROXY_INTERNAL_TLS_ENABLED)" == true ]]; then
+      [[ "$(getv EDGEPROXY_INTERNAL_SCHEME)" == https ]] || {
+        echo "EDGEPROXY_INTERNAL_TLS_ENABLED=true requires EDGEPROXY_INTERNAL_SCHEME=https" >&2
+        fail=1
+      }
+      validate_tls_material "$edge_tls" \
+        "$(getv EDGEPROXY_TLS_CERT_FILE_CONTAINER)" \
+        "$(getv EDGEPROXY_TLS_KEY_FILE_CONTAINER)" \
+        /etc/edgeproxy/tls EdgeProxy "$(getv EDGEPROXY_INTERNAL_HOSTNAME)" "$edge_uid" "$edge_gid" || fail=1
+    else
+      [[ "$(getv EDGEPROXY_INTERNAL_SCHEME)" == http ]] || {
+        echo "EDGEPROXY_INTERNAL_TLS_ENABLED=false requires EDGEPROXY_INTERNAL_SCHEME=http" >&2
+        fail=1
+      }
+    fi
+    ;;
+esac
 
 if [[ "$mode" == platform ]]; then
   subnet=$(getv SECUREEDGE_PROD_SUBNET)
@@ -626,7 +687,7 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
   else
     docker_security=$(docker info --format '{{json .SecurityOptions}}' 2>/dev/null || true)
     if [[ "$docker_security" == *rootless* ]]; then
-      echo "rootless Docker is not supported by these production manifests; protected systemd-compatible bind mounts and host-network migration modes require a standard rootful Docker Engine" >&2
+      echo "rootless Docker is not supported by this production baseline; use a standard rootful Docker Engine for predictable privileged-port publication and fixed numeric bind-mount ownership" >&2
       fail=1
     fi
     if [[ "$mode" == platform ]]; then

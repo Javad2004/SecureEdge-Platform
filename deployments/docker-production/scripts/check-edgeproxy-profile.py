@@ -23,9 +23,9 @@ def is_demo_or_local_host(raw: str) -> bool:
     host = raw.strip().lower().rstrip(".")
     if not host:
         return True
-    if host in {"localhost", "localhost.localdomain", "127.0.0.1", "::1"}:
+    if host in {"localhost", "localhost.localdomain", "127.0.0.1", "::1", "example.com", "example.net", "example.org", "example.invalid"}:
         return True
-    return host.endswith(".local") or host.endswith(".test")
+    return host.endswith((".local", ".test", ".invalid", ".example.com", ".example.net", ".example.org"))
 
 
 def is_loopback_hostname(raw: str) -> bool:

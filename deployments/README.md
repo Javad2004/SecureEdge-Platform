@@ -22,13 +22,15 @@ EdgeProxy nevertheless supports native TLS independently. When SecurityEdge and 
 ## Production Docker
 
 The production Docker path is intentionally separate from the reproducible demo
-stack. It supports staged migration from the supplied systemd deployment while
-preserving the same mutable `/var/lib` and `/var/log` state, read-only TLS
-material, non-root service identities, and rollback path. The combined
-production topology publishes only the SecurityEdge data plane publicly, keeps
-EdgeProxy data private and both Admin endpoints loopback-only, and expects a
-real Origin rather than the repository's demo Origin.
+stack and is fully standalone. A fresh Linux Docker host uses an independent
+`/srv/secureedge` data root and numeric container identities; no systemd unit,
+host SecureEdge account, `/var/lib` state, or previous installation is required.
+The combined topology publishes only SecurityEdge publicly, keeps EdgeProxy data
+private, and expects a real Origin rather than the repository's demo Origin.
+Existing systemd state can be imported through an explicit optional migration
+helper without making systemd a Docker runtime dependency.
 
-See [`docker-production/README.md`](docker-production/README.md) for bootstrap,
-Docker-secret handling, preflight validation, resource limits, Tailscale/VPN
-Origin routing, full-stack startup, update, reboot, and rollback procedures.
+See [`docker-production/README.md`](docker-production/README.md) for fresh-host
+bootstrap, Docker-secret handling, TLS/CA preflight, resource limits,
+Tailscale/VPN Origin routing, all three production modes, updates, backups,
+reboots, and optional systemd migration.

@@ -745,7 +745,7 @@ docker compose `
 
 See [../../deployments/docker/README.md](../../deployments/docker/README.md) for service topology, volumes, ports, and credential overrides.
 
-For production Docker operation, including the SecurityEdge-only migration profile and the full private-network platform deployment, use [`../../deployments/docker-production/README.md`](../../deployments/docker-production/README.md). The existing application Docker workflow remains the local/demo path.
+For standalone production Docker operation on a fresh host or as part of the full private-network platform, use [`../../deployments/docker-production/README.md`](../../deployments/docker-production/README.md). It does not require the systemd deployment; optional migration is documented separately. The existing application Docker workflow remains the local/demo path.
 
 ## Privacy and log handling
 

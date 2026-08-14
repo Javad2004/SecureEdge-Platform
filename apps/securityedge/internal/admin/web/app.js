@@ -580,6 +580,58 @@ function trendLatestValue(key) {
   return Number.isFinite(value) ? value : null;
 }
 
+function trendRangeText(bounds) {
+  if (!Number.isFinite(bounds?.minimum) || !Number.isFinite(bounds?.maximum)) return 'Time unavailable';
+  if (bounds.minimum === bounds.maximum) return trendTimeLabel(bounds.minimum, true);
+  const span = Math.max(0, bounds.maximum - bounds.minimum);
+  const includeSeconds = span > 0 && span < 10 * 60 * 1000;
+  return `${trendTimeLabel(bounds.minimum, includeSeconds)}–${trendTimeLabel(bounds.maximum, includeSeconds)}`;
+}
+
+function trendMetaCard(id, label, value, detail = '') {
+  const host = $('trend-window')?.parentElement;
+  if (!host) return null;
+  let card = $(id);
+  if (!card) {
+    card = document.createElement('span');
+    card.id = id;
+    if (id === 'trend-viewport' && $('trend-scale')) host.insertBefore(card, $('trend-scale'));
+    else host.appendChild(card);
+  }
+  card.className = 'trend-meta-card';
+  card.replaceChildren();
+  const labelNode = document.createElement('small');
+  labelNode.className = 'trend-meta-label';
+  labelNode.textContent = label;
+  const valueNode = document.createElement('strong');
+  valueNode.className = 'trend-meta-value';
+  valueNode.textContent = value;
+  card.append(labelNode, valueNode);
+  if (detail) {
+    const detailNode = document.createElement('small');
+    detailNode.className = 'trend-meta-detail';
+    detailNode.textContent = detail;
+    card.appendChild(detailNode);
+  }
+  return card;
+}
+
+function renderTrendNotes(notes) {
+  const summary = $('trend-chart-summary');
+  if (!summary) return;
+  summary.replaceChildren();
+  notes.filter(note => note?.text).forEach(note => {
+    const item = document.createElement('span');
+    item.className = `trend-note${note.emphasis ? ' is-emphasis' : ''}`;
+    const label = document.createElement('strong');
+    label.textContent = note.label;
+    const text = document.createElement('span');
+    text.textContent = note.text;
+    item.append(label, text);
+    summary.appendChild(item);
+  });
+}
+
 function drawTrend() {
   const canvas = $('trend-chart');
   if (!canvas) return;
@@ -703,39 +755,50 @@ function drawTrend() {
   $('trend-requests-latest').textContent = rateText(requestLatest);
   $('trend-blocked-latest').textContent = rateText(blockedLatest);
 
-  const retainedSpan = Number.isFinite(retainedBounds.minimum) && Number.isFinite(retainedBounds.maximum)
-    ? Math.max(0, retainedBounds.maximum - retainedBounds.minimum)
-    : 0;
-  const retainedIncludeSeconds = retainedSpan > 0 && retainedSpan < 10 * 60 * 1000;
-  const hasRetainedTimeRange = Number.isFinite(retainedBounds.minimum) && Number.isFinite(retainedBounds.maximum);
-  const retainedRangeText = hasRetainedTimeRange
-    ? retainedBounds.minimum === retainedBounds.maximum
-      ? trendTimeLabel(retainedBounds.minimum, true)
-      : `${trendTimeLabel(retainedBounds.minimum, retainedIncludeSeconds)}–${trendTimeLabel(retainedBounds.maximum, retainedIncludeSeconds)}`
-    : 'Time unavailable';
-  $('trend-window').textContent = values.length
-    ? `${retainedRangeText} · ${state.trend.length} retained sample${state.trend.length === 1 ? '' : 's'}`
-    : state.trend.length
-      ? `Waiting for interval rates · ${state.trend.length} retained sample${state.trend.length === 1 ? '' : 's'} · ${retainedRangeText}`
-      : 'Waiting for rate history';
-  $('trend-scale').textContent = values.length
-    ? scaleModel.clipped
-      ? `Display scale 0–${trendRateLabel(maximum, maximum)} req/s · ${scaleModel.outlierCount} peak${scaleModel.outlierCount === 1 ? '' : 's'} above scale · max ${trendRateLabel(rawMaximum, rawMaximum)} req/s`
-      : `Scale 0–${trendRateLabel(maximum, maximum)} req/s`
-    : 'Scale unavailable';
+  const retainedRangeText = trendRangeText(retainedBounds);
+  const plotRangeText = trendRangeText(plotBounds);
+  const retainedCountText = `${state.trend.length} retained sample${state.trend.length === 1 ? '' : 's'}`;
+  const plottedCountText = `${displayTrend.length} plotted interval${displayTrend.length === 1 ? '' : 's'}`;
+  const scaleValueText = values.length ? `0–${trendRateLabel(maximum, maximum)} req/s` : 'Unavailable';
+  const scaleDetailText = !values.length
+    ? 'Waiting for interval rates'
+    : scaleModel.clipped
+      ? `${scaleModel.outlierCount} peak${scaleModel.outlierCount === 1 ? '' : 's'} above scale · max ${trendRateLabel(rawMaximum, rawMaximum)} req/s`
+      : 'Adaptive to observed traffic';
+
+  trendMetaCard('trend-window', 'Retained history', state.trend.length ? retainedRangeText : 'Waiting for history', retainedCountText);
+  trendMetaCard('trend-viewport', 'Chart viewport', values.length ? plotRangeText : 'No rate intervals yet', values.length ? plottedCountText : 'No plotted intervals');
+  trendMetaCard('trend-scale', 'Display scale', scaleValueText, scaleDetailText);
 
   const empty = $('trend-empty');
   empty.hidden = values.length > 0;
   if (!values.length) empty.textContent = 'No interval-rate history available yet.';
-  const peakSummary = scaleModel.clipped
-    ? ` ${scaleModel.outlierCount} peak${scaleModel.outlierCount === 1 ? ' exceeds' : 's exceed'} the display scale; exact values are preserved, marked at the top edge, and the highest observed rate is ${rateText(rawMaximum)}.`
-    : '';
-  const summary = values.length
-    ? `Retained request-rate history from ${retainedRangeText}. EdgeProxy latest ${rateText(requestLatest)} with ${requestCount} available sample${requestCount === 1 ? '' : 's'}; SecurityEdge rejection latest ${rateText(blockedLatest)} with ${blockedCount} available sample${blockedCount === 1 ? '' : 's'}. Interior missing telemetry intervals are shown as gaps; leading and trailing unavailable intervals remain part of retained-history and latest-state semantics without extending the plotted viewport.${peakSummary}`
-    : state.trend.length
-      ? `No interval rate is available yet across ${state.trend.length} retained sample${state.trend.length === 1 ? '' : 's'} from ${retainedRangeText}. The chart will populate after contiguous telemetry samples establish valid interval rates.`
-      : 'No interval-rate history is available yet. The chart will populate after contiguous telemetry samples establish valid interval rates.';
-  $('trend-chart-summary').textContent = summary;
+
+  if (values.length) {
+    const notes = [
+      {label:'Latest', text:`EdgeProxy ${rateText(requestLatest)} · SecurityEdge ${rateText(blockedLatest)}`},
+      {label:'Coverage', text:`${requestCount} EdgeProxy · ${blockedCount} SecurityEdge rate sample${Math.max(requestCount, blockedCount) === 1 ? '' : 's'}`},
+      {label:'Gaps', text:'Missing intervals stay visible as gaps; unavailable edge intervals remain in retained history without stretching the chart.'}
+    ];
+    if (scaleModel.clipped) {
+      notes.push({
+        label:'Peaks',
+        text:`${scaleModel.outlierCount} above display scale · max ${rateText(rawMaximum)} · exact values preserved`,
+        emphasis:true
+      });
+    }
+    renderTrendNotes(notes);
+  } else if (state.trend.length) {
+    renderTrendNotes([
+      {label:'Status', text:`No interval rate is available yet across ${retainedCountText}.`},
+      {label:'History', text:`Retained range ${retainedRangeText}. The chart will populate after contiguous telemetry samples establish valid interval rates.`}
+    ]);
+  } else {
+    renderTrendNotes([
+      {label:'Status', text:'No interval-rate history is available yet.'},
+      {label:'Next', text:'The chart will populate after contiguous telemetry samples establish valid interval rates.'}
+    ]);
+  }
 }
 
 function renderBars(element, values, limit = 8) {

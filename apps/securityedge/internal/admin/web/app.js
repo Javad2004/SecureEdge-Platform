@@ -422,7 +422,7 @@ function nonNegativeRate(value) {
 }
 
 function normalizeTrendHistory(history) {
-  const mapped = (Array.isArray(history) ? history : []).map(point => {
+  return (Array.isArray(history) ? history : []).map(point => {
     const parsedTime = Date.parse(point.generated_at);
     return {
       requests: point.edgeproxy?.available === true && point.edgeproxy?.request_rate_available === true
@@ -434,7 +434,11 @@ function normalizeTrendHistory(history) {
       time: Number.isFinite(parsedTime) ? parsedTime : null
     };
   });
-  const hasRate = point => Number.isFinite(point.requests) || Number.isFinite(point.blocked);
+}
+
+function trendDisplayPoints(points) {
+  const mapped = Array.isArray(points) ? points : [];
+  const hasRate = point => Number.isFinite(point?.requests) || Number.isFinite(point?.blocked);
   const first = mapped.findIndex(hasRate);
   if (first < 0) return [];
   let last = mapped.length - 1;
@@ -558,13 +562,14 @@ function drawTrend() {
   };
   const plotWidth = Math.max(1, plot.right - plot.left);
   const plotHeight = Math.max(1, plot.bottom - plot.top);
-  const requestValues = state.trend.map(point => point.requests).filter(Number.isFinite);
-  const blockedValues = state.trend.map(point => point.blocked).filter(Number.isFinite);
+  const displayTrend = trendDisplayPoints(state.trend);
+  const requestValues = displayTrend.map(point => point.requests).filter(Number.isFinite);
+  const blockedValues = displayTrend.map(point => point.blocked).filter(Number.isFinite);
   const values = [...requestValues, ...blockedValues];
   const scaleModel = trendScaleModel([requestValues, blockedValues]);
   const rawMaximum = scaleModel.rawMaximum;
   const maximum = scaleModel.maximum;
-  const bounds = trendTimeBounds(state.trend);
+  const bounds = trendTimeBounds(displayTrend);
   const timeSpan = Number.isFinite(bounds.minimum) && Number.isFinite(bounds.maximum)
     ? Math.max(0, bounds.maximum - bounds.minimum)
     : 0;
@@ -608,7 +613,7 @@ function drawTrend() {
     if (Number.isFinite(point.time) && Number.isFinite(bounds.minimum) && Number.isFinite(bounds.maximum) && bounds.maximum > bounds.minimum) {
       return plot.left + ((point.time - bounds.minimum) / (bounds.maximum - bounds.minimum)) * plotWidth;
     }
-    return state.trend.length <= 1 ? plot.left + plotWidth / 2 : plot.left + index * (plotWidth / (state.trend.length - 1));
+    return displayTrend.length <= 1 ? plot.left + plotWidth / 2 : plot.left + index * (plotWidth / (displayTrend.length - 1));
   };
   const yForValue = value => plot.bottom - (Math.min(maximum, Math.max(0, value)) / maximum) * plotHeight;
 
@@ -620,7 +625,7 @@ function drawTrend() {
     context.lineCap = 'round';
     context.beginPath();
     let segmentStarted = false;
-    state.trend.forEach((point, index) => {
+    displayTrend.forEach((point, index) => {
       const value = point[key];
       if (!Number.isFinite(value)) { segmentStarted = false; return; }
       const x = xForPoint(point, index);
@@ -629,7 +634,7 @@ function drawTrend() {
       else { context.moveTo(x, y); segmentStarted = true; }
     });
     context.stroke();
-    state.trend.forEach((point, index) => {
+    displayTrend.forEach((point, index) => {
       const value = point[key];
       if (!Number.isFinite(value)) return;
       const x = xForPoint(point, index);
@@ -665,7 +670,9 @@ function drawTrend() {
     : 'Time unavailable';
   $('trend-window').textContent = values.length
     ? `${rangeText} · ${state.trend.length} retained sample${state.trend.length === 1 ? '' : 's'}`
-    : 'Waiting for rate history';
+    : state.trend.length
+      ? `Waiting for interval rates · ${state.trend.length} retained sample${state.trend.length === 1 ? '' : 's'}`
+      : 'Waiting for rate history';
   $('trend-scale').textContent = values.length
     ? scaleModel.clipped
       ? `Display scale 0–${trendRateLabel(maximum, maximum)} req/s · ${scaleModel.outlierCount} peak${scaleModel.outlierCount === 1 ? '' : 's'} above scale · max ${trendRateLabel(rawMaximum, rawMaximum)} req/s`

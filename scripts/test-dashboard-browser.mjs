@@ -833,7 +833,10 @@ try {
       renderOverview();
       const mapped = state.trend.map(point => point.requests);
       const blockedMapped = state.trend.map(point => point.blocked);
-      const rangeMs = state.trend.at(-1).time - state.trend[0].time;
+      const displayTrend = trendDisplayPoints(state.trend);
+      const displayMapped = displayTrend.map(point => point.requests);
+      const displayBlockedMapped = displayTrend.map(point => point.blocked);
+      const rangeMs = displayTrend.at(-1).time - displayTrend[0].time;
 
       const canvas = document.getElementById('trend-chart');
       const originalGetContext = canvas.getContext;
@@ -859,7 +862,7 @@ try {
       const requestOps = requestLineOps.map(operation => operation.type);
       const blockedOps = blockedLineOps.map(operation => operation.type);
       const result = {
-        mapped, blockedMapped, requestOps, blockedOps,
+        mapped, blockedMapped, displayMapped, displayBlockedMapped, requestOps, blockedOps,
         requestXs:requestLineOps.map(operation => operation.x),
         canvasWidth:canvas.clientWidth,
         rangeMs,
@@ -877,25 +880,31 @@ try {
       renderAll();
       return result;
     })()`);
-    if (telemetryTrendGapContract.mapped.length !== 5 ||
-        telemetryTrendGapContract.mapped[0] !== 1.5 ||
-        telemetryTrendGapContract.mapped[1] !== null ||
-        telemetryTrendGapContract.mapped[2] !== null ||
-        telemetryTrendGapContract.mapped[3] !== 2.5 ||
-        telemetryTrendGapContract.mapped[4] !== 3.5) {
-      throw new Error(`Telemetry history did not trim empty edges while preserving unavailable request-rate gaps: ${JSON.stringify(telemetryTrendGapContract)}`);
+    if (telemetryTrendGapContract.mapped.length !== 7 ||
+        telemetryTrendGapContract.mapped[0] !== null ||
+        telemetryTrendGapContract.mapped[6] !== null ||
+        telemetryTrendGapContract.displayMapped.length !== 5 ||
+        telemetryTrendGapContract.displayMapped[0] !== 1.5 ||
+        telemetryTrendGapContract.displayMapped[1] !== null ||
+        telemetryTrendGapContract.displayMapped[2] !== null ||
+        telemetryTrendGapContract.displayMapped[3] !== 2.5 ||
+        telemetryTrendGapContract.displayMapped[4] !== 3.5) {
+      throw new Error(`Telemetry history did not preserve retained edge samples while trimming only the plotted viewport: ${JSON.stringify(telemetryTrendGapContract)}`);
     }
     const expectedRequestOps = ['move','move','line'];
     if (JSON.stringify(telemetryTrendGapContract.requestOps) !== JSON.stringify(expectedRequestOps)) {
       throw new Error(`Trend chart connected EdgeProxy request-rate segments across a telemetry gap: ${JSON.stringify(telemetryTrendGapContract)}`);
     }
-    if (telemetryTrendGapContract.blockedMapped.length !== 5 ||
-        telemetryTrendGapContract.blockedMapped[0] !== 0.25 ||
-        telemetryTrendGapContract.blockedMapped[1] !== 0.30 ||
-        telemetryTrendGapContract.blockedMapped[2] !== null ||
-        telemetryTrendGapContract.blockedMapped[3] !== 0.40 ||
-        telemetryTrendGapContract.blockedMapped[4] !== 0.50) {
-      throw new Error(`Telemetry history did not preserve SecurityEdge rejection-rate gaps: ${JSON.stringify(telemetryTrendGapContract)}`);
+    if (telemetryTrendGapContract.blockedMapped.length !== 7 ||
+        telemetryTrendGapContract.blockedMapped[0] !== null ||
+        telemetryTrendGapContract.blockedMapped[6] !== null ||
+        telemetryTrendGapContract.displayBlockedMapped.length !== 5 ||
+        telemetryTrendGapContract.displayBlockedMapped[0] !== 0.25 ||
+        telemetryTrendGapContract.displayBlockedMapped[1] !== 0.30 ||
+        telemetryTrendGapContract.displayBlockedMapped[2] !== null ||
+        telemetryTrendGapContract.displayBlockedMapped[3] !== 0.40 ||
+        telemetryTrendGapContract.displayBlockedMapped[4] !== 0.50) {
+      throw new Error(`Telemetry history did not preserve SecurityEdge rejection-rate gaps in the plotted viewport: ${JSON.stringify(telemetryTrendGapContract)}`);
     }
     const expectedBlockedOps = ['move','line','move','line'];
     if (JSON.stringify(telemetryTrendGapContract.blockedOps) !== JSON.stringify(expectedBlockedOps)) {
@@ -909,9 +918,9 @@ try {
         telemetryTrendGapContract.requestXs[2] - telemetryTrendGapContract.requestXs[1] >= telemetryTrendGapContract.canvasWidth * 0.05) {
       throw new Error(`Trend chart X positions are not timestamp-proportional: ${JSON.stringify(telemetryTrendGapContract)}`);
     }
-    if (telemetryTrendGapContract.requestLatest !== '3.5 req/s' ||
-        telemetryTrendGapContract.blockedLatest !== '0.5 req/s' ||
-        !telemetryTrendGapContract.windowText.includes('5 retained samples') ||
+    if (telemetryTrendGapContract.requestLatest !== 'Unavailable' ||
+        telemetryTrendGapContract.blockedLatest !== 'Unavailable' ||
+        !telemetryTrendGapContract.windowText.includes('7 retained samples') ||
         !telemetryTrendGapContract.scaleText.startsWith('Scale 0–') ||
         !telemetryTrendGapContract.summary.includes('Missing telemetry intervals are shown as gaps.') ||
         telemetryTrendGapContract.emptyHidden !== true) {
@@ -1026,7 +1035,8 @@ try {
       candidate.telemetry_history = {samples:[
         {generated_at:new Date(baseTime).toISOString(),security:{rejected_rate_available:true,rejected_per_second:0.1},edgeproxy:{available:true,request_rate_available:true,requests_per_second:0.5}},
         {generated_at:new Date(baseTime+10000).toISOString(),security:{rejected_rate_available:true,rejected_per_second:0.2},edgeproxy:{available:false,request_rate_available:false,requests_per_second:0}},
-        {generated_at:new Date(baseTime+20000).toISOString(),security:{rejected_rate_available:true,rejected_per_second:0.3},edgeproxy:{available:false,request_rate_available:false,requests_per_second:0}}
+        {generated_at:new Date(baseTime+20000).toISOString(),security:{rejected_rate_available:true,rejected_per_second:0.3},edgeproxy:{available:false,request_rate_available:false,requests_per_second:0}},
+        {generated_at:new Date(baseTime+30000).toISOString(),security:{rejected_rate_available:false,rejected_per_second:0},edgeproxy:{available:false,request_rate_available:false,requests_per_second:0}}
       ]};
       state.overview = candidate;
       renderOverview();
@@ -1035,6 +1045,8 @@ try {
         blockedLatest:document.getElementById('trend-blocked-latest').textContent,
         summary:document.getElementById('trend-chart-summary').textContent,
         points:state.trend.length,
+        displayPoints:trendDisplayPoints(state.trend).length,
+        windowText:document.getElementById('trend-window').textContent,
         finalRequest:state.trend.at(-1)?.requests ?? null,
         finalBlocked:state.trend.at(-1)?.blocked ?? null
       };
@@ -1042,13 +1054,15 @@ try {
       renderAll();
       return result;
     })()`);
-    if (telemetryTrendLatestAvailabilityContract.points !== 3 ||
+    if (telemetryTrendLatestAvailabilityContract.points !== 4 ||
+        telemetryTrendLatestAvailabilityContract.displayPoints !== 3 ||
         telemetryTrendLatestAvailabilityContract.finalRequest !== null ||
-        telemetryTrendLatestAvailabilityContract.finalBlocked !== 0.3 ||
+        telemetryTrendLatestAvailabilityContract.finalBlocked !== null ||
         telemetryTrendLatestAvailabilityContract.requestLatest !== 'Unavailable' ||
-        telemetryTrendLatestAvailabilityContract.blockedLatest !== '0.3 req/s' ||
+        telemetryTrendLatestAvailabilityContract.blockedLatest !== 'Unavailable' ||
+        !telemetryTrendLatestAvailabilityContract.windowText.includes('4 retained samples') ||
         !telemetryTrendLatestAvailabilityContract.summary.includes('EdgeProxy latest Unavailable') ||
-        !telemetryTrendLatestAvailabilityContract.summary.includes('SecurityEdge rejection latest 0.3 req/s')) {
+        !telemetryTrendLatestAvailabilityContract.summary.includes('SecurityEdge rejection latest Unavailable')) {
       throw new Error(`Trend latest-value availability contract failed: ${JSON.stringify(telemetryTrendLatestAvailabilityContract)}`);
     }
 
@@ -1073,9 +1087,9 @@ try {
       renderAll();
       return result;
     })()`);
-    if (telemetryTrendEmptyContract.points !== 0 || telemetryTrendEmptyContract.emptyHidden !== false ||
+    if (telemetryTrendEmptyContract.points !== 1 || telemetryTrendEmptyContract.emptyHidden !== false ||
         telemetryTrendEmptyContract.emptyText !== 'No interval-rate history available yet.' ||
-        telemetryTrendEmptyContract.windowText !== 'Waiting for rate history' ||
+        telemetryTrendEmptyContract.windowText !== 'Waiting for interval rates · 1 retained sample' ||
         !telemetryTrendEmptyContract.summary.includes('No interval-rate history is available yet.')) {
       throw new Error(`Trend empty-state contract failed: ${JSON.stringify(telemetryTrendEmptyContract)}`);
     }

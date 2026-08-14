@@ -558,6 +558,7 @@ func TestDashboardTrendPresentationContract(t *testing.T) {
 		`id="trend-empty" class="trend-empty" hidden`,
 		`id="trend-chart-summary" class="trend-chart-summary"`,
 		`function normalizeTrendHistory(history)`,
+		`function trendDisplayPoints(points)`,
 		`function niceTrendMaximum(value)`,
 		`function trendQuantile(sortedValues, quantile)`,
 		`function trendSeriesScaleProfile(values)`,

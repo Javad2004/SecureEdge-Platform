@@ -395,7 +395,8 @@ func TestDashboardPreservesAuthAndTelemetryTruthfulness(t *testing.T) {
 		"msIf(total.latency?.p95_ms, securityDecisions > 0)",
 		"const plotBounds = trendTimeBounds(displayTrend)",
 		"const retainedBounds = trendTimeBounds(state.trend)",
-		"Interior missing telemetry intervals are shown as gaps; leading and trailing unavailable intervals remain part of retained-history and latest-state semantics without extending the plotted viewport.",
+		"unavailable intervals left blank, never zero-filled.",
+		"function trendTemporalGaps(points)",
 		"point.security?.rejected_rate_available === true",
 		"pctIf(m.cache_hit_ratio, cacheLookups > 0)",
 		"Number(component.checks || 0) > 0",
@@ -564,6 +565,8 @@ func TestDashboardTrendPresentationContract(t *testing.T) {
 		`class="trend-legend" aria-label="Request-rate trend legend"`,
 		`id="trend-requests-latest"`,
 		`id="trend-blocked-latest"`,
+		`id="trend-requests-coverage"`,
+		`id="trend-blocked-coverage"`,
 		`id="trend-window"`,
 		`id="trend-empty" class="trend-empty" hidden`,
 		`id="trend-chart-summary" class="trend-chart-summary"`,
@@ -576,14 +579,21 @@ func TestDashboardTrendPresentationContract(t *testing.T) {
 		`trendScaleModel([requestValues, blockedValues])`,
 		`function trendLatestValue(key)`,
 		`const value = state.trend[state.trend.length - 1][key];`,
+		`function trendTemporalGaps(points)`,
+		`function trendGapDurationLabel(milliseconds)`,
+		`const blockedZeroOnly = blockedValues.length > 0 && blockedValues.every(value => value === 0);`,
+		`No rejections ·`,
+		`unavailable intervals left blank, never zero-filled.`,
 		`id="trend-scale"`,
-		`above scale · max`,
-		`Interior missing telemetry intervals are shown as gaps; leading and trailing unavailable intervals remain part of retained-history and latest-state semantics without extending the plotted viewport.`,
+		`const scaleDetailText = !values.length`,
+		`max ${trendRateLabel(rawMaximum, rawMaximum)} req/s`,
 		`function trendTimeBounds(points)`,
 		`const plotBounds = trendTimeBounds(displayTrend)`,
 		`const retainedBounds = trendTimeBounds(state.trend)`,
 		`.trend-chart-wrap`,
 		`.trend-swatch.blocked`,
+		`.trend-series-copy`,
+		`.trend-status-item`,
 	} {
 		if !strings.Contains(content, required) {
 			t.Fatalf("dashboard trend presentation contract is missing %q", required)
@@ -594,6 +604,9 @@ func TestDashboardTrendPresentationContract(t *testing.T) {
 	}
 	if strings.Contains(string(app), `for (let index = state.trend.length - 1; index >= 0; index -= 1)`) {
 		t.Fatal("trend legend still carries a stale finite rate forward across trailing unavailability")
+	}
+	if strings.Contains(string(app), `trendMetaCard('trend-viewport'`) {
+		t.Fatal("trend UI still renders a duplicate visible chart-viewport time card")
 	}
 }
 

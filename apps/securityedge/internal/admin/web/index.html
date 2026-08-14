@@ -106,8 +106,16 @@
             <div class="panel-head"><div><h2>Request-rate trend</h2><p>Persisted EdgeProxy request rate and SecurityEdge rejection rate across recent samples.</p></div></div>
             <div class="trend-toolbar">
               <div class="trend-legend" aria-label="Request-rate trend legend">
-                <span class="trend-legend-item"><span class="trend-swatch requests" aria-hidden="true"></span><span>EdgeProxy requests</span><strong id="trend-requests-latest">—</strong></span>
-                <span class="trend-legend-item"><span class="trend-swatch blocked" aria-hidden="true"></span><span>SecurityEdge rejections</span><strong id="trend-blocked-latest">—</strong></span>
+                <span class="trend-legend-item">
+                  <span class="trend-swatch requests" aria-hidden="true"></span>
+                  <span class="trend-series-copy"><span>EdgeProxy requests</span><small id="trend-requests-coverage">Waiting for rate samples</small></span>
+                  <strong id="trend-requests-latest">—</strong>
+                </span>
+                <span class="trend-legend-item">
+                  <span class="trend-swatch blocked" aria-hidden="true"></span>
+                  <span class="trend-series-copy"><span>SecurityEdge rejections</span><small id="trend-blocked-coverage">Waiting for rate samples</small></span>
+                  <strong id="trend-blocked-latest">—</strong>
+                </span>
               </div>
               <div class="trend-meta muted"><span id="trend-window">Waiting for rate history</span><span id="trend-scale">Scale unavailable</span></div>
             </div>

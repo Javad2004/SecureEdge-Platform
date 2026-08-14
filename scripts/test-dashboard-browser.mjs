@@ -975,12 +975,14 @@ try {
         windowText:document.getElementById('trend-window').textContent,
         windowValue:document.querySelector('#trend-window .trend-meta-value')?.textContent || '',
         windowDetail:document.querySelector('#trend-window .trend-meta-detail')?.textContent || '',
-        viewportValue:document.querySelector('#trend-viewport .trend-meta-value')?.textContent || '',
-        viewportDetail:document.querySelector('#trend-viewport .trend-meta-detail')?.textContent || '',
         scaleText:document.getElementById('trend-scale').textContent,
         scaleValue:document.querySelector('#trend-scale .trend-meta-value')?.textContent || '',
         scaleDetail:document.querySelector('#trend-scale .trend-meta-detail')?.textContent || '',
-        noteCount:document.querySelectorAll('#trend-chart-summary .trend-note').length,
+        requestCoverage:document.getElementById('trend-requests-coverage').textContent,
+        blockedCoverage:document.getElementById('trend-blocked-coverage').textContent,
+        temporalGapCount:trendTemporalGaps(displayTrend).length,
+        gapLabels:operations.filter(operation => operation.type === 'text' && String(operation.text).startsWith('No telemetry')).map(operation => operation.text),
+        noteCount:document.querySelectorAll('#trend-chart-summary .trend-status-item').length,
         summary:document.getElementById('trend-chart-summary').textContent,
         emptyHidden:document.getElementById('trend-empty').hidden
       };
@@ -1029,13 +1031,17 @@ try {
     }
     if (telemetryTrendGapContract.requestLatest !== 'Unavailable' ||
         telemetryTrendGapContract.blockedLatest !== 'Unavailable' ||
-        telemetryTrendGapContract.windowDetail !== '7 retained samples' ||
-        telemetryTrendGapContract.viewportDetail !== '5 plotted intervals' ||
+        telemetryTrendGapContract.windowDetail !== '7 samples' ||
+        telemetryTrendGapContract.requestCoverage !== '3/7 intervals observed' ||
+        telemetryTrendGapContract.blockedCoverage !== '4/7 intervals observed' ||
+        telemetryTrendGapContract.temporalGapCount !== 1 ||
+        telemetryTrendGapContract.gapLabels.length !== 1 ||
+        !telemetryTrendGapContract.gapLabels[0].startsWith('No telemetry · ') ||
         !telemetryTrendGapContract.scaleValue.startsWith('0–') ||
-        telemetryTrendGapContract.scaleDetail !== 'Adaptive to observed traffic' ||
-        telemetryTrendGapContract.noteCount !== 3 ||
-        !telemetryTrendGapContract.summary.includes('Missing intervals stay visible as gaps') ||
-        !telemetryTrendGapContract.summary.includes('unavailable edge intervals remain in retained history without stretching the chart') ||
+        telemetryTrendGapContract.scaleDetail !== 'Adaptive scale' ||
+        telemetryTrendGapContract.noteCount !== 1 ||
+        !telemetryTrendGapContract.summary.includes('1 telemetry gap') ||
+        !telemetryTrendGapContract.summary.includes('never zero-filled') ||
         telemetryTrendGapContract.emptyHidden !== true) {
       throw new Error(`Trend legend/range/accessibility summary contract failed: ${JSON.stringify(telemetryTrendGapContract)}`);
     }
@@ -1074,7 +1080,9 @@ try {
       canvas.getContext = () => context;
       try { drawTrend(); } finally { canvas.getContext = originalGetContext; }
       const requestColor = cssColor('--chart-requests', '#67a6ff');
+      const blockedColor = cssColor('--chart-blocked', '#ff6b84');
       const markers = operations.filter(operation => operation.type === 'text' && operation.color === requestColor && operation.text === '▲');
+      const blockedSeriesOps = operations.filter(operation => operation.color === blockedColor && ['move','line','point'].includes(operation.type));
       const sustainedModel = trendScaleModel([0.10,0.14,0.18,0.22,0.28,0.34,0.42,0.51,0.60,0.70,0.78,0.86]);
       const result = {
         model, sustainedModel,
@@ -1083,7 +1091,9 @@ try {
         scaleValue:document.querySelector('#trend-scale .trend-meta-value')?.textContent || '',
         scaleDetail:document.querySelector('#trend-scale .trend-meta-detail')?.textContent || '',
         summary:document.getElementById('trend-chart-summary').textContent,
-        latest:document.getElementById('trend-requests-latest').textContent
+        latest:document.getElementById('trend-requests-latest').textContent,
+        blockedCoverage:document.getElementById('trend-blocked-coverage').textContent,
+        blockedSeriesOps:blockedSeriesOps.length
       };
       state.overview = previous;
       renderAll();
@@ -1093,9 +1103,11 @@ try {
         !(telemetryTrendOutlierContract.model.maximum >= 0.1 && telemetryTrendOutlierContract.model.maximum < 0.3) ||
         telemetryTrendOutlierContract.model.rawMaximum !== 0.92 || telemetryTrendOutlierContract.markers !== 1 ||
         telemetryTrendOutlierContract.sustainedModel.clipped !== false || telemetryTrendOutlierContract.sustainedModel.rawMaximum !== 0.86 ||
-        !telemetryTrendOutlierContract.scaleDetail.includes('1 peak above scale') ||
+        !telemetryTrendOutlierContract.scaleDetail.includes('1 peak') ||
         !telemetryTrendOutlierContract.scaleDetail.includes('max 0.92 req/s') ||
-        !telemetryTrendOutlierContract.summary.includes('exact values preserved') ||
+        !telemetryTrendOutlierContract.summary.includes('exact values remain in the scale summary') ||
+        telemetryTrendOutlierContract.blockedCoverage !== 'No rejections · 20/20 intervals observed' ||
+        telemetryTrendOutlierContract.blockedSeriesOps !== 0 ||
         telemetryTrendOutlierContract.latest !== '0.92 req/s') {
       throw new Error(`Trend outlier handling contract failed: ${JSON.stringify(telemetryTrendOutlierContract)}`);
     }
@@ -1140,8 +1152,7 @@ try {
         telemetryTrendSeriesIsolationContract.precisionModel.rawMaximum !== 100 ||
         telemetryTrendSeriesIsolationContract.latest !== '0.005 req/s' ||
         !telemetryTrendSeriesIsolationContract.scaleDetail.includes('max 100 req/s') ||
-        !telemetryTrendSeriesIsolationContract.summary.includes('max 100 req/s') ||
-        !telemetryTrendSeriesIsolationContract.summary.includes('exact values preserved')) {
+        !telemetryTrendSeriesIsolationContract.summary.includes('exact values remain in the scale summary')) {
       throw new Error(`Trend series-isolation/legend-precision contract failed: ${JSON.stringify(telemetryTrendSeriesIsolationContract)}`);
     }
 
@@ -1170,8 +1181,8 @@ try {
         windowText:document.getElementById('trend-window').textContent,
         windowValue:document.querySelector('#trend-window .trend-meta-value')?.textContent || '',
         windowDetail:document.querySelector('#trend-window .trend-meta-detail')?.textContent || '',
-        viewportValue:document.querySelector('#trend-viewport .trend-meta-value')?.textContent || '',
-        viewportDetail:document.querySelector('#trend-viewport .trend-meta-detail')?.textContent || '',
+        requestCoverage:document.getElementById('trend-requests-coverage').textContent,
+        blockedCoverage:document.getElementById('trend-blocked-coverage').textContent,
         finalRequest:state.trend.at(-1)?.requests ?? null,
         finalBlocked:state.trend.at(-1)?.blocked ?? null
       };
@@ -1186,12 +1197,11 @@ try {
         telemetryTrendLatestAvailabilityContract.requestLatest !== 'Unavailable' ||
         telemetryTrendLatestAvailabilityContract.blockedLatest !== 'Unavailable' ||
         telemetryTrendLatestAvailabilityContract.retainedBounds.maximum - telemetryTrendLatestAvailabilityContract.displayBounds.maximum !== 10000 ||
-        telemetryTrendLatestAvailabilityContract.windowDetail !== '4 retained samples' ||
+        telemetryTrendLatestAvailabilityContract.windowDetail !== '4 samples' ||
         !telemetryTrendLatestAvailabilityContract.windowValue.includes(telemetryTrendLatestAvailabilityContract.expectedRetainedEnd) ||
-        !telemetryTrendLatestAvailabilityContract.viewportValue.includes(telemetryTrendLatestAvailabilityContract.expectedDisplayEnd) ||
-        telemetryTrendLatestAvailabilityContract.viewportDetail !== '3 plotted intervals' ||
-        !telemetryTrendLatestAvailabilityContract.summary.includes('EdgeProxy Unavailable') ||
-        !telemetryTrendLatestAvailabilityContract.summary.includes('SecurityEdge Unavailable')) {
+        telemetryTrendLatestAvailabilityContract.requestCoverage !== '1/4 intervals observed' ||
+        telemetryTrendLatestAvailabilityContract.blockedCoverage !== '3/4 intervals observed' ||
+        !telemetryTrendLatestAvailabilityContract.summary.includes('never zero-filled')) {
       throw new Error(`Trend latest-value availability contract failed: ${JSON.stringify(telemetryTrendLatestAvailabilityContract)}`);
     }
 
@@ -1212,7 +1222,6 @@ try {
         windowText:document.getElementById('trend-window').textContent,
         windowValue:document.querySelector('#trend-window .trend-meta-value')?.textContent || '',
         windowDetail:document.querySelector('#trend-window .trend-meta-detail')?.textContent || '',
-        viewportValue:document.querySelector('#trend-viewport .trend-meta-value')?.textContent || '',
         summary:document.getElementById('trend-chart-summary').textContent
       };
       state.overview = previous;
@@ -1221,9 +1230,8 @@ try {
     })()`);
     if (telemetryTrendEmptyContract.points !== 1 || telemetryTrendEmptyContract.emptyHidden !== false ||
         telemetryTrendEmptyContract.emptyText !== 'No interval-rate history available yet.' ||
-        telemetryTrendEmptyContract.windowDetail !== '1 retained sample' ||
-        telemetryTrendEmptyContract.viewportValue !== 'No rate intervals yet' ||
-        !telemetryTrendEmptyContract.summary.includes('No interval rate is available yet across 1 retained sample')) {
+        telemetryTrendEmptyContract.windowDetail !== '1 sample' ||
+        !telemetryTrendEmptyContract.summary.includes('No interval rates are available yet across 1 sample')) {
       throw new Error(`Trend empty-state contract failed: ${JSON.stringify(telemetryTrendEmptyContract)}`);
     }
   }

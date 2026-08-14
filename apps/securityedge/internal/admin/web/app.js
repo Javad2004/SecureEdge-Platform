@@ -574,6 +574,41 @@ function trendTimeBounds(points) {
   return {minimum:Math.min(...times), maximum:Math.max(...times)};
 }
 
+function trendTemporalGaps(points) {
+  const mapped = Array.isArray(points) ? points : [];
+  const deltas = [];
+  for (let index = 1; index < mapped.length; index += 1) {
+    const previous = mapped[index - 1]?.time;
+    const current = mapped[index]?.time;
+    if (Number.isFinite(previous) && Number.isFinite(current) && current > previous) deltas.push(current - previous);
+  }
+  if (deltas.length < 4) return [];
+  const sorted = [...deltas].sort((a, b) => a - b);
+  const cadence = trendQuantile(sorted, 0.5);
+  if (!(cadence > 0)) return [];
+  const threshold = cadence * 4;
+  const gaps = [];
+  for (let index = 1; index < mapped.length; index += 1) {
+    const previous = mapped[index - 1]?.time;
+    const current = mapped[index]?.time;
+    if (!Number.isFinite(previous) || !Number.isFinite(current) || current <= previous) continue;
+    const duration = current - previous;
+    if (duration > threshold) gaps.push({beforeIndex:index, start:previous, end:current, duration});
+  }
+  return gaps;
+}
+
+function trendGapDurationLabel(milliseconds) {
+  const totalSeconds = Math.max(0, Math.round((Number(milliseconds) || 0) / 1000));
+  if (totalSeconds >= 3600) {
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.round((totalSeconds % 3600) / 60);
+    return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+  if (totalSeconds >= 60) return `${Math.round(totalSeconds / 60)}m`;
+  return `${totalSeconds}s`;
+}
+
 function trendLatestValue(key) {
   if (!state.trend.length) return null;
   const value = state.trend[state.trend.length - 1][key];
@@ -588,32 +623,25 @@ function trendRangeText(bounds) {
   return `${trendTimeLabel(bounds.minimum, includeSeconds)}–${trendTimeLabel(bounds.maximum, includeSeconds)}`;
 }
 
-function trendMetaCard(id, label, value, detail = '') {
-  const host = $('trend-window')?.parentElement;
-  if (!host) return null;
-  let card = $(id);
-  if (!card) {
-    card = document.createElement('span');
-    card.id = id;
-    if (id === 'trend-viewport' && $('trend-scale')) host.insertBefore(card, $('trend-scale'));
-    else host.appendChild(card);
-  }
-  card.className = 'trend-meta-card';
-  card.replaceChildren();
+function trendMetaItem(id, label, value, detail = '') {
+  const item = $(id);
+  if (!item) return null;
+  item.className = 'trend-meta-item';
+  item.replaceChildren();
   const labelNode = document.createElement('small');
   labelNode.className = 'trend-meta-label';
   labelNode.textContent = label;
   const valueNode = document.createElement('strong');
   valueNode.className = 'trend-meta-value';
   valueNode.textContent = value;
-  card.append(labelNode, valueNode);
+  item.append(labelNode, valueNode);
   if (detail) {
     const detailNode = document.createElement('small');
     detailNode.className = 'trend-meta-detail';
     detailNode.textContent = detail;
-    card.appendChild(detailNode);
+    item.appendChild(detailNode);
   }
-  return card;
+  return item;
 }
 
 function renderTrendNotes(notes) {
@@ -622,7 +650,7 @@ function renderTrendNotes(notes) {
   summary.replaceChildren();
   notes.filter(note => note?.text).forEach(note => {
     const item = document.createElement('span');
-    item.className = `trend-note${note.emphasis ? ' is-emphasis' : ''}`;
+    item.className = `trend-status-item${note.emphasis ? ' is-emphasis' : ''}`;
     const label = document.createElement('strong');
     label.textContent = note.label;
     const text = document.createElement('span');
@@ -663,6 +691,8 @@ function drawTrend() {
   const maximum = scaleModel.maximum;
   const plotBounds = trendTimeBounds(displayTrend);
   const retainedBounds = trendTimeBounds(state.trend);
+  const temporalGaps = trendTemporalGaps(displayTrend);
+  const temporalGapIndexes = new Set(temporalGaps.map(gap => gap.beforeIndex));
   const timeSpan = Number.isFinite(plotBounds.minimum) && Number.isFinite(plotBounds.maximum)
     ? Math.max(0, plotBounds.maximum - plotBounds.minimum)
     : 0;
@@ -710,7 +740,9 @@ function drawTrend() {
   };
   const yForValue = value => plot.bottom - (Math.min(maximum, Math.max(0, value)) / maximum) * plotHeight;
 
-  const draw = (key, color) => {
+  const draw = (key, color, suppressZeroOnly = false) => {
+    const seriesValues = displayTrend.map(point => point[key]).filter(Number.isFinite);
+    if (suppressZeroOnly && seriesValues.length && seriesValues.every(value => value === 0)) return;
     context.strokeStyle = color;
     context.fillStyle = color;
     context.lineWidth = 2;
@@ -719,6 +751,7 @@ function drawTrend() {
     context.beginPath();
     let segmentStarted = false;
     displayTrend.forEach((point, index) => {
+      if (temporalGapIndexes.has(index)) segmentStarted = false;
       const value = point[key];
       if (!Number.isFinite(value)) { segmentStarted = false; return; }
       const x = xForPoint(point, index);
@@ -745,8 +778,26 @@ function drawTrend() {
     });
   };
   draw('requests', cssColor('--chart-requests', '#67a6ff'));
-  draw('blocked', cssColor('--chart-blocked', '#ff7188'));
+  const blockedZeroOnly = blockedValues.length > 0 && blockedValues.every(value => value === 0);
+  draw('blocked', cssColor('--chart-blocked', '#ff7188'), blockedZeroOnly);
 
+  if (temporalGaps.length && Number.isFinite(plotBounds.minimum) && Number.isFinite(plotBounds.maximum) && plotBounds.maximum > plotBounds.minimum) {
+    context.save();
+    context.fillStyle = cssColor('--muted', '#98a6bd');
+    context.font = `${compact ? 9 : 10}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+    context.textAlign = 'center';
+    context.textBaseline = 'top';
+    temporalGaps.slice(0, 2).forEach(gap => {
+      const startX = plot.left + ((gap.start - plotBounds.minimum) / (plotBounds.maximum - plotBounds.minimum)) * plotWidth;
+      const endX = plot.left + ((gap.end - plotBounds.minimum) / (plotBounds.maximum - plotBounds.minimum)) * plotWidth;
+      if (endX - startX >= (compact ? 86 : 110)) {
+        context.fillText(`No telemetry · ${trendGapDurationLabel(gap.duration)}`, (startX + endX) / 2, plot.top + 7);
+      }
+    });
+    context.restore();
+  }
+
+  const retainedCount = state.trend.length;
   const requestCount = state.trend.filter(point => Number.isFinite(point.requests)).length;
   const blockedCount = state.trend.filter(point => Number.isFinite(point.blocked)).length;
   const requestLatest = trendLatestValue('requests');
@@ -755,49 +806,54 @@ function drawTrend() {
   $('trend-requests-latest').textContent = rateText(requestLatest);
   $('trend-blocked-latest').textContent = rateText(blockedLatest);
 
-  const retainedRangeText = trendRangeText(retainedBounds);
-  const plotRangeText = trendRangeText(plotBounds);
-  const retainedCountText = `${state.trend.length} retained sample${state.trend.length === 1 ? '' : 's'}`;
-  const plottedCountText = `${displayTrend.length} plotted interval${displayTrend.length === 1 ? '' : 's'}`;
-  const scaleValueText = values.length ? `0–${trendRateLabel(maximum, maximum)} req/s` : 'Unavailable';
-  const scaleDetailText = !values.length
-    ? 'Waiting for interval rates'
-    : scaleModel.clipped
-      ? `${scaleModel.outlierCount} peak${scaleModel.outlierCount === 1 ? '' : 's'} above scale · max ${trendRateLabel(rawMaximum, rawMaximum)} req/s`
-      : 'Adaptive to observed traffic';
+  const coverageText = (kind, count, seriesValues) => {
+    if (!retainedCount) return 'Waiting for rate samples';
+    if (!count) return 'No observed rate intervals';
+    const countText = `${count}/${retainedCount} interval${retainedCount === 1 ? '' : 's'} observed`;
+    if (seriesValues.length && seriesValues.every(value => value === 0)) {
+      return kind === 'blocked' ? `No rejections · ${countText}` : `No requests · ${countText}`;
+    }
+    return countText;
+  };
+  $('trend-requests-coverage').textContent = coverageText('requests', requestCount, state.trend.map(point => point.requests).filter(Number.isFinite));
+  $('trend-blocked-coverage').textContent = coverageText('blocked', blockedCount, state.trend.map(point => point.blocked).filter(Number.isFinite));
 
-  trendMetaCard('trend-window', 'Retained history', state.trend.length ? retainedRangeText : 'Waiting for history', retainedCountText);
-  trendMetaCard('trend-viewport', 'Chart viewport', values.length ? plotRangeText : 'No rate intervals yet', values.length ? plottedCountText : 'No plotted intervals');
-  trendMetaCard('trend-scale', 'Display scale', scaleValueText, scaleDetailText);
+  const retainedRangeText = trendRangeText(retainedBounds);
+  const retainedCountText = `${retainedCount} sample${retainedCount === 1 ? '' : 's'}`;
+  const scaleValueText = values.length ? `0–${trendRateLabel(maximum, maximum)} req/s` : 'Waiting for rates';
+  const scaleDetailText = !values.length
+    ? ''
+    : scaleModel.clipped
+      ? `${scaleModel.outlierCount} peak${scaleModel.outlierCount === 1 ? '' : 's'} · max ${trendRateLabel(rawMaximum, rawMaximum)} req/s`
+      : 'Adaptive scale';
+
+  trendMetaItem('trend-window', 'History', retainedCount ? retainedRangeText : 'Waiting for history', retainedCountText);
+  trendMetaItem('trend-scale', 'Scale', scaleValueText, scaleDetailText);
 
   const empty = $('trend-empty');
   empty.hidden = values.length > 0;
   if (!values.length) empty.textContent = 'No interval-rate history available yet.';
 
   if (values.length) {
-    const notes = [
-      {label:'Latest', text:`EdgeProxy ${rateText(requestLatest)} · SecurityEdge ${rateText(blockedLatest)}`},
-      {label:'Coverage', text:`${requestCount} EdgeProxy · ${blockedCount} SecurityEdge rate sample${Math.max(requestCount, blockedCount) === 1 ? '' : 's'}`},
-      {label:'Gaps', text:'Missing intervals stay visible as gaps; unavailable edge intervals remain in retained history without stretching the chart.'}
-    ];
-    if (scaleModel.clipped) {
+    const notes = [];
+    const hasUnavailable = requestCount < retainedCount || blockedCount < retainedCount;
+    if (hasUnavailable || temporalGaps.length) {
+      const gapText = temporalGaps.length
+        ? `${temporalGaps.length} telemetry gap${temporalGaps.length === 1 ? '' : 's'} · unavailable intervals left blank, never zero-filled.`
+        : 'Unavailable intervals left blank · never zero-filled.';
+      notes.push({label:'Gaps', text:gapText});
+    }
+    if (!notes.length) {
       notes.push({
-        label:'Peaks',
-        text:`${scaleModel.outlierCount} above display scale · max ${rateText(rawMaximum)} · exact values preserved`,
-        emphasis:true
+        label:'Status',
+        text:scaleModel.clipped ? 'Isolated peaks are marked at the chart ceiling; exact values remain in the scale summary.' : 'Observed rate intervals are shown at full scale with no telemetry gaps.'
       });
     }
     renderTrendNotes(notes);
-  } else if (state.trend.length) {
-    renderTrendNotes([
-      {label:'Status', text:`No interval rate is available yet across ${retainedCountText}.`},
-      {label:'History', text:`Retained range ${retainedRangeText}. The chart will populate after contiguous telemetry samples establish valid interval rates.`}
-    ]);
+  } else if (retainedCount) {
+    renderTrendNotes([{label:'Status', text:`No interval rates are available yet across ${retainedCountText}.`}]);
   } else {
-    renderTrendNotes([
-      {label:'Status', text:'No interval-rate history is available yet.'},
-      {label:'Next', text:'The chart will populate after contiguous telemetry samples establish valid interval rates.'}
-    ]);
+    renderTrendNotes([{label:'Status', text:'Waiting for persisted interval-rate history.'}]);
   }
 }
 

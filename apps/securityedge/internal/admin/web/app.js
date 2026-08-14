@@ -29,7 +29,25 @@ const state = {
 
 const $ = id => document.getElementById(id);
 const fmt = n => Number(n || 0).toLocaleString();
-const pct = n => `${(Number(n || 0) * 100).toFixed(1)}%`;
+function trimDecimalLabel(value) {
+  return String(value).replace(/\.0+$/, '').replace(/(\.\d*?[1-9])0+$/, '$1');
+}
+function percentageLabel(percent) {
+  const numeric = Number(percent);
+  if (!Number.isFinite(numeric)) return '—';
+  let decimals = 1;
+  let fixed = numeric.toFixed(decimals);
+  let rounded = Number(fixed);
+  while (decimals < 6 && ((numeric > 0 && rounded === 0) || (numeric < 100 && rounded === 100))) {
+    decimals += 1;
+    fixed = numeric.toFixed(decimals);
+    rounded = Number(fixed);
+  }
+  if (numeric > 0 && rounded === 0) return '<0.000001%';
+  if (numeric < 100 && rounded === 100) return '>99.999999%';
+  return `${fixed}%`;
+}
+const pct = n => percentageLabel(Number(n || 0) * 100);
 const ms = n => `${Number(n || 0).toFixed(2)} ms`;
 const pctIf = (n, available) => available ? pct(n) : '—';
 const msIf = (n, available) => available ? ms(n) : '—';
@@ -323,7 +341,7 @@ function renderConnectivity() {
     const status = normalizedStatus(component.status);
     const error = component.error ? `<div class="component-error">${esc(component.error)}</div>` : '';
     const endpoint = component.endpoint ? `<code>${esc(component.endpoint)}</code>` : '<span class="muted">No network endpoint</span>';
-    const availability = Number(component.checks || 0) > 0 ? `${Number(component.availability_percent || 0).toFixed(1)}%` : '—';
+    const availability = Number(component.checks || 0) > 0 ? percentageLabel(component.availability_percent) : '—';
     return `<article class="component-check ${status}"><div class="component-check-head"><div><span class="node-dot"></span><strong>${esc(component.name)}</strong></div>${statusBadge(status)}</div><p>${esc(component.message || 'No detail')}</p>${error}<div class="component-meta"><span>${endpoint}</span><span>Latency <strong>${compactLatency(component.latency_ms)}</strong></span><span>Availability <strong>${availability}</strong></span><span>Failures <strong>${fmt(component.consecutive_failures)}</strong></span></div><div class="component-times"><span>Last success: ${esc(dateText(component.last_success_at))}</span><span>Last failure: ${esc(dateText(component.last_failure_at))}</span></div></article>`;
   }).join('') : '<div class="empty-state">No component checks are available.</div>';
 
@@ -517,8 +535,15 @@ function trendRateLabel(value, scaleMaximum = value) {
   else if (scale < 0.1) decimals = 3;
   else if (scale < 10) decimals = 2;
   else if (scale < 100) decimals = 1;
-  const fixed = numeric.toFixed(decimals);
-  return fixed.replace(/\.0+$/, '').replace(/(\.\d*?[1-9])0+$/, '$1');
+  let fixed = numeric.toFixed(decimals);
+  while (numeric > 0 && Number(fixed) === 0 && decimals < 9) {
+    decimals += 1;
+    fixed = numeric.toFixed(decimals);
+  }
+  if (numeric > 0 && Number(fixed) === 0) {
+    return numeric.toExponential(2).replace(/\.00e/, 'e').replace(/(\.\d*[1-9])0+e/, '$1e').replace('e+', 'e');
+  }
+  return trimDecimalLabel(fixed);
 }
 
 function trendTimeLabel(timestamp, includeSeconds = false) {

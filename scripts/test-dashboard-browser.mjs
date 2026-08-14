@@ -560,20 +560,74 @@ try {
     cumulativeRatePrecisionContract = await cdp.evaluate(`(() => {
       const previous = state.overview;
       const candidate = structuredClone(previous);
-      candidate.edgeproxy_metrics.requests_per_second = 0.004;
       candidate.edgeproxy_metrics.total.requests = Math.max(1, Number(candidate.edgeproxy_metrics.total.requests || 0));
-      state.overview = candidate;
-      renderOverview();
+      const renderRate = value => {
+        candidate.edgeproxy_metrics.requests_per_second = value;
+        state.overview = candidate;
+        renderOverview();
+        return document.getElementById('kpi-rps').textContent.trim();
+      };
       const result = {
-        label:document.getElementById('kpi-rps').textContent.trim(),
-        value:candidate.edgeproxy_metrics.requests_per_second
+        lowLabel:renderRate(0.004),
+        tinyLabel:renderRate(0.000004),
+        extremeLabel:renderRate(0.0000000004),
+        lowValue:0.004,
+        tinyValue:0.000004,
+        extremeValue:0.0000000004
       };
       state.overview = previous;
       renderAll();
       return result;
     })()`);
-    if (cumulativeRatePrecisionContract.label !== '0.004 req/s avg since start · 0 canceled') {
-      throw new Error(`Low non-zero cumulative request rate was rounded misleadingly: ${JSON.stringify(cumulativeRatePrecisionContract)}`);
+    if (cumulativeRatePrecisionContract.lowLabel !== '0.004 req/s avg since start · 0 canceled' ||
+        cumulativeRatePrecisionContract.tinyLabel !== '0.000004 req/s avg since start · 0 canceled' ||
+        cumulativeRatePrecisionContract.extremeLabel !== '4e-10 req/s avg since start · 0 canceled') {
+      throw new Error(`Low non-zero cumulative request rates were rounded misleadingly: ${JSON.stringify(cumulativeRatePrecisionContract)}`);
+    }
+  }
+
+  let percentageTruthfulnessContract = null;
+  if (fixtureRoot) {
+    percentageTruthfulnessContract = await cdp.evaluate(`(() => {
+      const previous = state.overview;
+      const candidate = structuredClone(previous);
+      candidate.security_metrics.total.requests = 25000;
+      candidate.security_metrics.total.canceled_requests = 0;
+      candidate.security_metrics.total.allowed = 24999;
+      candidate.security_metrics.total.blocked = 1;
+      candidate.security_metrics.total.block_rate = 0.00004;
+      candidate.security_metrics.total.detections = 1;
+      candidate.security_metrics.total.detection_rate = 0.00004;
+      candidate.connectivity.components[0].checks = 10000;
+      candidate.connectivity.components[0].successful_checks = 9996;
+      candidate.connectivity.components[0].availability_percent = 99.96;
+      state.overview = candidate;
+      renderOverview();
+      const result = {
+        blockRate:document.getElementById('kpi-block-rate').textContent.trim(),
+        detectionRate:document.getElementById('kpi-detection-rate').textContent.trim(),
+        componentText:document.querySelector('#connectivity-components .component-check')?.textContent || '',
+        tinyPercent:percentageLabel(0.004),
+        subThresholdPercent:percentageLabel(0.0000004),
+        nearHundred:percentageLabel(99.96),
+        subHundredThreshold:percentageLabel(99.9999996),
+        exactZero:percentageLabel(0),
+        exactHundred:percentageLabel(100)
+      };
+      state.overview = previous;
+      renderAll();
+      return result;
+    })()`);
+    if (percentageTruthfulnessContract.blockRate !== '0.004% rejection rate' ||
+        percentageTruthfulnessContract.detectionRate !== '0.004% detection rate' ||
+        !percentageTruthfulnessContract.componentText.includes('Availability 99.96%') ||
+        percentageTruthfulnessContract.tinyPercent !== '0.004%' ||
+        percentageTruthfulnessContract.subThresholdPercent !== '<0.000001%' ||
+        percentageTruthfulnessContract.nearHundred !== '99.96%' ||
+        percentageTruthfulnessContract.subHundredThreshold !== '>99.999999%' ||
+        percentageTruthfulnessContract.exactZero !== '0.0%' ||
+        percentageTruthfulnessContract.exactHundred !== '100.0%') {
+      throw new Error(`Percentage truthfulness contract failed: ${JSON.stringify(percentageTruthfulnessContract)}`);
     }
   }
 
@@ -2165,7 +2219,7 @@ try {
     semantic_color_contract:semanticColorContract, topbar_layouts:topbarLayouts, security_explorer_layouts:securityExplorerLayouts,
     connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
-    authentication_ui_contract:authenticationUIContract, cumulative_rate_precision_contract:cumulativeRatePrecisionContract, telemetry_availability_contract:telemetryAvailabilityContract,
+    authentication_ui_contract:authenticationUIContract, cumulative_rate_precision_contract:cumulativeRatePrecisionContract, percentage_truthfulness_contract:percentageTruthfulnessContract, telemetry_availability_contract:telemetryAvailabilityContract,
     client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract, telemetry_trend_outlier_contract:telemetryTrendOutlierContract, telemetry_trend_series_isolation_contract:telemetryTrendSeriesIsolationContract, telemetry_trend_latest_availability_contract:telemetryTrendLatestAvailabilityContract, telemetry_trend_empty_contract:telemetryTrendEmptyContract,
     undefined_metric_rendering_contract:undefinedMetricRenderingContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
   }, null, 2));

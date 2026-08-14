@@ -638,62 +638,13 @@ PY
 validate_external_url() {
   local key=$1 required_scheme=${2:-} network_scope=${3:-any} value
   value=$(getv "$key")
-  python3 - "$key" "$value" "$required_scheme" "$network_scope" <<'PY' || fail=1
-import ipaddress, socket, sys
-from urllib.parse import urlparse
-key, raw, required, scope = sys.argv[1:]
-try:
-    parsed = urlparse(raw)
-    port = parsed.port
-except ValueError as exc:
-    raise SystemExit(f"{key} is not a valid URL: {exc}")
-if not parsed.scheme or not parsed.hostname:
-    raise SystemExit(f"{key} must include scheme and hostname: {raw}")
-scheme = parsed.scheme.lower()
-if scheme not in {"http", "https"}:
-    raise SystemExit(f"{key} must use http or https: {raw}")
-if parsed.username or parsed.password:
-    raise SystemExit(f"{key} must not embed credentials")
-if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
-    raise SystemExit(f"{key} must be an endpoint origin without path/query/fragment: {raw}")
-if required and scheme != required:
-    raise SystemExit(f"{key} must use {required}: {raw}")
-host = parsed.hostname.rstrip('.').lower()
-if host in {"localhost", "localhost.localdomain", "example.com", "example.net", "example.org", "example.invalid"} or host.endswith((".localhost", ".local", ".test", ".invalid", ".example.com", ".example.net", ".example.org")):
-    raise SystemExit(f"{key} still contains a local/placeholder hostname: {host}")
-
-def unsafe_private_admin(ip):
-    return ip.is_loopback or ip.is_unspecified or ip.is_multicast or ip.is_global or ip.is_reserved
-
-try:
-    ip = ipaddress.ip_address(host)
-except ValueError:
-    ip = None
-else:
-    if ip.is_loopback or ip.is_unspecified or ip.is_multicast:
-        raise SystemExit(f"{key} points at container-local/unspecified/multicast address: {ip}")
-
-if scope == "private":
-    if ip is not None:
-        addresses = {ip}
-    else:
-        try:
-            infos = socket.getaddrinfo(host, port or (443 if scheme == "https" else 80), type=socket.SOCK_STREAM)
-        except socket.gaierror as exc:
-            raise SystemExit(f"{key} hostname must resolve during preflight for private/VPN HTTP validation: {host}: {exc}")
-        addresses = set()
-        for info in infos:
-            try:
-                addresses.add(ipaddress.ip_address(info[4][0]))
-            except ValueError:
-                continue
-        if not addresses:
-            raise SystemExit(f"{key} hostname resolved to no usable IP addresses: {host}")
-    unsafe = sorted(str(addr) for addr in addresses if unsafe_private_admin(addr))
-    if unsafe:
-        raise SystemExit(f"{key} HTTP Admin endpoint must stay on private/VPN addressing; unsafe address(es): {', '.join(unsafe)}")
-PY
+  local -a args=(--key "$key" --value "$value" --scope "$network_scope")
+  if [[ -n "$required_scheme" ]]; then
+    args+=(--required-scheme "$required_scheme")
+  fi
+  python3 "$script_dir/check-production-endpoint.py" "${args[@]}" || fail=1
 }
+
 
 
 # Production Docker is intentionally Linux-first. No host service users or
@@ -764,11 +715,12 @@ if [[ "$mode" == securityedge || "$mode" == platform ]]; then
   require_owner_group "$security_logs" "$security_uid" "$security_gid" "SecurityEdge log directory" || fail=1
   reject_group_world_writable "$security_logs" "SecurityEdge log directory" || fail=1
 fi
-for guarded_dir in "$edge_tls" "$security_tls"; do
-  if [[ -d "$guarded_dir" ]] || { [[ ${#sudo_cmd[@]} -gt 0 ]] && "${sudo_cmd[@]}" test -d "$guarded_dir" 2>/dev/null; }; then
-    require_root_owner "$guarded_dir" "TLS directory" || fail=1
-    reject_group_world_writable "$guarded_dir" "TLS directory" || fail=1
-  fi
+tls_dirs=()
+if [[ "$mode" == edgeproxy || "$mode" == platform ]]; then tls_dirs+=("$edge_tls"); fi
+if [[ "$mode" == securityedge || "$mode" == platform ]]; then tls_dirs+=("$security_tls"); fi
+for guarded_dir in "${tls_dirs[@]}"; do
+  require_root_owner "$guarded_dir" "TLS directory" || fail=1
+  reject_group_world_writable "$guarded_dir" "TLS directory" || fail=1
 done
 
 # EdgeProxy state is writable only when EdgeProxy itself is containerized.

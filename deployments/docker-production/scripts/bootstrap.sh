@@ -14,8 +14,9 @@ service account, or previous SecureEdge installation is required. The script:
   - assigns numeric container UID/GID ownership without creating host users.
 
 Existing configuration, state, TLS material, CA certificates and secrets are
-never overwritten. For an existing systemd installation use import-systemd.sh
-explicitly after this bootstrap; migration is optional, not a runtime dependency.
+never overwritten. For an existing systemd installation, do not seed fresh-install
+state first: create/review .env and run import-systemd.sh directly. Migration is
+optional and is never a runtime dependency.
 USAGE
 }
 
@@ -126,7 +127,9 @@ secret_dir="$root/secrets"
 
 "${sudo_cmd[@]}" install -d -o 0 -g 0 -m 0755 "$root"
 "${sudo_cmd[@]}" install -d -o "$edge_uid" -g "$edge_gid" -m 0750 "$edge_state"
-"${sudo_cmd[@]}" install -d -o 0 -g "$edge_gid" -m 0750 "$edge_tls"
+if [[ "$mode" == edgeproxy || "$mode" == platform ]]; then
+  "${sudo_cmd[@]}" install -d -o 0 -g "$edge_gid" -m 0750 "$edge_tls"
+fi
 "${sudo_cmd[@]}" install -d -o 0 -g 0 -m 0755 "$ca_dir"
 "${sudo_cmd[@]}" install -d -o 0 -g 0 -m 0700 "$secret_dir"
 

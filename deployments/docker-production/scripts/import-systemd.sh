@@ -116,7 +116,9 @@ esac
 # unnecessary placeholders or transient credentials.
 "${sudo_cmd[@]}" install -d -o 0 -g 0 -m 0755 "$root"
 "${sudo_cmd[@]}" install -d -o "$edge_uid" -g "$edge_gid" -m 0750 "$root/edgeproxy"
-"${sudo_cmd[@]}" install -d -o 0 -g "$edge_gid" -m 0750 "$root/tls/edgeproxy"
+if [[ "$mode" == edgeproxy || "$mode" == platform ]]; then
+  "${sudo_cmd[@]}" install -d -o 0 -g "$edge_gid" -m 0750 "$root/tls/edgeproxy"
+fi
 "${sudo_cmd[@]}" install -d -o 0 -g 0 -m 0755 "$root/ca"
 "${sudo_cmd[@]}" install -d -o 0 -g 0 -m 0700 "$root/secrets"
 if [[ "$mode" == securityedge || "$mode" == platform ]]; then
@@ -219,12 +221,14 @@ fi
 # TLS private material remains root-owned but readable by the matching
 # container group. Do not weaken permissions if a stricter source is already
 # valid; doctor.sh performs the final path/key validation.
-"${sudo_cmd[@]}" chown -R 0:"$edge_gid" "$root/tls/edgeproxy" 2>/dev/null || true
-"${sudo_cmd[@]}" chmod 0750 "$root/tls/edgeproxy" 2>/dev/null || true
-if [[ ${#sudo_cmd[@]} -gt 0 ]]; then
-  "${sudo_cmd[@]}" find "$root/tls/edgeproxy" -type f -exec chmod 0640 '{}' + 2>/dev/null || true
-else
-  find "$root/tls/edgeproxy" -type f -exec chmod 0640 '{}' + 2>/dev/null || true
+if [[ "$mode" == edgeproxy || "$mode" == platform ]]; then
+  "${sudo_cmd[@]}" chown -R 0:"$edge_gid" "$root/tls/edgeproxy" 2>/dev/null || true
+  "${sudo_cmd[@]}" chmod 0750 "$root/tls/edgeproxy" 2>/dev/null || true
+  if [[ ${#sudo_cmd[@]} -gt 0 ]]; then
+    "${sudo_cmd[@]}" find "$root/tls/edgeproxy" -type f -exec chmod 0640 '{}' + 2>/dev/null || true
+  else
+    find "$root/tls/edgeproxy" -type f -exec chmod 0640 '{}' + 2>/dev/null || true
+  fi
 fi
 if [[ "$mode" == securityedge || "$mode" == platform ]]; then
   "${sudo_cmd[@]}" chown -R 0:"$security_gid" "$root/tls/securityedge" 2>/dev/null || true

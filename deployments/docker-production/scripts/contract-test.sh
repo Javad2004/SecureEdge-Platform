@@ -72,6 +72,11 @@ for compose in "$prod_dir"/compose.*.yml; do
   fi
 done
 
+# Single-service bootstrap/preflight must not couple SecurityEdge-only mode to
+# EdgeProxy TLS material that it neither mounts nor consumes.
+grep -q 'if \[\[ "$mode" == edgeproxy || "$mode" == platform \]\]; then' "$script_dir/bootstrap.sh"
+grep -q 'tls_dirs=()' "$script_dir/doctor.sh"
+
 grep -q 'condition: service_healthy' "$prod_dir/compose.platform.yml"
 grep -q '28, 0, 0' "$script_dir/doctor.sh"
 grep -q 'EDGEPROXY_UID and SECURITYEDGE_UID must be different' "$script_dir/doctor.sh"
@@ -122,6 +127,8 @@ for bad_origin in \
   'https://localhost.:443' \
   'https://0.0.0.0:443' \
   'https://169.254.10.20:443' \
+  'https://origin.prod.secureedge.internal:0' \
+  'https://origin.prod.secureedge.internal:' \
   'https://bad host:443' \
   'https:///missing-host'; do
   bad_profile=$(python3 - "$bad_origin" <<'PYBAD'
@@ -134,6 +141,30 @@ PYBAD
     exit 1
   fi
 done
+
+# SecurityEdge-only external endpoints use a dedicated structural validator so
+# malformed service names or unusable ports fail before container startup.
+endpoint_checker="$script_dir/check-production-endpoint.py"
+python3 "$endpoint_checker" --key DATA --value 'https://edge.prod.secureedge.internal:8443' --required-scheme https --scope any
+python3 "$endpoint_checker" --key ADMIN --value 'http://10.123.45.68:9090' --required-scheme http --scope private
+for bad_endpoint in \
+  'https://bad_host:8443' \
+  'https://edge.prod.secureedge.internal:0' \
+  'https://edge.prod.secureedge.internal:' \
+  'https://localhost.:8443' \
+  'https://169.254.10.20:8443' \
+  'https://user:pass@edge.prod.secureedge.internal:8443' \
+  'https://edge.prod.secureedge.internal:8443/path' \
+  'https://edge.example.invalid:8443'; do
+  if python3 "$endpoint_checker" --key DATA --value "$bad_endpoint" --required-scheme https --scope any >/dev/null 2>&1; then
+    echo "production external-endpoint guardrail accepted invalid endpoint: $bad_endpoint" >&2
+    exit 1
+  fi
+done
+if python3 "$endpoint_checker" --key ADMIN --value 'http://8.8.8.8:9090' --required-scheme http --scope private >/dev/null 2>&1; then
+  echo 'production external Admin guardrail accepted globally routed HTTP endpoint' >&2
+  exit 1
+fi
 
 # The fixed full-platform address has an explicit gateway/network identity so
 # upgrades can distinguish the deployment's own existing bridge from conflicts.

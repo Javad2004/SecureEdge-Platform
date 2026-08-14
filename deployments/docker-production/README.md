@@ -275,7 +275,10 @@ docker compose --env-file .env -f compose.securityedge.yml up -d --build
 
 This mode uses an ordinary bridge network; it does not assume an EdgeProxy on
 host loopback. `SECURITYEDGE_EXTERNAL_EDGEPROXY_URL` and its Admin URL identify
-the real independently operated peer.
+the real independently operated peer. Preflight structurally validates both
+endpoints, including DNS-host syntax, usable ports, credentials and URL
+components; the HTTP Admin endpoint additionally must resolve only to a trusted
+private/VPN address.
 
 ### Full platform
 

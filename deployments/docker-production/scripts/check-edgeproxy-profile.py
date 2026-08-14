@@ -123,10 +123,14 @@ def main() -> int:
                 parsed = urlparse(raw_url)
                 # Accessing .port forces malformed/non-numeric/out-of-range ports
                 # to raise ValueError instead of being silently accepted here.
-                _ = parsed.port
+                port = parsed.port
             except ValueError as exc:
                 problems.append(f"{route_name}: invalid Origin URL {raw_url!r}: {exc}")
                 continue
+            if parsed.netloc.endswith(":"):
+                problems.append(f"{route_name}: Origin URL has ':' without a port: {raw_url}")
+            if port == 0:
+                problems.append(f"{route_name}: Origin URL port must be between 1 and 65535: {raw_url}")
 
             scheme = parsed.scheme.lower()
             hostname = parsed.hostname or ""

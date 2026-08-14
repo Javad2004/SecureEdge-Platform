@@ -38,3 +38,7 @@
 **/.DS_Store
 **/Thumbs.db
 **/desktop.ini
+
+# Production Docker secrets are runtime mounts only. Never send them to the
+# production root build context, even though Dockerfiles do not COPY them.
+deployments/docker-production/secrets/

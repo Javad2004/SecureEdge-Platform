@@ -465,12 +465,12 @@ function trendQuantile(sortedValues, quantile) {
   return sortedValues[lower] * (1 - weight) + sortedValues[upper] * weight;
 }
 
-function trendScaleModel(values) {
-  const finite = values.map(nonNegativeRate).filter(Number.isFinite);
+function trendSeriesScaleProfile(values) {
+  const finite = (Array.isArray(values) ? values : []).map(nonNegativeRate).filter(Number.isFinite);
   const rawMaximum = finite.length ? Math.max(...finite) : 0;
   const positive = finite.filter(value => value > 0).sort((a, b) => a - b);
   if (positive.length < 8 || rawMaximum <= 0) {
-    return {maximum:niceTrendMaximum(rawMaximum), rawMaximum, outlierCount:0, clipped:false};
+    return {ordinaryMaximum:rawMaximum, rawMaximum, outlierCount:0};
   }
 
   const median = trendQuantile(positive, 0.5);
@@ -482,8 +482,21 @@ function trendScaleModel(values) {
   const ordinaryMaximum = ordinary.length ? Math.max(...ordinary) : median;
   const outlierLimit = Math.max(2, Math.ceil(positive.length * 0.15));
   const clearlySeparated = ordinaryMaximum > 0 && rawMaximum >= ordinaryMaximum * 2.5;
-
   if (outlierCount > 0 && outlierCount <= outlierLimit && clearlySeparated) {
+    return {ordinaryMaximum, rawMaximum, outlierCount};
+  }
+  return {ordinaryMaximum:rawMaximum, rawMaximum, outlierCount:0};
+}
+
+function trendScaleModel(seriesValues) {
+  const series = Array.isArray(seriesValues) && seriesValues.some(Array.isArray)
+    ? seriesValues
+    : [Array.isArray(seriesValues) ? seriesValues : []];
+  const profiles = series.map(trendSeriesScaleProfile);
+  const rawMaximum = profiles.length ? Math.max(...profiles.map(profile => profile.rawMaximum)) : 0;
+  const ordinaryMaximum = profiles.length ? Math.max(...profiles.map(profile => profile.ordinaryMaximum)) : 0;
+  const outlierCount = profiles.reduce((total, profile) => total + profile.outlierCount, 0);
+  if (outlierCount > 0 && ordinaryMaximum > 0 && ordinaryMaximum < rawMaximum) {
     const maximum = niceTrendMaximum(ordinaryMaximum * 1.18);
     if (maximum > 0 && maximum < rawMaximum) {
       return {maximum, rawMaximum, outlierCount, clipped:true};
@@ -546,8 +559,10 @@ function drawTrend() {
   };
   const plotWidth = Math.max(1, plot.right - plot.left);
   const plotHeight = Math.max(1, plot.bottom - plot.top);
-  const values = state.trend.flatMap(point => [point.requests, point.blocked]).filter(Number.isFinite);
-  const scaleModel = trendScaleModel(values);
+  const requestValues = state.trend.map(point => point.requests).filter(Number.isFinite);
+  const blockedValues = state.trend.map(point => point.blocked).filter(Number.isFinite);
+  const values = [...requestValues, ...blockedValues];
+  const scaleModel = trendScaleModel([requestValues, blockedValues]);
   const rawMaximum = scaleModel.rawMaximum;
   const maximum = scaleModel.maximum;
   const bounds = trendTimeBounds(state.trend);
@@ -639,7 +654,7 @@ function drawTrend() {
   const blockedCount = state.trend.filter(point => Number.isFinite(point.blocked)).length;
   const requestLatest = trendLatestValue('requests');
   const blockedLatest = trendLatestValue('blocked');
-  const rateText = value => Number.isFinite(value) ? `${trendRateLabel(value, Math.max(value, rawMaximum))} req/s` : 'Unavailable';
+  const rateText = value => Number.isFinite(value) ? `${trendRateLabel(value)} req/s` : 'Unavailable';
   $('trend-requests-latest').textContent = rateText(requestLatest);
   $('trend-blocked-latest').textContent = rateText(blockedLatest);
 

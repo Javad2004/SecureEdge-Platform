@@ -1,0 +1,71 @@
+name: secureedge-edgeproxy-production
+
+services:
+  edgeproxy:
+    image: "${EDGEPROXY_IMAGE:-secureedge/edgeproxy:production}"
+    build:
+      context: ../..
+      dockerfile: deployments/docker-production/Dockerfile.edgeproxy
+      args:
+        VERSION: "${SECUREEDGE_VERSION:-production}"
+        COMMIT: "${SECUREEDGE_COMMIT:-unknown}"
+        BUILD_TIME: "${SECUREEDGE_BUILD_TIME:-unknown}"
+    network_mode: host
+    user: "${EDGEPROXY_UID:?set EDGEPROXY_UID}:${EDGEPROXY_GID:?set EDGEPROXY_GID}"
+    command:
+      - -config
+      - /app/config/config.json
+    environment:
+      SSL_CERT_DIR: /etc/secureedge/ca:/etc/ssl/certs
+    secrets:
+      - edgeproxy_admin_token
+    volumes:
+      - type: bind
+        source: "${EDGEPROXY_STATE_DIR:-/var/lib/edgeproxy}"
+        target: /app/config
+      - type: bind
+        source: "${EDGEPROXY_TLS_DIR:-/etc/edgeproxy/tls}"
+        target: /etc/edgeproxy/tls
+        read_only: true
+      - type: bind
+        source: "${SECUREEDGE_CA_DIR:-/etc/secureedge/ca}"
+        target: /etc/secureedge/ca
+        read_only: true
+    working_dir: /app/config
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    cpus: "${EDGEPROXY_CPUS:-0.75}"
+    mem_limit: "${EDGEPROXY_MEMORY_LIMIT:-512m}"
+    pids_limit: "${EDGEPROXY_PIDS_LIMIT:-256}"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:${EDGEPROXY_ADMIN_PORT:-9090}/readyz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    labels:
+      com.secureedge.deployment: production
+      com.secureedge.role: edgeproxy
+
+secrets:
+  edgeproxy_admin_token:
+    file: "${EDGEPROXY_ADMIN_TOKEN_FILE:-./secrets/edgeproxy_admin_token}"

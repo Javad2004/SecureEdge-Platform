@@ -1,0 +1,50 @@
+# syntax=docker/dockerfile:1.7
+FROM golang:1.26.5-alpine3.24 AS build
+
+ARG VERSION=production
+ARG COMMIT=unknown
+ARG BUILD_TIME=unknown
+
+WORKDIR /src
+
+COPY apps/securityedge/go.mod ./
+COPY apps/securityedge/ ./
+
+RUN CGO_ENABLED=0 go test ./... \
+ && CGO_ENABLED=0 go build -trimpath \
+    -ldflags="-s -w \
+    -X github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/version.Version=${VERSION} \
+    -X github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/version.Commit=${COMMIT} \
+    -X github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/version.BuildTime=${BUILD_TIME}" \
+    -o /out/securityedge ./cmd/securityedge
+
+FROM alpine:3.24
+
+ARG VERSION=production
+ARG COMMIT=unknown
+ARG BUILD_TIME=unknown
+
+LABEL org.opencontainers.image.title="SecureEdge SecurityEdge" \
+      org.opencontainers.image.description="Production SecureEdge WAF and operations dashboard" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${COMMIT}" \
+      org.opencontainers.image.created="${BUILD_TIME}"
+
+RUN apk add --no-cache ca-certificates wget \
+ && addgroup -S -g 10002 app \
+ && adduser -S -D -H -u 10002 -G app app \
+ && mkdir -p /app/config /app/logs /etc/securityedge/tls /etc/secureedge/ca /usr/local/libexec \
+ && chown -R app:app /app/config /app/logs
+
+COPY --from=build /out/securityedge /usr/local/bin/securityedge
+COPY deployments/docker-production/scripts/run-securityedge.sh /usr/local/libexec/run-securityedge.sh
+RUN chmod 0555 /usr/local/bin/securityedge /usr/local/libexec/run-securityedge.sh
+
+WORKDIR /app
+USER 10002:10002
+
+EXPOSE 443 8443 9191
+STOPSIGNAL SIGTERM
+
+ENTRYPOINT ["/usr/local/libexec/run-securityedge.sh"]
+CMD ["-config", "/app/config/securityedge.json"]

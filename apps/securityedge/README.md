@@ -745,6 +745,8 @@ docker compose `
 
 See [../../deployments/docker/README.md](../../deployments/docker/README.md) for service topology, volumes, ports, and credential overrides.
 
+For production Docker operation, including the SecurityEdge-only migration profile and the full private-network platform deployment, use [`../../deployments/docker-production/README.md`](../../deployments/docker-production/README.md). The existing application Docker workflow remains the local/demo path.
+
 ## Privacy and log handling
 
 SecurityEdge avoids retaining raw sensitive attack payloads in recent-traffic telemetry. Security events use bounded in-memory storage and optional NDJSON persistence with rotation. Historical telemetry stores only aggregate counters, rates, latency summaries, health outcomes, and Route/Origin names; it never stores request bodies, headers, credentials, or client payloads.

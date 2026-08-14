@@ -584,6 +584,8 @@ docker build `
   .
 ```
 
+For production Docker operation, including the EdgeProxy-only migration profile and the full private-network platform deployment, use [`../../deployments/docker-production/README.md`](../../deployments/docker-production/README.md). The existing application Docker workflow remains the local/demo path.
+
 ## Security guidance
 
 - In integrated mode, keep ports `8080` and `9090` on loopback.

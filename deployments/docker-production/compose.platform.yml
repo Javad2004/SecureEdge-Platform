@@ -1,0 +1,181 @@
+name: secureedge-platform-production
+
+services:
+  edgeproxy:
+    image: "${EDGEPROXY_IMAGE:-secureedge/edgeproxy:production}"
+    build:
+      context: ../..
+      dockerfile: deployments/docker-production/Dockerfile.edgeproxy
+      args:
+        VERSION: "${SECUREEDGE_VERSION:-production}"
+        COMMIT: "${SECUREEDGE_COMMIT:-unknown}"
+        BUILD_TIME: "${SECUREEDGE_BUILD_TIME:-unknown}"
+    user: "${EDGEPROXY_UID:?set EDGEPROXY_UID}:${EDGEPROXY_GID:?set EDGEPROXY_GID}"
+    command:
+      - -config
+      - /app/config/config.json
+    environment:
+      SSL_CERT_DIR: /etc/secureedge/ca:/etc/ssl/certs
+      EDGEPROXY_SERVER_LISTEN_ADDR: "0.0.0.0:${EDGEPROXY_INTERNAL_PORT:-8443}"
+      EDGEPROXY_ADMIN_LISTEN_ADDR: "0.0.0.0:9090"
+      EDGEPROXY_TRUSTED_PROXY_CIDRS: "${SECURITYEDGE_TRUSTED_PROXY_CIDR:-172.31.250.10/32}"
+      EDGEPROXY_TLS_ENABLED: "${EDGEPROXY_INTERNAL_TLS_ENABLED:-true}"
+      EDGEPROXY_TLS_CERT_FILE: "${EDGEPROXY_TLS_CERT_FILE_CONTAINER:-/etc/edgeproxy/tls/fullchain.pem}"
+      EDGEPROXY_TLS_KEY_FILE: "${EDGEPROXY_TLS_KEY_FILE_CONTAINER:-/etc/edgeproxy/tls/privkey.pem}"
+    secrets:
+      - edgeproxy_admin_token
+    ports:
+      - "127.0.0.1:${EDGEPROXY_ADMIN_PORT:-9090}:9090"
+    volumes:
+      - type: bind
+        source: "${EDGEPROXY_STATE_DIR:-/var/lib/edgeproxy}"
+        target: /app/config
+      - type: bind
+        source: "${EDGEPROXY_TLS_DIR:-/etc/edgeproxy/tls}"
+        target: /etc/edgeproxy/tls
+        read_only: true
+      - type: bind
+        source: "${SECUREEDGE_CA_DIR:-/etc/secureedge/ca}"
+        target: /etc/secureedge/ca
+        read_only: true
+    working_dir: /app/config
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    cpus: "${EDGEPROXY_CPUS:-0.75}"
+    mem_limit: "${EDGEPROXY_MEMORY_LIMIT:-512m}"
+    pids_limit: "${EDGEPROXY_PIDS_LIMIT:-256}"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9090/readyz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    networks:
+      backend:
+        aliases:
+          - "${EDGEPROXY_INTERNAL_HOSTNAME:-edgeproxy.example.com}"
+    labels:
+      com.secureedge.deployment: production
+      com.secureedge.role: edgeproxy
+
+  securityedge:
+    image: "${SECURITYEDGE_IMAGE:-secureedge/securityedge:production}"
+    build:
+      context: ../..
+      dockerfile: deployments/docker-production/Dockerfile.securityedge
+      args:
+        VERSION: "${SECUREEDGE_VERSION:-production}"
+        COMMIT: "${SECUREEDGE_COMMIT:-unknown}"
+        BUILD_TIME: "${SECUREEDGE_BUILD_TIME:-unknown}"
+    depends_on:
+      edgeproxy:
+        condition: service_started
+    user: "${SECURITYEDGE_UID:?set SECURITYEDGE_UID}:${SECURITYEDGE_GID:?set SECURITYEDGE_GID}"
+    group_add:
+      - "${EDGEPROXY_GID:?set EDGEPROXY_GID}"
+    command:
+      - -config
+      - /app/config/securityedge.json
+    environment:
+      SSL_CERT_DIR: /etc/secureedge/ca:/etc/ssl/certs
+      SECURITYEDGE_SERVER_LISTEN_ADDR: "0.0.0.0:${SECURITYEDGE_CONTAINER_HTTPS_PORT:-8443}"
+      SECURITYEDGE_ADMIN_LISTEN_ADDR: "0.0.0.0:9191"
+      SECURITYEDGE_UPSTREAM_PROXY_URL: "${EDGEPROXY_INTERNAL_SCHEME:-https}://${EDGEPROXY_INTERNAL_HOSTNAME:-edgeproxy.example.com}:${EDGEPROXY_INTERNAL_PORT:-8443}"
+      SECURITYEDGE_EDGEPROXY_ADMIN_URL: "http://${EDGEPROXY_INTERNAL_HOSTNAME:-edgeproxy.example.com}:9090"
+      SECURITYEDGE_EDGEPROXY_CONFIG_PATH: /edgeproxy-config/config.json
+      SECURITYEDGE_TLS_ENABLED: "true"
+      SECURITYEDGE_TLS_CERT_FILE: "${SECURITYEDGE_TLS_CERT_FILE_CONTAINER:-/etc/securityedge/tls/fullchain.pem}"
+      SECURITYEDGE_TLS_KEY_FILE: "${SECURITYEDGE_TLS_KEY_FILE_CONTAINER:-/etc/securityedge/tls/privkey.pem}"
+      SECURITYEDGE_TRUSTED_PROXY_CIDRS: "${SECURITYEDGE_TRUSTED_PROXY_CIDRS:-}"
+      SECURITYEDGE_LOG_FILE_PATH: /app/logs/security-events.ndjson
+      SECURITYEDGE_TELEMETRY_HISTORY_FILE: /app/config/telemetry-history.json
+    secrets:
+      - securityedge_admin_token
+      - edgeproxy_admin_token
+    ports:
+      - "${SECURITYEDGE_HTTPS_BIND_IP:-0.0.0.0}:${SECURITYEDGE_HTTPS_PORT:-443}:${SECURITYEDGE_CONTAINER_HTTPS_PORT:-8443}"
+      - "127.0.0.1:${SECURITYEDGE_ADMIN_PORT:-9191}:9191"
+    volumes:
+      - type: bind
+        source: "${SECURITYEDGE_STATE_DIR:-/var/lib/securityedge}"
+        target: /app/config
+      - type: bind
+        source: "${SECURITYEDGE_LOG_DIR:-/var/log/securityedge}"
+        target: /app/logs
+      - type: bind
+        source: "${SECURITYEDGE_TLS_DIR:-/etc/securityedge/tls}"
+        target: /etc/securityedge/tls
+        read_only: true
+      - type: bind
+        source: "${SECUREEDGE_CA_DIR:-/etc/secureedge/ca}"
+        target: /etc/secureedge/ca
+        read_only: true
+      - type: bind
+        source: "${EDGEPROXY_STATE_DIR:-/var/lib/edgeproxy}"
+        target: /edgeproxy-config
+        read_only: true
+    working_dir: /app/config
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    cpus: "${SECURITYEDGE_CPUS:-1.00}"
+    mem_limit: "${SECURITYEDGE_MEMORY_LIMIT:-768m}"
+    pids_limit: "${SECURITYEDGE_PIDS_LIMIT:-384}"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9191/readyz || exit 1"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    networks:
+      backend:
+        ipv4_address: "${SECURITYEDGE_CONTAINER_IPV4:-172.31.250.10}"
+    labels:
+      com.secureedge.deployment: production
+      com.secureedge.role: securityedge
+
+networks:
+  backend:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: "${SECUREEDGE_PROD_SUBNET:-172.31.250.0/24}"
+
+secrets:
+  securityedge_admin_token:
+    file: "${SECURITYEDGE_ADMIN_TOKEN_FILE:-./secrets/securityedge_admin_token}"
+  edgeproxy_admin_token:
+    file: "${EDGEPROXY_ADMIN_TOKEN_FILE:-./secrets/edgeproxy_admin_token}"

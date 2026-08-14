@@ -1,0 +1,41 @@
+# syntax=docker/dockerfile:1.7
+FROM golang:1.26.5-alpine3.24 AS build
+
+WORKDIR /src
+
+COPY apps/edgeproxy/go.mod ./
+COPY apps/edgeproxy/ ./
+
+RUN CGO_ENABLED=0 go test ./... \
+ && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/edgeproxy ./cmd/edgeproxy
+
+FROM alpine:3.24
+
+ARG VERSION=production
+ARG COMMIT=unknown
+ARG BUILD_TIME=unknown
+
+LABEL org.opencontainers.image.title="SecureEdge EdgeProxy" \
+      org.opencontainers.image.description="Production SecureEdge reverse proxy and cache" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${COMMIT}" \
+      org.opencontainers.image.created="${BUILD_TIME}"
+
+RUN apk add --no-cache ca-certificates wget \
+ && addgroup -S -g 10001 app \
+ && adduser -S -D -H -u 10001 -G app app \
+ && mkdir -p /app/config /etc/edgeproxy/tls /etc/secureedge/ca /usr/local/libexec \
+ && chown -R app:app /app/config
+
+COPY --from=build /out/edgeproxy /usr/local/bin/edgeproxy
+COPY deployments/docker-production/scripts/run-edgeproxy.sh /usr/local/libexec/run-edgeproxy.sh
+RUN chmod 0555 /usr/local/bin/edgeproxy /usr/local/libexec/run-edgeproxy.sh
+
+WORKDIR /app
+USER 10001:10001
+
+EXPOSE 443 8080 8443 9090
+STOPSIGNAL SIGTERM
+
+ENTRYPOINT ["/usr/local/libexec/run-edgeproxy.sh"]
+CMD ["-config", "/app/config/config.json"]

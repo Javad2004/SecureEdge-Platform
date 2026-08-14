@@ -345,7 +345,7 @@ Install EdgeProxy first, then SecurityEdge. Use the application READMEs for the 
 
 ## Docker
 
-The repository provides two container workflows.
+The repository keeps its existing demo container workflows and also provides a separate production Docker deployment family.
 
 ### Standalone EdgeProxy demonstration
 
@@ -435,7 +435,13 @@ docker build `
 
 The image defaults to the container-specific profile at `/app/config/securityedge.json`. That profile uses Docker service names and expects services named `edgeproxy` and `origin`; use the full-platform Compose file for the supported multi-container workflow.
 
-See [deployments/docker/README.md](deployments/docker/README.md) for the complete container contract.
+See [deployments/docker/README.md](deployments/docker/README.md) for the complete demo container contract.
+
+### Production Docker deployments
+
+Production containerization is intentionally separate from the local/demo Compose files. The repository provides three Linux production manifests under [`deployments/docker-production/`](deployments/docker-production/README.md): EdgeProxy-only, SecurityEdge-only, and the complete EdgeProxy + SecurityEdge platform. The single-service modes use host networking to preserve an existing systemd peer's loopback contract during staged migration; the combined mode uses a private bridge, publishes only the SecurityEdge data plane publicly, keeps both Admin endpoints loopback-only, and routes EdgeProxy to a real external Origin such as a Tailscale/VPN endpoint.
+
+The production definitions use dedicated multi-stage production Dockerfiles and reuse systemd-compatible state paths for safe migration/rollback. Containers run with non-root host-compatible UID/GID values, use Docker secrets for Admin credentials, mount TLS read-only, keep root filesystems read-only, drop capabilities, enforce configurable CPU/memory/PID limits, rotate container logs, and include bootstrap, TLS/route/network preflight, image-build, and application-config validation helpers. The combined profile defaults to HTTPS on both public ingress and the SecurityEdge → EdgeProxy data hop. The existing demo Dockerfiles and Compose manifests remain unchanged.
 
 ## Administrative credentials
 

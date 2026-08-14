@@ -390,7 +390,7 @@ function renderOverview() {
   const cacheLookups = Number(edgeTotal.cache_hits || 0) + Number(edgeTotal.cache_misses || 0);
   const upstreamSamples = Number(edgeTotal.upstream?.latency_ms?.count || 0);
   $('kpi-requests').textContent = edgeMetricsAvailable ? fmt(edgeTotal.requests) : '—';
-  $('kpi-rps').textContent = edgeMetricsAvailable ? `${Number(edgeMetrics.requests_per_second || 0).toFixed(2)} req/s avg since start · ${fmt(edgeTotal.canceled_requests)} canceled` : 'EdgeProxy metrics unavailable';
+  $('kpi-rps').textContent = edgeMetricsAvailable ? `${trendRateLabel(edgeMetrics.requests_per_second)} req/s avg since start · ${fmt(edgeTotal.canceled_requests)} canceled` : 'EdgeProxy metrics unavailable';
   $('kpi-blocked').textContent = fmt(rejectedCount(total));
   $('kpi-block-rate').textContent = securityDecisions > 0 ? `${pct(total.block_rate)} rejection rate${cancellationSuffix}` : securityRequests > 0 ? `${fmt(securityCanceled)} canceled · no completed decisions` : 'No requests yet';
   $('kpi-detections').textContent = fmt(total.detections);
@@ -531,10 +531,9 @@ function trendTimeBounds(points) {
 }
 
 function trendLatestValue(key) {
-  for (let index = state.trend.length - 1; index >= 0; index -= 1) {
-    if (Number.isFinite(state.trend[index][key])) return state.trend[index][key];
-  }
-  return null;
+  if (!state.trend.length) return null;
+  const value = state.trend[state.trend.length - 1][key];
+  return Number.isFinite(value) ? value : null;
 }
 
 function drawTrend() {

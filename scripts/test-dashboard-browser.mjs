@@ -555,6 +555,28 @@ try {
     authenticationUIContract.authenticated = authenticatedUI;
   }
 
+  let cumulativeRatePrecisionContract = null;
+  if (fixtureRoot) {
+    cumulativeRatePrecisionContract = await cdp.evaluate(`(() => {
+      const previous = state.overview;
+      const candidate = structuredClone(previous);
+      candidate.edgeproxy_metrics.requests_per_second = 0.004;
+      candidate.edgeproxy_metrics.total.requests = Math.max(1, Number(candidate.edgeproxy_metrics.total.requests || 0));
+      state.overview = candidate;
+      renderOverview();
+      const result = {
+        label:document.getElementById('kpi-rps').textContent.trim(),
+        value:candidate.edgeproxy_metrics.requests_per_second
+      };
+      state.overview = previous;
+      renderAll();
+      return result;
+    })()`);
+    if (cumulativeRatePrecisionContract.label !== '0.004 req/s avg since start · 0 canceled') {
+      throw new Error(`Low non-zero cumulative request rate was rounded misleadingly: ${JSON.stringify(cumulativeRatePrecisionContract)}`);
+    }
+  }
+
   let telemetryAvailabilityContract = null;
   if (fixtureRoot) {
     telemetryAvailabilityContract = await cdp.evaluate(`(() => {
@@ -786,6 +808,7 @@ try {
   let telemetryTrendGapContract = null;
   let telemetryTrendOutlierContract = null;
   let telemetryTrendSeriesIsolationContract = null;
+  let telemetryTrendLatestAvailabilityContract = null;
   let telemetryTrendEmptyContract = null;
   if (fixtureRoot) {
     telemetryTrendGapContract = await cdp.evaluate(`(() => {
@@ -994,6 +1017,39 @@ try {
         !telemetryTrendSeriesIsolationContract.scaleText.includes('max 100 req/s') ||
         !telemetryTrendSeriesIsolationContract.summary.includes('highest observed rate is 100 req/s')) {
       throw new Error(`Trend series-isolation/legend-precision contract failed: ${JSON.stringify(telemetryTrendSeriesIsolationContract)}`);
+    }
+
+    telemetryTrendLatestAvailabilityContract = await cdp.evaluate(`(() => {
+      const previous = state.overview;
+      const baseTime = Date.now() - 30000;
+      const candidate = structuredClone(previous);
+      candidate.telemetry_history = {samples:[
+        {generated_at:new Date(baseTime).toISOString(),security:{rejected_rate_available:true,rejected_per_second:0.1},edgeproxy:{available:true,request_rate_available:true,requests_per_second:0.5}},
+        {generated_at:new Date(baseTime+10000).toISOString(),security:{rejected_rate_available:true,rejected_per_second:0.2},edgeproxy:{available:false,request_rate_available:false,requests_per_second:0}},
+        {generated_at:new Date(baseTime+20000).toISOString(),security:{rejected_rate_available:true,rejected_per_second:0.3},edgeproxy:{available:false,request_rate_available:false,requests_per_second:0}}
+      ]};
+      state.overview = candidate;
+      renderOverview();
+      const result = {
+        requestLatest:document.getElementById('trend-requests-latest').textContent,
+        blockedLatest:document.getElementById('trend-blocked-latest').textContent,
+        summary:document.getElementById('trend-chart-summary').textContent,
+        points:state.trend.length,
+        finalRequest:state.trend.at(-1)?.requests ?? null,
+        finalBlocked:state.trend.at(-1)?.blocked ?? null
+      };
+      state.overview = previous;
+      renderAll();
+      return result;
+    })()`);
+    if (telemetryTrendLatestAvailabilityContract.points !== 3 ||
+        telemetryTrendLatestAvailabilityContract.finalRequest !== null ||
+        telemetryTrendLatestAvailabilityContract.finalBlocked !== 0.3 ||
+        telemetryTrendLatestAvailabilityContract.requestLatest !== 'Unavailable' ||
+        telemetryTrendLatestAvailabilityContract.blockedLatest !== '0.3 req/s' ||
+        !telemetryTrendLatestAvailabilityContract.summary.includes('EdgeProxy latest Unavailable') ||
+        !telemetryTrendLatestAvailabilityContract.summary.includes('SecurityEdge rejection latest 0.3 req/s')) {
+      throw new Error(`Trend latest-value availability contract failed: ${JSON.stringify(telemetryTrendLatestAvailabilityContract)}`);
     }
 
     telemetryTrendEmptyContract = await cdp.evaluate(`(() => {
@@ -2095,8 +2151,8 @@ try {
     semantic_color_contract:semanticColorContract, topbar_layouts:topbarLayouts, security_explorer_layouts:securityExplorerLayouts,
     connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
-    authentication_ui_contract:authenticationUIContract, telemetry_availability_contract:telemetryAvailabilityContract,
-    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract, telemetry_trend_outlier_contract:telemetryTrendOutlierContract, telemetry_trend_series_isolation_contract:telemetryTrendSeriesIsolationContract, telemetry_trend_empty_contract:telemetryTrendEmptyContract,
+    authentication_ui_contract:authenticationUIContract, cumulative_rate_precision_contract:cumulativeRatePrecisionContract, telemetry_availability_contract:telemetryAvailabilityContract,
+    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract, telemetry_trend_outlier_contract:telemetryTrendOutlierContract, telemetry_trend_series_isolation_contract:telemetryTrendSeriesIsolationContract, telemetry_trend_latest_availability_contract:telemetryTrendLatestAvailabilityContract, telemetry_trend_empty_contract:telemetryTrendEmptyContract,
     undefined_metric_rendering_contract:undefinedMetricRenderingContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
   }, null, 2));
 } catch (error) {

@@ -383,6 +383,7 @@ func TestDashboardPreservesAuthAndTelemetryTruthfulness(t *testing.T) {
 		"EdgeProxy telemetry unavailable.",
 		"Runtime health unavailable.",
 		"req/s avg since start",
+		`trendRateLabel(edgeMetrics.requests_per_second)`,
 		"pctIf(edgeTotal.cache_hit_ratio, cacheLookups > 0)",
 		"msIf(total.latency?.p95_ms, securityDecisions > 0)",
 		"point.security?.rejected_rate_available === true",
@@ -562,6 +563,8 @@ func TestDashboardTrendPresentationContract(t *testing.T) {
 		`function trendSeriesScaleProfile(values)`,
 		`function trendScaleModel(seriesValues)`,
 		`trendScaleModel([requestValues, blockedValues])`,
+		`function trendLatestValue(key)`,
+		`const value = state.trend[state.trend.length - 1][key];`,
 		`id="trend-scale"`,
 		`above scale · max`,
 		`Missing telemetry intervals are shown as gaps.`,
@@ -575,6 +578,9 @@ func TestDashboardTrendPresentationContract(t *testing.T) {
 	}
 	if strings.Contains(string(app), `Math.max(1, ...values)`) {
 		t.Fatal("trend chart still forces a 1 req/s minimum scale")
+	}
+	if strings.Contains(string(app), `for (let index = state.trend.length - 1; index >= 0; index -= 1)`) {
+		t.Fatal("trend legend still carries a stale finite rate forward across trailing unavailability")
 	}
 }
 

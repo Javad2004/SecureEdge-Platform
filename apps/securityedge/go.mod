@@ -1,3 +1,3 @@
 module github.com/Javad2004/SecureEdge-Platform/apps/securityedge
 
-go 1.26.5
+go 1.26.6

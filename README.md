@@ -71,7 +71,7 @@ The platform can be administered without manually stopping either executable:
 
 ## Requirements
 
-- Go **1.26.5** or later
+- Go **1.26.6** or later
 - Windows PowerShell for the supplied `.ps1` operational scripts
 - Bash and GNU `find` for the optional Linux development watcher
 - `curl` or `curl.exe` for HTTP/HTTPS verification

@@ -181,8 +181,6 @@ func startSecurityGeneration(configPath, envPath string, previousWatch securitye
 	runtime.ConfigureWatcher(envPath, previousWatch)
 	cfg := runtime.Config()
 	gen := &securityGeneration{runtime: runtime, cfg: cfg, errCh: make(chan error, 2)}
-	var gatewayListener net.Listener
-	var adminListener net.Listener
 	if cfg.Admin.Enabled {
 		gen.adminServer, err = runtime.AdminServer()
 		if err != nil {
@@ -214,21 +212,11 @@ func startSecurityGeneration(configPath, envPath string, previousWatch securitye
 				MinVersion:   tls.VersionTLS12,
 			}
 		}
-		gatewayListener, err = net.Listen("tcp", cfg.Server.ListenAddr)
-		if err != nil {
-			runtime.Close()
-			return nil, fmt.Errorf("listen security gateway %q: %w", cfg.Server.ListenAddr, err)
-		}
 	}
-	if gen.adminServer != nil {
-		adminListener, err = net.Listen("tcp", cfg.Admin.ListenAddr)
-		if err != nil {
-			if gatewayListener != nil {
-				_ = gatewayListener.Close()
-			}
-			runtime.Close()
-			return nil, fmt.Errorf("listen security admin %q: %w", cfg.Admin.ListenAddr, err)
-		}
+	gatewayListener, adminListener, err := bindSecurityListeners(cfg, gen.gatewayServer, gen.adminServer, net.Listen)
+	if err != nil {
+		runtime.Close()
+		return nil, err
 	}
 	if gen.gatewayServer != nil {
 		go func() {
@@ -253,6 +241,30 @@ func startSecurityGeneration(configPath, envPath string, previousWatch securitye
 		}()
 	}
 	return gen, nil
+}
+
+type networkListenFunc func(network, address string) (net.Listener, error)
+
+func bindSecurityListeners(cfg config.Config, gatewayServer, adminServer *http.Server, listen networkListenFunc) (net.Listener, net.Listener, error) {
+	var gatewayListener net.Listener
+	if gatewayServer != nil {
+		listener, err := listen("tcp", cfg.Server.ListenAddr)
+		if err != nil {
+			return nil, nil, fmt.Errorf("listen security gateway %q: %w", cfg.Server.ListenAddr, err)
+		}
+		gatewayListener = listener
+	}
+	if adminServer == nil {
+		return gatewayListener, nil, nil
+	}
+	adminListener, err := listen("tcp", cfg.Admin.ListenAddr)
+	if err != nil {
+		if gatewayListener != nil {
+			_ = gatewayListener.Close()
+		}
+		return nil, nil, fmt.Errorf("listen security admin %q: %w", cfg.Admin.ListenAddr, err)
+	}
+	return gatewayListener, adminListener, nil
 }
 
 func restoreSecurityFallback(fallback securityRestartFallback, failedPath string) error {

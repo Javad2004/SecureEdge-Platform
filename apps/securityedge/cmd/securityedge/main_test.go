@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -16,51 +15,69 @@ import (
 	"testing"
 	"time"
 
-	securityedge "github.com/Javad2004/SecureEdge-Platform/apps/securityedge"
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/edgeprobe"
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/envfile"
 )
 
-func TestStartSecurityGenerationClosesGatewayListenerWhenAdminBindFails(t *testing.T) {
-	occupiedAdmin, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer occupiedAdmin.Close()
+type closeTrackingListener struct {
+	closed bool
+}
 
-	probe, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	gatewayAddress := probe.Addr().String()
-	if err := probe.Close(); err != nil {
-		t.Fatal(err)
-	}
+func (l *closeTrackingListener) Accept() (net.Conn, error) {
+	return nil, errors.New("unused test listener")
+}
 
-	dir := t.TempDir()
-	edgePath := filepath.Join(dir, "edge.json")
-	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+func (l *closeTrackingListener) Close() error {
+	l.closed = true
+	return nil
+}
+
+func (l *closeTrackingListener) Addr() net.Addr {
+	return &net.TCPAddr{}
+}
+
+func TestBindSecurityListenersClosesGatewayWhenAdminBindFails(t *testing.T) {
 	cfg := config.Default()
-	cfg.Server.ListenAddr = gatewayAddress
-	cfg.Admin.ListenAddr = occupiedAdmin.Addr().String()
-	cfg.EdgeProxy.ConfigPath = "edge.json"
-	cfgPath := filepath.Join(dir, "security.json")
-	if err := config.Save(cfgPath, cfg); err != nil {
-		t.Fatal(err)
-	}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	if _, err := startSecurityGeneration(cfgPath, "", securityedge.WatchStatus{}, logger); err == nil {
-		t.Fatal("expected occupied admin listener to fail SecurityEdge generation startup")
-	}
+	cfg.Server.ListenAddr = "gateway.test:8080"
+	cfg.Admin.ListenAddr = "admin.test:9191"
+	gateway := &closeTrackingListener{}
+	adminBindErr := errors.New("forced admin bind failure")
+	listenCalls := 0
 
-	rebound, err := net.Listen("tcp", gatewayAddress)
-	if err != nil {
-		t.Fatalf("failed generation leaked gateway listener %q: %v", gatewayAddress, err)
+	_, _, err := bindSecurityListeners(cfg, &http.Server{}, &http.Server{}, func(network, address string) (net.Listener, error) {
+		listenCalls++
+		switch listenCalls {
+		case 1:
+			if network != "tcp" || address != cfg.Server.ListenAddr {
+				t.Fatalf("unexpected gateway listen request: network=%q address=%q", network, address)
+			}
+			return gateway, nil
+		case 2:
+			if network != "tcp" || address != cfg.Admin.ListenAddr {
+				t.Fatalf("unexpected admin listen request: network=%q address=%q", network, address)
+			}
+			return nil, adminBindErr
+		default:
+			t.Fatalf("unexpected extra listen call %d", listenCalls)
+			return nil, errors.New("unexpected listen call")
+		}
+	})
+	if err == nil {
+		t.Fatal("expected admin listener bind failure")
 	}
-	_ = rebound.Close()
+	if !errors.Is(err, adminBindErr) {
+		t.Fatalf("expected wrapped admin bind error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), cfg.Admin.ListenAddr) {
+		t.Fatalf("admin bind error should identify %q: %v", cfg.Admin.ListenAddr, err)
+	}
+	if listenCalls != 2 {
+		t.Fatalf("listen calls = %d, want 2", listenCalls)
+	}
+	if !gateway.closed {
+		t.Fatal("gateway listener was not closed after admin bind failure")
+	}
 }
 
 func TestParseLevel(t *testing.T) {

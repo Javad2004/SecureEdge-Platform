@@ -9,6 +9,10 @@ WORKDIR /src
 
 COPY apps/securityedge/go.mod ./
 COPY apps/securityedge/ ./
+# Checked-in SecurityEdge profiles reference repository-level EdgeProxy
+# integration fixtures; include them in the build stage so go test ./...
+# validates the same profiles that are validated in a full checkout.
+COPY integration /integration
 
 RUN CGO_ENABLED=0 go test ./... \
  && CGO_ENABLED=0 go build -trimpath \

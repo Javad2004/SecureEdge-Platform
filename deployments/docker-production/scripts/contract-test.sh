@@ -116,6 +116,25 @@ grep -q 'host_ip: "${SECURITYEDGE_ADMIN_BIND_IP' "$prod_dir/compose.platform.yml
 # Runtime credentials stay outside the build context by default.
 grep -q 'deployments/docker-production/secrets/' "$repo_root/.dockerignore"
 
+# SecurityEdge's checked-in profiles reference repository-level integration
+# fixtures. Both Docker build stages run go test ./..., so those fixtures must
+# be copied before the test layer executes.
+python3 - "$repo_root/apps/securityedge/Dockerfile" "$prod_dir/Dockerfile.securityedge" <<'PYDOCKER'
+from pathlib import Path
+import sys
+for raw in sys.argv[1:]:
+    path = Path(raw)
+    text = path.read_text(encoding="utf-8")
+    copy_pos = text.find("COPY integration /integration")
+    test_pos = text.find("RUN CGO_ENABLED=0 go test ./...")
+    if copy_pos < 0 or test_pos < 0 or copy_pos > test_pos:
+        raise SystemExit(f"SecurityEdge Docker build must copy integration fixtures before go test: {path}")
+PYDOCKER
+
+# systemd migration must produce self-contained Docker TLS mounts even when the
+# source installation uses Certbot/Let's Encrypt symlinks.
+grep -q 'cp -aL "$src/." "$dst/"' "$script_dir/import-systemd.sh"
+
 # Production Origin guardrails must reject placeholder/canonicalized local or
 # structurally invalid endpoints before Docker is started.
 checker="$script_dir/check-edgeproxy-profile.py"

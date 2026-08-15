@@ -425,7 +425,10 @@ The importer copies only the state owned by the selected Docker mode into
 `SECUREEDGE_DATA_ROOT`, normalizes numeric Docker ownership, and does not start,
 enable, disable or delete systemd units. Full-platform migration includes both
 services' state/TLS/logs; single-service migration keeps the other service
-independent. Then run `doctor.sh` and `validate.sh` before `docker compose up`.
+independent. TLS symlinks (for example Certbot/Let's Encrypt links) are
+dereferenced during import so the Docker TLS directories contain self-contained
+regular files rather than references to host paths outside the bind mount. Then
+run `doctor.sh` and `validate.sh` before `docker compose up`.
 
 If Docker validation fails, the old systemd units remain available for rollback.
 After the Docker deployment has passed full traffic tests and at least one

@@ -146,6 +146,18 @@ copy_tree_if_present() {
   fi
 }
 
+copy_tls_tree_if_present() {
+  local src=$1 dst=$2
+  if "${sudo_cmd[@]}" test -d "$src"; then
+    "${sudo_cmd[@]}" mkdir -p "$dst"
+    # systemd TLS directories commonly contain Certbot/Let's Encrypt symlinks.
+    # Dereference them during migration so the Docker TLS bind mount is fully
+    # self-contained and never depends on host paths outside SECUREEDGE_DATA_ROOT.
+    "${sudo_cmd[@]}" cp -aL "$src/." "$dst/"
+    echo "imported TLS material $src -> $dst (symlinks dereferenced)"
+  fi
+}
+
 # SecurityEdge-only needs only a local read-only mirror of EdgeProxy routing
 # configuration; it does not own or need the remote EdgeProxy TLS/private state.
 if [[ "$mode" == securityedge ]]; then
@@ -159,12 +171,12 @@ if [[ "$mode" == securityedge ]]; then
   fi
 else
   copy_tree_if_present "$src_edge_state" "$root/edgeproxy"
-  copy_tree_if_present "$src_edge_tls" "$root/tls/edgeproxy"
+  copy_tls_tree_if_present "$src_edge_tls" "$root/tls/edgeproxy"
 fi
 if [[ "$mode" == securityedge || "$mode" == platform ]]; then
   copy_tree_if_present "$src_security_state" "$root/securityedge"
   copy_tree_if_present "$src_security_logs" "$root/logs/securityedge"
-  copy_tree_if_present "$src_security_tls" "$root/tls/securityedge"
+  copy_tls_tree_if_present "$src_security_tls" "$root/tls/securityedge"
 fi
 
 extract_env_token() {

@@ -26,9 +26,21 @@ func TestCheckedInConfigurationsValidate(t *testing.T) {
 		filepath.Join(moduleRoot, "configs", "local-dev.json"),
 		filepath.Join(moduleRoot, "configs", "examples", "multi-origin.json"),
 		filepath.Join(moduleRoot, "configs", "examples", "multi-route.json"),
-		filepath.Join(repositoryRoot, "integration", "edgeproxy-behind-waf.json"),
-		filepath.Join(repositoryRoot, "integration", "edgeproxy-compose-behind-waf.json"),
-		filepath.Join(repositoryRoot, "integration", "edgeproxy-local-behind-waf.json"),
+	}
+
+	// Repository-level integration fixtures are available in a normal checkout,
+	// but intentionally absent from module-only Docker build contexts. Validate
+	// them whenever the repository integration directory is present without
+	// making the EdgeProxy module Docker build depend on files outside its scope.
+	integrationDir := filepath.Join(repositoryRoot, "integration")
+	if info, err := os.Stat(integrationDir); err == nil && info.IsDir() {
+		paths = append(paths,
+			filepath.Join(integrationDir, "edgeproxy-behind-waf.json"),
+			filepath.Join(integrationDir, "edgeproxy-compose-behind-waf.json"),
+			filepath.Join(integrationDir, "edgeproxy-local-behind-waf.json"),
+		)
+	} else if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("inspect integration configuration directory: %v", err)
 	}
 	t.Setenv("EDGEPROXY_ADMIN_TOKEN", "")
 	for _, path := range paths {

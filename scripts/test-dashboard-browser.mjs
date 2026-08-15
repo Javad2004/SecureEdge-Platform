@@ -908,6 +908,7 @@ try {
   }
 
   let telemetryTrendGapContract = null;
+  let telemetryTrendLongGapCompressionContract = null;
   let telemetryTrendOutlierContract = null;
   let telemetryTrendZeroBaselineContract = null;
   let telemetryTrendSeriesIsolationContract = null;
@@ -983,7 +984,9 @@ try {
         requestCoverage:document.getElementById('trend-requests-coverage').textContent,
         blockedCoverage:document.getElementById('trend-blocked-coverage').textContent,
         temporalGapCount:trendTemporalGaps(displayTrend).length,
-        gapLabels:operations.filter(operation => operation.type === 'text' && String(operation.text).startsWith('No telemetry')).map(operation => operation.text),
+        gapMarkers:operations.filter(operation => operation.type === 'text' && operation.text === '//').length,
+        renderedRecentFraction:requestLineOps.length >= 3 ? (requestLineOps[2].x - requestLineOps[1].x) / canvas.clientWidth : 0,
+        rawRecentFraction:rangeMs > 0 ? 1000 / rangeMs : 0,
         noteCount:document.querySelectorAll('#trend-chart-summary .trend-status-item').length,
         summary:document.getElementById('trend-chart-summary').textContent,
         emptyHidden:document.getElementById('trend-empty').hidden
@@ -1028,8 +1031,9 @@ try {
       throw new Error(`Trend chart still uses an unsuitable low-traffic Y scale: ${JSON.stringify(telemetryTrendGapContract)}`);
     }
     if (telemetryTrendGapContract.rangeMs !== 100000 || telemetryTrendGapContract.requestXs.length !== 3 ||
-        telemetryTrendGapContract.requestXs[2] - telemetryTrendGapContract.requestXs[1] >= telemetryTrendGapContract.canvasWidth * 0.05) {
-      throw new Error(`Trend chart X positions are not timestamp-proportional: ${JSON.stringify(telemetryTrendGapContract)}`);
+        telemetryTrendGapContract.renderedRecentFraction <= telemetryTrendGapContract.rawRecentFraction * 3 ||
+        telemetryTrendGapContract.renderedRecentFraction <= 0.03) {
+      throw new Error(`Trend chart did not compress a long telemetry gap enough to keep recent samples readable: ${JSON.stringify(telemetryTrendGapContract)}`);
     }
     if (telemetryTrendGapContract.requestLatest !== 'Unavailable' ||
         telemetryTrendGapContract.blockedLatest !== 'Unavailable' ||
@@ -1037,15 +1041,108 @@ try {
         telemetryTrendGapContract.requestCoverage !== '3/7 intervals observed' ||
         telemetryTrendGapContract.blockedCoverage !== '4/7 intervals observed' ||
         telemetryTrendGapContract.temporalGapCount !== 1 ||
-        telemetryTrendGapContract.gapLabels.length !== 1 ||
-        !telemetryTrendGapContract.gapLabels[0].startsWith('No telemetry · ') ||
+        telemetryTrendGapContract.gapMarkers !== 1 ||
         !telemetryTrendGapContract.scaleValue.startsWith('0–') ||
         telemetryTrendGapContract.scaleDetail !== 'Adaptive scale' ||
         telemetryTrendGapContract.noteCount !== 1 ||
         !telemetryTrendGapContract.summary.includes('1 telemetry gap') ||
+        !telemetryTrendGapContract.summary.includes('compressed on the time axis') ||
         !telemetryTrendGapContract.summary.includes('never zero-filled') ||
         telemetryTrendGapContract.emptyHidden !== true) {
       throw new Error(`Trend legend/range/accessibility summary contract failed: ${JSON.stringify(telemetryTrendGapContract)}`);
+    }
+
+    telemetryTrendLongGapCompressionContract = await cdp.evaluate(`(() => {
+      const previous = state.overview;
+      const recentStart = Date.now() - 20 * 60 * 1000;
+      const oldStart = recentStart - 26 * 60 * 60 * 1000;
+      const samples = [0, 1, 2].map(index => ({
+        generated_at:new Date(oldStart + index * 10000).toISOString(),
+        security:{rejected_rate_available:true,rejected_per_second:0},
+        edgeproxy:{available:true,request_rate_available:true,requests_per_second:0}
+      }));
+      for (let index = 0; index < 117; index += 1) {
+        const rate = index < 111 ? 0 : [0.4,0.8,1.2,1.7,2.2,2.7][index - 111];
+        samples.push({
+          generated_at:new Date(recentStart + index * 10000).toISOString(),
+          security:{rejected_rate_available:true,rejected_per_second:0},
+          edgeproxy:{available:true,request_rate_available:true,requests_per_second:rate}
+        });
+      }
+      const candidate = structuredClone(previous);
+      candidate.telemetry_history = {samples};
+      state.overview = candidate;
+      renderOverview();
+
+      const canvas = document.getElementById('trend-chart');
+      const originalGetContext = canvas.getContext;
+      const operations = [];
+      const context = {
+        _strokeStyle:'', _fillStyle:'', _lineDash:[], lineWidth:1, lineJoin:'', lineCap:'', font:'', textAlign:'', textBaseline:'',
+        set strokeStyle(value) { this._strokeStyle = value; }, get strokeStyle() { return this._strokeStyle; },
+        set fillStyle(value) { this._fillStyle = value; }, get fillStyle() { return this._fillStyle; },
+        setLineDash(values){ this._lineDash = Array.isArray(values) ? [...values] : []; },
+        scale(){}, clearRect(){}, beginPath(){}, stroke(){}, fill(){}, save(){}, restore(){},
+        moveTo(x,y){ operations.push({type:'move', color:this._strokeStyle, dash:this._lineDash.join(','), x, y}); },
+        lineTo(x,y){ operations.push({type:'line', color:this._strokeStyle, dash:this._lineDash.join(','), x, y}); },
+        arc(x,y){ operations.push({type:'point', color:this._fillStyle, x, y}); },
+        fillText(text,x,y){ operations.push({type:'text', color:this._fillStyle, text, x, y}); }
+      };
+      canvas.getContext = () => context;
+      try { drawTrend(); } finally { canvas.getContext = originalGetContext; }
+
+      const requestColor = cssColor('--chart-requests', '#67a6ff');
+      const blockedColor = cssColor('--chart-blocked', '#ff6b84');
+      const requestLineOps = operations.filter(operation => operation.color === requestColor && ['move','line'].includes(operation.type));
+      const blockedLineOps = operations.filter(operation => operation.color === blockedColor && ['move','line'].includes(operation.type));
+      const recentStartOp = requestLineOps[3];
+      const recentEndOp = requestLineOps.at(-1);
+      const axisLabels = operations.filter(operation => operation.type === 'text' && Math.abs(operation.y - 232) < 0.01).map(operation => operation.text);
+      const bounds = trendTimeBounds(state.trend);
+      const rawRecentFraction = (recentEndOp && recentStartOp && bounds.maximum > bounds.minimum)
+        ? (state.trend.at(-1).time - state.trend[3].time) / (bounds.maximum - bounds.minimum)
+        : 0;
+      const result = {
+        sampleCount:state.trend.length,
+        gapCount:trendTemporalGaps(state.trend).length,
+        gapMarkers:operations.filter(operation => operation.type === 'text' && operation.text === '//').length,
+        requestOps:requestLineOps.length,
+        blockedOps:blockedLineOps.length,
+        requestPoints:operations.filter(operation => operation.type === 'point' && operation.color === requestColor).length,
+        blockedPoints:operations.filter(operation => operation.type === 'point' && operation.color === blockedColor).length,
+        blockedDash:[...new Set(blockedLineOps.map(operation => operation.dash))],
+        recentRenderedFraction:recentStartOp && recentEndOp ? (recentEndOp.x - recentStartOp.x) / canvas.clientWidth : 0,
+        rawRecentFraction,
+        axisLabels,
+        startDate:trendDateLabel(oldStart),
+        endDate:trendDateLabel(state.trend.at(-1).time),
+        windowValue:document.querySelector('#trend-window .trend-meta-value')?.textContent || '',
+        summary:document.getElementById('trend-chart-summary').textContent,
+        requestLatest:document.getElementById('trend-requests-latest').textContent,
+        blockedLatest:document.getElementById('trend-blocked-latest').textContent
+      };
+      state.overview = previous;
+      renderAll();
+      return result;
+    })()`);
+    if (telemetryTrendLongGapCompressionContract.sampleCount !== 120 ||
+        telemetryTrendLongGapCompressionContract.gapCount !== 1 ||
+        telemetryTrendLongGapCompressionContract.gapMarkers !== 1 ||
+        telemetryTrendLongGapCompressionContract.requestOps !== 120 ||
+        telemetryTrendLongGapCompressionContract.blockedOps !== 120 ||
+        telemetryTrendLongGapCompressionContract.requestPoints <= 0 || telemetryTrendLongGapCompressionContract.requestPoints > 6 ||
+        telemetryTrendLongGapCompressionContract.blockedPoints <= 0 || telemetryTrendLongGapCompressionContract.blockedPoints > 6 ||
+        JSON.stringify(telemetryTrendLongGapCompressionContract.blockedDash) !== JSON.stringify(['']) ||
+        telemetryTrendLongGapCompressionContract.rawRecentFraction >= 0.03 ||
+        telemetryTrendLongGapCompressionContract.recentRenderedFraction <= 0.55 ||
+        !telemetryTrendLongGapCompressionContract.windowValue.includes(telemetryTrendLongGapCompressionContract.startDate) ||
+        !telemetryTrendLongGapCompressionContract.windowValue.includes(telemetryTrendLongGapCompressionContract.endDate) ||
+        !telemetryTrendLongGapCompressionContract.axisLabels.some(label => label.includes(telemetryTrendLongGapCompressionContract.startDate)) ||
+        !telemetryTrendLongGapCompressionContract.axisLabels.some(label => label.includes(telemetryTrendLongGapCompressionContract.endDate)) ||
+        !telemetryTrendLongGapCompressionContract.summary.includes('compressed on the time axis') ||
+        telemetryTrendLongGapCompressionContract.requestLatest !== '2.7 req/s' ||
+        telemetryTrendLongGapCompressionContract.blockedLatest !== '0 req/s') {
+      throw new Error(`Long-gap trend compression/date-label contract failed: ${JSON.stringify(telemetryTrendLongGapCompressionContract)}`);
     }
 
     telemetryTrendOutlierContract = await cdp.evaluate(`(() => {
@@ -1114,7 +1211,7 @@ try {
         !telemetryTrendOutlierContract.summary.includes('exact values remain in the scale summary') ||
         telemetryTrendOutlierContract.blockedCoverage !== 'No rejections · 20/20 intervals observed' ||
         telemetryTrendOutlierContract.blockedSeriesOps <= 0 || telemetryTrendOutlierContract.blockedLineOps !== 20 ||
-        JSON.stringify(telemetryTrendOutlierContract.blockedDash) !== JSON.stringify(['6,4']) ||
+        JSON.stringify(telemetryTrendOutlierContract.blockedDash) !== JSON.stringify(['']) ||
         telemetryTrendOutlierContract.latest !== '0.92 req/s') {
       throw new Error(`Trend outlier handling contract failed: ${JSON.stringify(telemetryTrendOutlierContract)}`);
     }
@@ -1174,7 +1271,7 @@ try {
         telemetryTrendZeroBaselineContract.requestYs.length !== 1 || telemetryTrendZeroBaselineContract.blockedYs.length !== 1 ||
         telemetryTrendZeroBaselineContract.requestYs[0] !== telemetryTrendZeroBaselineContract.blockedYs[0] ||
         JSON.stringify(telemetryTrendZeroBaselineContract.requestDash) !== JSON.stringify(['']) ||
-        JSON.stringify(telemetryTrendZeroBaselineContract.blockedDash) !== JSON.stringify(['6,4']) ||
+        JSON.stringify(telemetryTrendZeroBaselineContract.blockedDash) !== JSON.stringify(['']) ||
         telemetryTrendZeroBaselineContract.requestLatest !== '0 req/s' || telemetryTrendZeroBaselineContract.blockedLatest !== '0 req/s' ||
         telemetryTrendZeroBaselineContract.requestCoverage !== 'No requests · 5/5 intervals observed' ||
         telemetryTrendZeroBaselineContract.blockedCoverage !== 'No rejections · 5/5 intervals observed' ||
@@ -2386,7 +2483,7 @@ try {
     connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
     authentication_ui_contract:authenticationUIContract, cumulative_rate_precision_contract:cumulativeRatePrecisionContract, percentage_truthfulness_contract:percentageTruthfulnessContract, latency_truthfulness_contract:latencyTruthfulnessContract, telemetry_availability_contract:telemetryAvailabilityContract,
-    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract, telemetry_trend_outlier_contract:telemetryTrendOutlierContract, telemetry_trend_zero_baseline_contract:telemetryTrendZeroBaselineContract, telemetry_trend_series_isolation_contract:telemetryTrendSeriesIsolationContract, telemetry_trend_latest_availability_contract:telemetryTrendLatestAvailabilityContract, telemetry_trend_empty_contract:telemetryTrendEmptyContract,
+    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract, telemetry_trend_long_gap_compression_contract:telemetryTrendLongGapCompressionContract, telemetry_trend_outlier_contract:telemetryTrendOutlierContract, telemetry_trend_zero_baseline_contract:telemetryTrendZeroBaselineContract, telemetry_trend_series_isolation_contract:telemetryTrendSeriesIsolationContract, telemetry_trend_latest_availability_contract:telemetryTrendLatestAvailabilityContract, telemetry_trend_empty_contract:telemetryTrendEmptyContract,
     undefined_metric_rendering_contract:undefinedMetricRenderingContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
   }, null, 2));
 } catch (error) {

@@ -568,6 +568,27 @@ function trendTimeLabel(timestamp, includeSeconds = false) {
   });
 }
 
+function trendSameLocalDay(firstTimestamp, secondTimestamp) {
+  if (!Number.isFinite(firstTimestamp) || !Number.isFinite(secondTimestamp)) return false;
+  const first = new Date(firstTimestamp);
+  const second = new Date(secondTimestamp);
+  return first.getFullYear() === second.getFullYear() &&
+    first.getMonth() === second.getMonth() &&
+    first.getDate() === second.getDate();
+}
+
+function trendDateLabel(timestamp, includeYear = false) {
+  if (!Number.isFinite(timestamp)) return '—';
+  return new Date(timestamp).toLocaleDateString([], {
+    month:'short', day:'numeric', ...(includeYear ? {year:'numeric'} : {})
+  });
+}
+
+function trendDateTimeLabel(timestamp, includeSeconds = false, includeYear = false) {
+  if (!Number.isFinite(timestamp)) return '—';
+  return `${trendDateLabel(timestamp, includeYear)} ${trendTimeLabel(timestamp, includeSeconds)}`;
+}
+
 function trendTimeBounds(points) {
   const times = points.map(point => point.time).filter(Number.isFinite);
   if (!times.length) return {minimum:null, maximum:null};
@@ -600,6 +621,11 @@ function trendTemporalGaps(points) {
 
 function trendGapDurationLabel(milliseconds) {
   const totalSeconds = Math.max(0, Math.round((Number(milliseconds) || 0) / 1000));
+  if (totalSeconds >= 86400) {
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.round((totalSeconds % 86400) / 3600);
+    return hours ? `${days}d ${hours}h` : `${days}d`;
+  }
   if (totalSeconds >= 3600) {
     const hours = Math.floor(totalSeconds / 3600);
     const minutes = Math.round((totalSeconds % 3600) / 60);
@@ -607,6 +633,93 @@ function trendGapDurationLabel(milliseconds) {
   }
   if (totalSeconds >= 60) return `${Math.round(totalSeconds / 60)}m`;
   return `${totalSeconds}s`;
+}
+
+function trendTimelineLayout(points, plotWidth) {
+  const mapped = Array.isArray(points) ? points : [];
+  const width = Math.max(1, Number(plotWidth) || 1);
+  if (!mapped.length) return {positions:[], gaps:[], compressed:false};
+  if (mapped.length === 1) return {positions:[width / 2], gaps:[], compressed:false};
+
+  const gaps = trendTemporalGaps(mapped);
+  const gapIndexes = new Set(gaps.map(gap => gap.beforeIndex));
+  const positiveDeltas = [];
+  for (let index = 1; index < mapped.length; index += 1) {
+    const previous = mapped[index - 1]?.time;
+    const current = mapped[index]?.time;
+    if (Number.isFinite(previous) && Number.isFinite(current) && current > previous && !gapIndexes.has(index)) {
+      positiveDeltas.push(current - previous);
+    }
+  }
+  const fallbackCadence = positiveDeltas.length
+    ? trendQuantile([...positiveDeltas].sort((a, b) => a - b), 0.5)
+    : 1;
+  const intervalWeights = [];
+  for (let index = 1; index < mapped.length; index += 1) {
+    if (gapIndexes.has(index)) {
+      intervalWeights.push(null);
+      continue;
+    }
+    const previous = mapped[index - 1]?.time;
+    const current = mapped[index]?.time;
+    const delta = Number.isFinite(previous) && Number.isFinite(current) && current > previous
+      ? current - previous
+      : fallbackCadence;
+    intervalWeights.push(Math.max(1, delta));
+  }
+
+  const gapWidth = gaps.length
+    ? Math.max(2, Math.min(width < 420 ? 16 : 22, (width * 0.24) / gaps.length))
+    : 0;
+  const reservedGapWidth = gapWidth * gaps.length;
+  const regularWidth = Math.max(1, width - reservedGapWidth);
+  const regularWeight = intervalWeights.reduce((sum, value) => sum + (Number.isFinite(value) ? value : 0), 0);
+  const regularIntervals = intervalWeights.filter(Number.isFinite).length;
+  const positions = [0];
+  let cursor = 0;
+  intervalWeights.forEach(value => {
+    if (!Number.isFinite(value)) {
+      cursor += gapWidth;
+    } else if (regularWeight > 0) {
+      cursor += regularWidth * (value / regularWeight);
+    } else {
+      cursor += regularWidth / Math.max(1, regularIntervals);
+    }
+    positions.push(cursor);
+  });
+
+  const finalOffset = positions[positions.length - 1];
+  if (finalOffset > 0 && Math.abs(finalOffset - width) > 0.001) {
+    const factor = width / finalOffset;
+    for (let index = 0; index < positions.length; index += 1) positions[index] *= factor;
+  }
+  const gapLayouts = gaps.map(gap => ({
+    ...gap,
+    startOffset:positions[Math.max(0, gap.beforeIndex - 1)],
+    endOffset:positions[gap.beforeIndex]
+  }));
+  return {positions, gaps:gapLayouts, compressed:gaps.length > 0};
+}
+
+function trendAxisTickIndexes(layout, count) {
+  const positions = Array.isArray(layout?.positions) ? layout.positions : [];
+  if (!positions.length || count <= 0) return [];
+  if (positions.length === 1 || count === 1) return [0];
+  const maximum = positions[positions.length - 1];
+  const indexes = [];
+  for (let tick = 0; tick < count; tick += 1) {
+    if (tick === 0) { indexes.push(0); continue; }
+    if (tick === count - 1) { indexes.push(positions.length - 1); continue; }
+    const target = maximum * (tick / (count - 1));
+    let bestIndex = 0;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    positions.forEach((position, index) => {
+      const distance = Math.abs(position - target);
+      if (distance < bestDistance) { bestDistance = distance; bestIndex = index; }
+    });
+    indexes.push(bestIndex);
+  }
+  return [...new Set(indexes)];
 }
 
 function trendLatestValue(key) {
@@ -617,10 +730,16 @@ function trendLatestValue(key) {
 
 function trendRangeText(bounds) {
   if (!Number.isFinite(bounds?.minimum) || !Number.isFinite(bounds?.maximum)) return 'Time unavailable';
-  if (bounds.minimum === bounds.maximum) return trendTimeLabel(bounds.minimum, true);
+  if (bounds.minimum === bounds.maximum) return trendDateTimeLabel(bounds.minimum, true);
   const span = Math.max(0, bounds.maximum - bounds.minimum);
   const includeSeconds = span > 0 && span < 10 * 60 * 1000;
-  return `${trendTimeLabel(bounds.minimum, includeSeconds)}–${trendTimeLabel(bounds.maximum, includeSeconds)}`;
+  if (trendSameLocalDay(bounds.minimum, bounds.maximum)) {
+    return `${trendTimeLabel(bounds.minimum, includeSeconds)}–${trendTimeLabel(bounds.maximum, includeSeconds)}`;
+  }
+  const minimumDate = new Date(bounds.minimum);
+  const maximumDate = new Date(bounds.maximum);
+  const includeYear = minimumDate.getFullYear() !== maximumDate.getFullYear();
+  return `${trendDateTimeLabel(bounds.minimum, false, includeYear)}–${trendDateTimeLabel(bounds.maximum, false, includeYear)}`;
 }
 
 function trendMetaItem(id, label, value, detail = '') {
@@ -691,12 +810,17 @@ function drawTrend() {
   const maximum = scaleModel.maximum;
   const plotBounds = trendTimeBounds(displayTrend);
   const retainedBounds = trendTimeBounds(state.trend);
-  const temporalGaps = trendTemporalGaps(displayTrend);
+  const timelineLayout = trendTimelineLayout(displayTrend, plotWidth);
+  const temporalGaps = timelineLayout.gaps;
   const temporalGapIndexes = new Set(temporalGaps.map(gap => gap.beforeIndex));
   const timeSpan = Number.isFinite(plotBounds.minimum) && Number.isFinite(plotBounds.maximum)
     ? Math.max(0, plotBounds.maximum - plotBounds.minimum)
     : 0;
   const includeSeconds = timeSpan > 0 && timeSpan < 10 * 60 * 1000;
+  const spansMultipleDays = Number.isFinite(plotBounds.minimum) && Number.isFinite(plotBounds.maximum) &&
+    !trendSameLocalDay(plotBounds.minimum, plotBounds.maximum);
+  const spansMultipleYears = spansMultipleDays &&
+    new Date(plotBounds.minimum).getFullYear() !== new Date(plotBounds.maximum).getFullYear();
 
   context.font = `${compact ? 10 : 11}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
   context.fillStyle = cssColor('--muted', '#98a6bd');
@@ -722,29 +846,30 @@ function drawTrend() {
   if (Number.isFinite(plotBounds.minimum) && Number.isFinite(plotBounds.maximum)) {
     const singleTimestamp = plotBounds.minimum === plotBounds.maximum;
     const tickCount = singleTimestamp ? 1 : compact ? 2 : 3;
+    const tickIndexes = trendAxisTickIndexes(timelineLayout, tickCount);
     context.textBaseline = 'alphabetic';
-    for (let index = 0; index < tickCount; index += 1) {
-      const ratio = singleTimestamp ? 0.5 : index / (tickCount - 1);
-      const timestamp = singleTimestamp ? plotBounds.minimum : plotBounds.minimum + (plotBounds.maximum - plotBounds.minimum) * ratio;
-      const x = plot.left + plotWidth * ratio;
-      context.textAlign = singleTimestamp ? 'center' : index === 0 ? 'left' : index === tickCount - 1 ? 'right' : 'center';
-      context.fillText(trendTimeLabel(timestamp, includeSeconds), x, height - 8);
-    }
+    tickIndexes.forEach((pointIndex, tickIndex) => {
+      const point = displayTrend[pointIndex];
+      if (!point || !Number.isFinite(point.time)) return;
+      const x = plot.left + (timelineLayout.positions[pointIndex] ?? plotWidth / 2);
+      const label = spansMultipleDays
+        ? trendDateTimeLabel(point.time, false, spansMultipleYears)
+        : trendTimeLabel(point.time, includeSeconds);
+      context.textAlign = tickIndexes.length === 1 ? 'center' : tickIndex === 0 ? 'left' : tickIndex === tickIndexes.length - 1 ? 'right' : 'center';
+      context.fillText(label, x, height - 8);
+    });
   }
 
-  const xForPoint = (point, index) => {
-    if (Number.isFinite(point.time) && Number.isFinite(plotBounds.minimum) && Number.isFinite(plotBounds.maximum) && plotBounds.maximum > plotBounds.minimum) {
-      return plot.left + ((point.time - plotBounds.minimum) / (plotBounds.maximum - plotBounds.minimum)) * plotWidth;
-    }
-    return displayTrend.length <= 1 ? plot.left + plotWidth / 2 : plot.left + index * (plotWidth / (displayTrend.length - 1));
-  };
+  const xForPoint = (_point, index) => plot.left + (timelineLayout.positions[index] ?? (displayTrend.length <= 1
+    ? plotWidth / 2
+    : index * (plotWidth / Math.max(1, displayTrend.length - 1))));
   const yForValue = value => plot.bottom - (Math.min(maximum, Math.max(0, value)) / maximum) * plotHeight;
 
   const draw = (key, color, lineDash = []) => {
     context.save();
     context.strokeStyle = color;
     context.fillStyle = color;
-    context.lineWidth = 2;
+    context.lineWidth = key === 'blocked' ? 1.35 : 2.8;
     context.lineJoin = 'round';
     context.lineCap = 'round';
     if (typeof context.setLineDash === 'function') context.setLineDash(lineDash);
@@ -761,14 +886,26 @@ function drawTrend() {
     });
     context.stroke();
     if (typeof context.setLineDash === 'function') context.setLineDash([]);
+    const observedCount = displayTrend.reduce((count, point) => count + (Number.isFinite(point[key]) ? 1 : 0), 0);
+    const denseSeries = observedCount > (compact ? 32 : 48);
     displayTrend.forEach((point, index) => {
       const value = point[key];
       if (!Number.isFinite(value)) return;
-      const x = xForPoint(point, index);
-      context.beginPath();
-      context.arc(x, yForValue(value), compact ? 1.6 : 2, 0, Math.PI * 2);
-      context.fill();
-      if (scaleModel.clipped && value > maximum) {
+      const previousValue = index > 0 ? displayTrend[index - 1]?.[key] : null;
+      const nextValue = index + 1 < displayTrend.length ? displayTrend[index + 1]?.[key] : null;
+      const segmentBoundary = index === 0 || index === displayTrend.length - 1 ||
+        !Number.isFinite(previousValue) || !Number.isFinite(nextValue) ||
+        temporalGapIndexes.has(index) || temporalGapIndexes.has(index + 1);
+      const clippedPeak = scaleModel.clipped && value > maximum;
+      if (!denseSeries || segmentBoundary || clippedPeak) {
+        const x = xForPoint(point, index);
+        context.beginPath();
+        const pointRadius = key === 'blocked' ? (compact ? 1.2 : 1.45) : (compact ? 1.7 : 2.1);
+        context.arc(x, yForValue(value), pointRadius, 0, Math.PI * 2);
+        context.fill();
+      }
+      if (clippedPeak) {
+        const x = xForPoint(point, index);
         context.save();
         context.font = `${compact ? 11 : 12}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
         context.textAlign = 'center';
@@ -780,21 +917,37 @@ function drawTrend() {
     context.restore();
   };
   draw('requests', cssColor('--chart-requests', '#67a6ff'));
-  draw('blocked', cssColor('--chart-blocked', '#ff7188'), [6, 4]);
+  draw('blocked', cssColor('--chart-blocked', '#ff7188'));
 
-  if (temporalGaps.length && Number.isFinite(plotBounds.minimum) && Number.isFinite(plotBounds.maximum) && plotBounds.maximum > plotBounds.minimum) {
+  if (temporalGaps.length) {
     context.save();
-    context.fillStyle = cssColor('--muted', '#98a6bd');
+    const gapColor = cssColor('--muted', '#98a6bd');
+    context.strokeStyle = gapColor;
+    context.fillStyle = gapColor;
+    context.lineWidth = 1;
+    if (typeof context.setLineDash === 'function') context.setLineDash([2, 3]);
+    temporalGaps.forEach(gap => {
+      const x = plot.left + (gap.startOffset + gap.endOffset) / 2;
+      context.beginPath();
+      context.moveTo(x, plot.top + 2);
+      context.lineTo(x, plot.bottom);
+      context.stroke();
+    });
+    if (typeof context.setLineDash === 'function') context.setLineDash([]);
     context.font = `${compact ? 9 : 10}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
     context.textAlign = 'center';
-    context.textBaseline = 'top';
-    temporalGaps.slice(0, 2).forEach(gap => {
-      const startX = plot.left + ((gap.start - plotBounds.minimum) / (plotBounds.maximum - plotBounds.minimum)) * plotWidth;
-      const endX = plot.left + ((gap.end - plotBounds.minimum) / (plotBounds.maximum - plotBounds.minimum)) * plotWidth;
-      if (endX - startX >= (compact ? 86 : 110)) {
-        context.fillText(`No telemetry · ${trendGapDurationLabel(gap.duration)}`, (startX + endX) / 2, plot.top + 7);
-      }
+    context.textBaseline = 'alphabetic';
+    temporalGaps.forEach(gap => {
+      const x = plot.left + (gap.startOffset + gap.endOffset) / 2;
+      context.fillText('//', x, plot.bottom + 13);
     });
+    if (temporalGaps.length <= 2 && !compact) {
+      temporalGaps.forEach(gap => {
+        const x = plot.left + (gap.startOffset + gap.endOffset) / 2;
+        context.textBaseline = 'top';
+        context.fillText(`No telemetry · ${trendGapDurationLabel(gap.duration)}`, x, plot.top + 6);
+      });
+    }
     context.restore();
   }
 
@@ -839,8 +992,9 @@ function drawTrend() {
     const notes = [];
     const hasUnavailable = requestCount < retainedCount || blockedCount < retainedCount;
     if (hasUnavailable || temporalGaps.length) {
+      const longestGap = temporalGaps.length ? Math.max(...temporalGaps.map(gap => gap.duration)) : 0;
       const gapText = temporalGaps.length
-        ? `${temporalGaps.length} telemetry gap${temporalGaps.length === 1 ? '' : 's'} · unavailable intervals left blank, never zero-filled.`
+        ? `${temporalGaps.length} telemetry gap${temporalGaps.length === 1 ? '' : 's'} · long gaps compressed on the time axis${longestGap > 0 ? ` (longest ${trendGapDurationLabel(longestGap)})` : ''}; unavailable intervals left blank, never zero-filled.`
         : 'Unavailable intervals left blank · never zero-filled.';
       notes.push({label:'Gaps', text:gapText});
     }

@@ -746,7 +746,7 @@ canvas {
   border-top:3px solid var(--chart-requests)
 }
 .trend-swatch.blocked {
-  border-top:3px dashed var(--chart-blocked)
+  border-top-color:var(--chart-blocked)
 }
 .trend-meta {
   display:grid;

@@ -944,8 +944,7 @@ try {
 
       const canvas = document.getElementById('trend-chart');
       const originalGetContext = canvas.getContext;
-      const operations = [];
-      const context = {
+      const fakeContext = operations => ({
         _strokeStyle:'', _fillStyle:'', _lineDash:[], lineWidth:1, lineJoin:'', lineCap:'', font:'', textAlign:'', textBaseline:'',
         set strokeStyle(value) { this._strokeStyle = value; },
         get strokeStyle() { return this._strokeStyle; },
@@ -957,7 +956,9 @@ try {
         lineTo(x,y){ operations.push({type:'line', color:this._strokeStyle, dash:this._lineDash.join(','), x, y}); },
         arc(x,y){ operations.push({type:'point', color:this._fillStyle, x, y}); },
         fillText(text,x,y){ operations.push({type:'text', color:this._fillStyle, text, x, y}); }
-      };
+      });
+      const operations = [];
+      const context = fakeContext(operations);
       canvas.getContext = () => context;
       try { drawTrend(); } finally { canvas.getContext = originalGetContext; }
       const requestColor = cssColor('--chart-requests', '#67a6ff');
@@ -985,12 +986,34 @@ try {
         blockedCoverage:document.getElementById('trend-blocked-coverage').textContent,
         temporalGapCount:trendTemporalGaps(displayTrend).length,
         gapMarkers:operations.filter(operation => operation.type === 'text' && operation.text === '//').length,
+        gapLabels:operations.filter(operation => operation.type === 'text' && operation.text.startsWith('Telemetry gap ·')).map(operation => operation.text),
         renderedRecentFraction:requestLineOps.length >= 3 ? (requestLineOps[2].x - requestLineOps[1].x) / canvas.clientWidth : 0,
         rawRecentFraction:rangeMs > 0 ? 1000 / rangeMs : 0,
         noteCount:document.querySelectorAll('#trend-chart-summary .trend-status-item').length,
         summary:document.getElementById('trend-chart-summary').textContent,
         emptyHidden:document.getElementById('trend-empty').hidden
       };
+
+      // The fixture card can be compact even on a desktop viewport because it
+      // shares a multi-column grid. Force one wide draw so the inline gap-label
+      // contract is exercised in a real browser rather than only by a static
+      // source assertion.
+      const originalCanvasWidth = canvas.style.width;
+      const originalCanvasMaxWidth = canvas.style.maxWidth;
+      const wideOperations = [];
+      const wideContext = fakeContext(wideOperations);
+      canvas.style.maxWidth = 'none';
+      canvas.style.width = '640px';
+      canvas.getContext = () => wideContext;
+      try { drawTrend(); } finally {
+        canvas.getContext = originalGetContext;
+        canvas.style.width = originalCanvasWidth;
+        canvas.style.maxWidth = originalCanvasMaxWidth;
+      }
+      result.wideCanvasWidth = 640;
+      result.wideGapLabels = wideOperations
+        .filter(operation => operation.type === 'text' && operation.text.startsWith('Telemetry gap ·'))
+        .map(operation => operation.text);
 
       state.overview = previous;
       renderAll();
@@ -1042,6 +1065,12 @@ try {
         telemetryTrendGapContract.blockedCoverage !== '4/7 intervals observed' ||
         telemetryTrendGapContract.temporalGapCount !== 1 ||
         telemetryTrendGapContract.gapMarkers !== 1 ||
+        (telemetryTrendGapContract.canvasWidth >= 460
+          ? telemetryTrendGapContract.gapLabels.length !== 1 || !telemetryTrendGapContract.gapLabels[0].startsWith('Telemetry gap ·')
+          : telemetryTrendGapContract.gapLabels.length !== 0) ||
+        telemetryTrendGapContract.wideCanvasWidth !== 640 ||
+        telemetryTrendGapContract.wideGapLabels.length !== 1 ||
+        !telemetryTrendGapContract.wideGapLabels[0].startsWith('Telemetry gap ·') ||
         !telemetryTrendGapContract.scaleValue.startsWith('0–') ||
         telemetryTrendGapContract.scaleDetail !== 'Adaptive scale' ||
         telemetryTrendGapContract.noteCount !== 1 ||

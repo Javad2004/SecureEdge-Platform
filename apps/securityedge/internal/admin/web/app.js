@@ -941,11 +941,18 @@ function drawTrend() {
       const x = plot.left + (gap.startOffset + gap.endOffset) / 2;
       context.fillText('//', x, plot.bottom + 13);
     });
-    if (temporalGaps.length <= 2 && !compact) {
-      temporalGaps.forEach(gap => {
+    if (!compact) {
+      // Keep the reason for a time break visible without turning a dense old
+      // history into a wall of overlapping labels. With one or two gaps we
+      // label every break; with many gaps the longest break gets the explicit
+      // label while the summary below the chart reports the complete count.
+      const labeledGaps = temporalGaps.length <= 2
+        ? temporalGaps
+        : [...temporalGaps].sort((first, second) => second.duration - first.duration).slice(0, 1);
+      labeledGaps.forEach(gap => {
         const x = plot.left + (gap.startOffset + gap.endOffset) / 2;
         context.textBaseline = 'top';
-        context.fillText(`No telemetry · ${trendGapDurationLabel(gap.duration)}`, x, plot.top + 6);
+        context.fillText(`Telemetry gap · ${trendGapDurationLabel(gap.duration)}`, x, plot.top + 6);
       });
     }
     context.restore();
@@ -974,6 +981,8 @@ function drawTrend() {
 
   const retainedRangeText = trendRangeText(retainedBounds);
   const retainedCountText = `${retainedCount} sample${retainedCount === 1 ? '' : 's'}`;
+  const sampleInterval = String(state.overview?.telemetry_history?.sample_interval || '').trim();
+  const retainedDetailText = sampleInterval ? `${retainedCountText} · server-side ${sampleInterval}` : retainedCountText;
   const scaleValueText = values.length ? `0–${trendRateLabel(maximum, maximum)} req/s` : 'Waiting for rates';
   const scaleDetailText = !values.length
     ? ''
@@ -981,7 +990,7 @@ function drawTrend() {
       ? `${scaleModel.outlierCount} peak${scaleModel.outlierCount === 1 ? '' : 's'} · max ${trendRateLabel(rawMaximum, rawMaximum)} req/s`
       : 'Adaptive scale';
 
-  trendMetaItem('trend-window', 'History', retainedCount ? retainedRangeText : 'Waiting for history', retainedCountText);
+  trendMetaItem('trend-window', 'History', retainedCount ? retainedRangeText : 'Waiting for history', retainedDetailText);
   trendMetaItem('trend-scale', 'Scale', scaleValueText, scaleDetailText);
 
   const empty = $('trend-empty');
@@ -1617,7 +1626,7 @@ function renderSystem() {
     ['Metrics schema',metrics.schema_version||'—'],['Uptime',`${fmt(metrics.uptime_seconds)} s`],['In flight',fmt(metrics.inflight)],
     ['Rate-limit buckets',fmt(status.rate_limit_buckets)],['Active temporary bans',fmt(status.active_bans)],
     ['Retained security events',fmt(logs.retained)],['Overwritten memory events',fmt(logs.dropped)],['Persistent log bytes',fmt(logs.file_bytes)],['Persistent log errors',fmt(logs.file_errors)],
-    ['Telemetry history',history.enabled ? `${fmt(history.samples?.length)} / ${fmt(history.capacity)} samples` : 'Disabled'],['History persistence',history.persistent ? (history.last_error ? `Degraded: ${history.last_error}` : 'Healthy') : 'Memory only']
+    ['Telemetry history',history.enabled ? `${fmt(history.samples?.length)} / ${fmt(history.capacity)} samples` : 'Disabled'],['History sampling',history.enabled ? `Server-side · ${history.sample_interval || '—'}` : 'Disabled'],['History persistence',history.persistent ? (history.last_error ? `Degraded: ${history.last_error}` : 'Healthy') : 'Memory only']
   ]);
   const edgeStatus = state.overview?.edgeproxy_status_code;
   const edgeRuntime = edgeStatusSnapshot();

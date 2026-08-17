@@ -900,3 +900,129 @@ func TestReplaceConfigRejectsEnvironmentManagedSecretWithoutPersisting(t *testin
 		t.Fatalf("rejected managed token update was persisted: got %q", persisted.Admin.AuthToken)
 	}
 }
+
+func TestManagedAdminTelemetryStartsOnlyAfterActivation(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	edgeStartedAt := "2026-08-17T00:00:00Z"
+	edgeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/metrics" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"schema_version":"1.5","started_at":%q,"inflight":0,"total":{"requests":0,"client_errors":0,"server_errors":0,"proxy_errors":0,"cache_hits":0,"cache_misses":0,"cache_hit_ratio":0,"response_latency_ms":{"count":0,"p95":0}},"routes":{}}`, edgeStartedAt)
+	}))
+	defer edgeServer.Close()
+
+	historyPath := filepath.Join(dir, "telemetry-history.json")
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.EdgeProxy.AdminURL = edgeServer.URL
+	cfg.EdgeProxy.Timeout = config.Duration{Duration: 100 * time.Millisecond}
+	cfg.Admin.Connectivity.Enabled = false
+	cfg.Admin.TelemetryHistory.FilePath = historyPath
+	cfg.Admin.TelemetryHistory.SampleInterval = config.Duration{Duration: time.Second}
+	cfg.Admin.PollTimeout = config.Duration{Duration: 100 * time.Millisecond}
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if _, err := runtime.AdminServer(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Constructing the managed Admin server is still pre-activation. No
+	// telemetry file should exist until the generation has acquired listeners
+	// and explicitly starts its background workers.
+	time.Sleep(50 * time.Millisecond)
+	if _, err := os.Stat(historyPath); !os.IsNotExist(err) {
+		t.Fatalf("managed AdminServer started telemetry before activation: stat err=%v", err)
+	}
+
+	runtime.StartAdminBackgroundWorkers()
+	deadline := time.Now().Add(time.Second)
+	for {
+		data, readErr := os.ReadFile(historyPath)
+		if readErr == nil && len(data) > 0 {
+			break
+		}
+		if readErr != nil && !os.IsNotExist(readErr) {
+			t.Fatal(readErr)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("activated Admin background workers did not persist an initial telemetry sample")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Activation is idempotent; a duplicate call must not create another
+	// sampler or otherwise perturb lifecycle state.
+	runtime.StartAdminBackgroundWorkers()
+}
+
+func TestEmbeddedAdminHandlerActivatesTelemetrySampler(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	edgeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/metrics" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"schema_version":"1.5","started_at":"2026-08-17T00:00:00Z","inflight":0,"total":{"requests":0,"client_errors":0,"server_errors":0,"proxy_errors":0,"cache_hits":0,"cache_misses":0,"cache_hit_ratio":0,"response_latency_ms":{"count":0,"p95":0}},"routes":{}}`))
+	}))
+	defer edgeServer.Close()
+
+	historyPath := filepath.Join(dir, "telemetry-history.json")
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.EdgeProxy.AdminURL = edgeServer.URL
+	cfg.EdgeProxy.Timeout = config.Duration{Duration: 100 * time.Millisecond}
+	cfg.Admin.Connectivity.Enabled = false
+	cfg.Admin.TelemetryHistory.FilePath = historyPath
+	cfg.Admin.TelemetryHistory.SampleInterval = config.Duration{Duration: time.Second}
+	cfg.Admin.PollTimeout = config.Duration{Duration: 100 * time.Millisecond}
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if _, err := runtime.AdminHandler(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if data, readErr := os.ReadFile(historyPath); readErr == nil && len(data) > 0 {
+			break
+		} else if readErr != nil && !os.IsNotExist(readErr) {
+			t.Fatal(readErr)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("embedded AdminHandler did not activate telemetry sampling")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

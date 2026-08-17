@@ -69,17 +69,21 @@ type authFailure struct {
 }
 
 type Server struct {
-	cfg          config.AdminConfig
-	runtime      Runtime
-	registry     *metrics.Registry
-	logs         *securitylog.Store
-	traffic      *traffic.Tracker
-	inspector    *waf.Inspector
-	connectivity *connectivity.Monitor
-	history      *telemetryHistoryStore
-	http         *http.Server
-	authMu       sync.Mutex
-	authFails    map[string]*authFailure
+	cfg             config.AdminConfig
+	runtime         Runtime
+	registry        *metrics.Registry
+	logs            *securitylog.Store
+	traffic         *traffic.Tracker
+	inspector       *waf.Inspector
+	connectivity    *connectivity.Monitor
+	history         *telemetryHistoryStore
+	http            *http.Server
+	authMu          sync.Mutex
+	authFails       map[string]*authFailure
+	telemetryMu     sync.Mutex
+	telemetryCancel context.CancelFunc
+	telemetryWG     sync.WaitGroup
+	telemetryClosed bool
 }
 
 func New(cfg config.AdminConfig, runtime Runtime, registry *metrics.Registry, logs *securitylog.Store, trafficTracker *traffic.Tracker, inspector *waf.Inspector) (*Server, error) {
@@ -162,9 +166,111 @@ func New(cfg config.AdminConfig, runtime Runtime, registry *metrics.Registry, lo
 	mux.HandleFunc("PUT /api/v1/edgeproxy/routes/{route}/origins/{origin}", s.auth(s.edgeOriginUpdate))
 	mux.HandleFunc("DELETE /api/v1/edgeproxy/routes/{route}/origins/{origin}", s.auth(s.edgeOriginDelete))
 	s.http = &http.Server{Addr: cfg.ListenAddr, Handler: securityHeaders(requestIDMiddleware(mux)), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 1 << 20}
+	s.http.RegisterOnShutdown(s.Close)
 	return s, nil
 }
+
 func (s *Server) HTTPServer() *http.Server { return s.http }
+
+// StartTelemetrySampler starts the server-side telemetry-history collector.
+// Sampling is deliberately independent of Dashboard polling so closing,
+// backgrounding, or throttling the browser cannot create artificial history
+// gaps while SecurityEdge itself remains healthy.
+func (s *Server) StartTelemetrySampler() {
+	if s == nil || s.history == nil || !s.cfg.Enabled || !s.cfg.TelemetryHistory.Enabled {
+		return
+	}
+	interval := s.cfg.TelemetryHistory.SampleInterval.Duration
+	if interval <= 0 {
+		return
+	}
+
+	s.telemetryMu.Lock()
+	if s.telemetryClosed || s.telemetryCancel != nil {
+		s.telemetryMu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.telemetryCancel = cancel
+	s.telemetryWG.Add(1)
+	s.telemetryMu.Unlock()
+
+	go func() {
+		defer s.telemetryWG.Done()
+		s.runTelemetrySampler(ctx, interval)
+	}()
+}
+
+func (s *Server) runTelemetrySampler(ctx context.Context, interval time.Duration) {
+	// Seed the current generation immediately. The history store still enforces
+	// its configured minimum interval against a recently persisted sample.
+	s.sampleTelemetry(ctx, time.Now().UTC(), interval, false)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case tick := <-ticker.C:
+			s.sampleTelemetry(ctx, tick.UTC(), interval, true)
+		}
+	}
+}
+
+func (s *Server) sampleTelemetry(parent context.Context, observedAt time.Time, interval time.Duration, scheduled bool) {
+	if parent.Err() != nil || s.registry == nil || s.history == nil {
+		return
+	}
+	securityMetrics := s.registry.Snapshot()
+
+	var edgeMetrics json.RawMessage
+	if s.runtime != nil {
+		timeout := s.cfg.PollTimeout.Duration
+		if timeout <= 0 || (interval > 0 && timeout > interval) {
+			timeout = interval
+		}
+		ctx := parent
+		cancel := func() {}
+		if timeout > 0 {
+			ctx, cancel = context.WithTimeout(parent, timeout)
+		}
+		raw, status, err := s.runtime.EdgeJSON(ctx, http.MethodGet, "/api/v1/metrics", nil, nil)
+		cancel()
+		if err == nil && status >= http.StatusOK && status < http.StatusMultipleChoices {
+			edgeMetrics = raw
+		}
+	}
+
+	if parent.Err() != nil {
+		return
+	}
+	if scheduled {
+		s.history.observeScheduled(observedAt, securityMetrics, edgeMetrics)
+		return
+	}
+	s.history.observeAt(observedAt, securityMetrics, edgeMetrics, true)
+}
+
+// Close stops background Admin workers. It is idempotent and is invoked both
+// by the HTTP server shutdown hook and Runtime.Close.
+func (s *Server) Close() {
+	if s == nil {
+		return
+	}
+	s.telemetryMu.Lock()
+	if s.telemetryClosed {
+		s.telemetryMu.Unlock()
+		return
+	}
+	s.telemetryClosed = true
+	cancel := s.telemetryCancel
+	s.telemetryCancel = nil
+	s.telemetryMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	s.telemetryWG.Wait()
+}
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		client := remoteIP(r.RemoteAddr)
@@ -452,11 +558,6 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	statusOK := se == nil && ss >= http.StatusOK && ss < http.StatusMultipleChoices
 	metricsOK := me == nil && ms >= http.StatusOK && ms < http.StatusMultipleChoices
 	securityMetrics := s.registry.Snapshot()
-	if metricsOK {
-		s.history.observe(securityMetrics, edgeMetrics)
-	} else {
-		s.history.observe(securityMetrics, nil)
-	}
 	out := map[string]any{"generated_at": now(), "build": version.Info(), "connectivity": connection, "recent_client_traffic": s.trafficSnapshot(), "security_metrics": securityMetrics, "telemetry_history": s.history.snapshot(120), "security_logs": s.logs.Query(securitylog.Filter{Limit: 10}), "security_status": map[string]any{"rate_limit_buckets": s.runtime.LimiterSize(), "active_bans": s.runtime.ActiveBanCount(), "admission": s.runtime.AdmissionSnapshot()}, "edgeproxy_status_code": ss, "edgeproxy_metrics_status_code": ms}
 	if statusOK {
 		out["edgeproxy_status"] = json.RawMessage(edgeStatus)

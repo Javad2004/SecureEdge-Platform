@@ -166,10 +166,22 @@ func newTelemetryHistoryStore(cfg config.TelemetryHistoryConfig) *telemetryHisto
 }
 
 func (s *telemetryHistoryStore) observe(security metrics.Snapshot, edgeRaw json.RawMessage) {
+	s.observeAt(time.Now().UTC(), security, edgeRaw, true)
+}
+
+// observeScheduled records a server-scheduled sample at the sampler's tick
+// timestamp. Unlike observe, it does not apply a second interval throttle:
+// the background ticker is already the cadence authority, and a slow or fast
+// dependency poll must not cause a legitimate scheduled sample to be skipped.
+func (s *telemetryHistoryStore) observeScheduled(observedAt time.Time, security metrics.Snapshot, edgeRaw json.RawMessage) {
+	s.observeAt(observedAt.UTC(), security, edgeRaw, false)
+}
+
+func (s *telemetryHistoryStore) observeAt(nowTime time.Time, security metrics.Snapshot, edgeRaw json.RawMessage, respectInterval bool) {
 	if s == nil || !s.cfg.Enabled {
 		return
 	}
-	nowTime := time.Now().UTC()
+	nowTime = nowTime.UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.lastObserved.IsZero() && nowTime.Before(s.lastObserved) {
@@ -180,8 +192,11 @@ func (s *telemetryHistoryStore) observe(security metrics.Snapshot, edgeRaw json.
 		s.discardSamplesAfterLocked(nowTime)
 		s.rateGapPending = true
 	}
-	if !s.lastObserved.IsZero() && nowTime.Sub(s.lastObserved) < s.cfg.SampleInterval.Duration {
-		return
+	if !s.lastObserved.IsZero() {
+		delta := nowTime.Sub(s.lastObserved)
+		if delta == 0 || (respectInterval && delta < s.cfg.SampleInterval.Duration) {
+			return
+		}
 	}
 
 	point := telemetryHistoryPoint{

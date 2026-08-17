@@ -849,3 +849,32 @@ func TestTelemetryHistoryEndpointValidatesLimit(t *testing.T) {
 }
 
 func uintString(value uint64) string { return strconv.FormatUint(value, 10) }
+
+func TestTelemetryHistoryScheduledSamplesUseSamplerCadenceWithoutSecondThrottle(t *testing.T) {
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{Duration: 5 * time.Second},
+	})
+	startedAt := "2026-08-17T12:00:00Z"
+	firstAt := time.Date(2026, 8, 17, 12, 5, 0, 0, time.UTC)
+	secondAt := firstAt.Add(5 * time.Second)
+
+	store.observeScheduled(firstAt, metrics.Snapshot{
+		StartedAt: startedAt,
+		Total:     metrics.CounterSnapshot{Requests: 10},
+	}, nil)
+	store.observeScheduled(secondAt, metrics.Snapshot{
+		StartedAt: startedAt,
+		Total:     metrics.CounterSnapshot{Requests: 15},
+	}, nil)
+
+	samples := store.snapshot(10).Samples
+	if len(samples) != 2 {
+		t.Fatalf("scheduled samples=%d, want 2", len(samples))
+	}
+	if samples[0].GeneratedAt != firstAt.Format(time.RFC3339Nano) || samples[1].GeneratedAt != secondAt.Format(time.RFC3339Nano) {
+		t.Fatalf("scheduled timestamps were not preserved: %#v", samples)
+	}
+	if !samples[1].Security.RequestRateAvailable || samples[1].Security.RequestsPerSecond != 1 {
+		t.Fatalf("scheduled interval rate=%#v, want available 1 req/s", samples[1].Security)
+	}
+}

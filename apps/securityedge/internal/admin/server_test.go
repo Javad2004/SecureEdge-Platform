@@ -848,10 +848,95 @@ func TestOverviewTreatsNon2xxEdgeProxyResponsesAsUnavailable(t *testing.T) {
 	}
 
 	history := server.history.snapshot(120)
+	if len(history.Samples) != 0 {
+		t.Fatalf("overview must not drive telemetry collection: history samples=%d, want 0", len(history.Samples))
+	}
+
+	server.sampleTelemetry(context.Background(), time.Now().UTC(), cfg.Admin.TelemetryHistory.SampleInterval.Duration, false)
+	history = server.history.snapshot(120)
 	if len(history.Samples) != 1 {
-		t.Fatalf("history samples=%d, want 1", len(history.Samples))
+		t.Fatalf("server-side telemetry sample count=%d, want 1", len(history.Samples))
 	}
 	if history.Samples[0].EdgeProxy.Available {
 		t.Fatal("non-2xx EdgeProxy metrics response must be recorded as unavailable, not zero-valued telemetry")
+	}
+}
+
+func TestTelemetrySamplerRunsWithoutDashboardPollingAndStopsCleanly(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.Admin.Connectivity.Enabled = false
+	cfg.Admin.TelemetryHistory.SampleInterval = config.Duration{Duration: 20 * time.Millisecond}
+	cfg.Admin.TelemetryHistory.Capacity = 32
+	cfg.Admin.TelemetryHistory.FilePath = ""
+	cfg.Admin.PollTimeout = config.Duration{Duration: 10 * time.Millisecond}
+
+	inspector, err := waf.NewInspector(nil, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &fakeRuntime{
+		cfg:        cfg,
+		edgeRaw:    json.RawMessage(`{"schema_version":"1.5","started_at":"2026-08-17T00:00:00Z","inflight":0,"total":{"requests":0,"client_errors":0,"server_errors":0,"proxy_errors":0,"cache_hits":0,"cache_misses":0,"cache_hit_ratio":0,"response_latency_ms":{"count":0,"p95":0}},"routes":{}}`),
+		edgeStatus: http.StatusOK,
+	}
+	server, err := New(cfg.Admin, runtime, metrics.New(), securitylog.New(32), traffic.New(32, time.Minute), inspector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.StartTelemetrySampler()
+	t.Cleanup(server.Close)
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		if got := len(server.history.snapshot(120).Samples); got >= 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("server-side sampler did not collect without Dashboard requests: got %d samples", len(server.history.snapshot(120).Samples))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if method, path := runtime.lastEdgeRequest(); method != http.MethodGet || path != "/api/v1/metrics" {
+		t.Fatalf("telemetry sampler EdgeProxy request=%s %s, want GET /api/v1/metrics", method, path)
+	}
+
+	server.Close()
+	stoppedCount := len(server.history.snapshot(120).Samples)
+	time.Sleep(3 * cfg.Admin.TelemetryHistory.SampleInterval.Duration)
+	if got := len(server.history.snapshot(120).Samples); got != stoppedCount {
+		t.Fatalf("telemetry sampler continued after Close: samples=%d, want %d", got, stoppedCount)
+	}
+}
+
+func TestOverviewDoesNotDriveTelemetryHistory(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.Admin.Connectivity.Enabled = false
+	cfg.Admin.TelemetryHistory.FilePath = ""
+	inspector, err := waf.NewInspector(nil, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &fakeRuntime{
+		cfg:        cfg,
+		edgeRaw:    json.RawMessage(`{"schema_version":"1.5","started_at":"2026-08-17T00:00:00Z","inflight":0,"total":{"requests":0,"client_errors":0,"server_errors":0,"proxy_errors":0,"cache_hits":0,"cache_misses":0,"cache_hit_ratio":0,"response_latency_ms":{"count":0,"p95":0}},"routes":{}}`),
+		edgeStatus: http.StatusOK,
+	}
+	server, err := New(cfg.Admin, runtime, metrics.New(), securitylog.New(32), traffic.New(32, time.Minute), inspector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	for range 3 {
+		recorder := httptest.NewRecorder()
+		server.overview(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/dashboard/overview", nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("overview status=%d, want %d", recorder.Code, http.StatusOK)
+		}
+	}
+	if got := len(server.history.snapshot(120).Samples); got != 0 {
+		t.Fatalf("Dashboard overview polling created %d history samples; server-side sampler must be the only collector", got)
 	}
 }

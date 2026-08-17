@@ -35,20 +35,22 @@ type Runtime struct {
 	// configMu serializes complete load/validate/persist/apply transactions.
 	// Without it, concurrent reloads and policy edits can lose updates or leave
 	// the persisted file and live runtime on different revisions.
-	configMu  sync.Mutex
-	mu        sync.RWMutex
-	cfg       config.Config
-	table     *routes.Table
-	edge      *edgeadmin.Client
-	registry  *metrics.Registry
-	logs      *securitylog.Store
-	traffic   *traffic.Tracker
-	inspector *waf.Inspector
-	limiter   *ratelimit.Limiter
-	bans      *ratelimit.BanManager
-	admission *admission.Limiter
-	clients   *clientip.Resolver
-	gateway   *gateway.Handler
+	configMu     sync.Mutex
+	mu           sync.RWMutex
+	cfg          config.Config
+	table        *routes.Table
+	edge         *edgeadmin.Client
+	registry     *metrics.Registry
+	logs         *securitylog.Store
+	traffic      *traffic.Tracker
+	inspector    *waf.Inspector
+	limiter      *ratelimit.Limiter
+	bans         *ratelimit.BanManager
+	admission    *admission.Limiter
+	clients      *clientip.Resolver
+	gateway      *gateway.Handler
+	adminMu      sync.Mutex
+	adminService *admin.Server
 	// healthyFileCfg is the latest persisted configuration that was either used
 	// to start this generation or successfully hot-applied to it. Restart
 	// rollback must use this revision rather than the file as it existed only at
@@ -143,6 +145,16 @@ func New(configPath string, logger *slog.Logger) (*Runtime, error) {
 }
 
 func (r *Runtime) Close() {
+	// Stop Admin background workers before releasing the EdgeProxy client,
+	// metrics registry, and persistent stores they sample.
+	r.adminMu.Lock()
+	adminService := r.adminService
+	r.adminService = nil
+	r.adminMu.Unlock()
+	if adminService != nil {
+		adminService.Close()
+	}
+
 	r.limiter.Close()
 	r.mu.Lock()
 	gatewayHandler := r.gateway
@@ -172,7 +184,13 @@ func (r *Runtime) Wrap(next http.Handler) http.Handler {
 	return handler
 }
 
-func (r *Runtime) AdminHandler() (http.Handler, error) {
+func (r *Runtime) adminServerService() (*admin.Server, error) {
+	r.adminMu.Lock()
+	defer r.adminMu.Unlock()
+	if r.adminService != nil {
+		return r.adminService, nil
+	}
+
 	r.mu.RLock()
 	cfg := r.cfg
 	r.mu.RUnlock()
@@ -180,14 +198,36 @@ func (r *Runtime) AdminHandler() (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	r.adminService = srv
+	return srv, nil
+}
+
+// StartAdminBackgroundWorkers activates background work only after the active
+// generation has successfully acquired its listeners. This prevents a failed
+// replacement generation from persisting telemetry before it is committed.
+func (r *Runtime) StartAdminBackgroundWorkers() {
+	r.adminMu.Lock()
+	srv := r.adminService
+	r.adminMu.Unlock()
+	if srv != nil {
+		srv.StartTelemetrySampler()
+	}
+}
+
+func (r *Runtime) AdminHandler() (http.Handler, error) {
+	srv, err := r.adminServerService()
+	if err != nil {
+		return nil, err
+	}
+	// AdminHandler is the embedded/library entry point and has no listener
+	// preflight phase owned by this package, so obtaining the live handler is
+	// the activation boundary for its background workers.
+	srv.StartTelemetrySampler()
 	return srv.HTTPServer().Handler, nil
 }
 
 func (r *Runtime) AdminServer() (*http.Server, error) {
-	r.mu.RLock()
-	cfg := r.cfg
-	r.mu.RUnlock()
-	srv, err := admin.New(cfg.Admin, r, r.registry, r.logs, r.traffic, r.inspector)
+	srv, err := r.adminServerService()
 	if err != nil {
 		return nil, err
 	}

@@ -218,6 +218,12 @@ func startSecurityGeneration(configPath, envPath string, previousWatch securitye
 		runtime.Close()
 		return nil, err
 	}
+	if gen.adminServer != nil {
+		// Listener acquisition is the commit point for generation-scoped Admin
+		// background workers. A candidate that fails bind preflight must never
+		// write telemetry history as though it had become active.
+		runtime.StartAdminBackgroundWorkers()
+	}
 	if gen.gatewayServer != nil {
 		go func() {
 			logger.Info("security gateway starting", "address", cfg.Server.ListenAddr, "tls", cfg.Server.TLS.Enabled, "upstream", cfg.Server.UpstreamProxyURL, "max_concurrent", cfg.Server.MaxConcurrentRequests, "max_body_bytes", cfg.Server.MaxRequestBodyBytes)

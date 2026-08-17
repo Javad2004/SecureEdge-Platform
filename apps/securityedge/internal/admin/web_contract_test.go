@@ -250,6 +250,8 @@ func TestDashboardTrendPreservesTelemetryRateGaps(t *testing.T) {
 		"requests: point.edgeproxy?.available === true",
 		"filter(Number.isFinite)",
 		"if (!Number.isFinite(value)) { segmentStarted = false; return; }",
+		"Telemetry gap · ${trendGapDurationLabel(gap.duration)}",
+		"second.duration - first.duration",
 	} {
 		if !strings.Contains(javascript, required) {
 			t.Fatalf("dashboard telemetry-gap contract is missing %q", required)

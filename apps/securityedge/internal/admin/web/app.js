@@ -833,7 +833,7 @@ function drawTrend() {
   const plot = {
     left: compact ? 46 : 58,
     right: width - 12,
-    top: 20,
+    top: compact ? 20 : 42,
     bottom: height - 34
   };
   const plotWidth = Math.max(1, plot.right - plot.left);
@@ -960,11 +960,70 @@ function drawTrend() {
 
   const requestUnavailableRuns = trendSeriesUnavailableRuns(displayTrend, 'requests', temporalGapIndexes);
   const blockedUnavailableRuns = trendSeriesUnavailableRuns(displayTrend, 'blocked', temporalGapIndexes);
-  const clampedLabelX = (text, x, fontSize) => {
-    const estimatedHalfWidth = Math.min(plotWidth / 2, String(text || '').length * Math.max(1, Number(fontSize) || 10) * 0.28);
-    return Math.min(plot.right - estimatedHalfWidth - 2, Math.max(plot.left + estimatedHalfWidth + 2, x));
+  const gapLabelCandidates = [];
+  const queueGapLabel = (text, x, color, duration, priority = 0) => {
+    if (compact || !text || !Number.isFinite(x)) return;
+    gapLabelCandidates.push({text, x, color, duration:Math.max(0, Number(duration) || 0), priority});
   };
-  const drawSeriesUnavailable = (runs, color, label, xShift, labelRow) => {
+  const drawGapLabels = candidates => {
+    if (compact || !candidates.length) return;
+    const fontSize = 10;
+    const edgePadding = 4;
+    const collisionPadding = 10;
+    const measureWidth = text => {
+      if (typeof context.measureText === 'function') {
+        const measured = context.measureText(text);
+        if (Number.isFinite(measured?.width)) return measured.width;
+      }
+      return String(text || '').length * fontSize * 0.56;
+    };
+    const selected = [];
+    const laneCount = 2;
+    const occupied = Array.from({length:laneCount}, () => []);
+    const preferred = [...candidates].sort((first, second) =>
+      second.duration - first.duration || second.priority - first.priority || first.x - second.x);
+    preferred.forEach(candidate => {
+      const widthEstimate = Math.min(plotWidth, measureWidth(candidate.text));
+      let drawX = candidate.x;
+      let align = 'center';
+      let left = drawX - widthEstimate / 2;
+      let right = drawX + widthEstimate / 2;
+      // Keep the label physically attached to its marker while it approaches a
+      // chart edge. Unlike clamping, this moves with the marker instead of
+      // appearing frozen while the timeline scrolls underneath it.
+      if (left < plot.left + edgePadding) {
+        align = 'left';
+        drawX = candidate.x + edgePadding;
+        left = drawX;
+        right = drawX + widthEstimate;
+      } else if (right > plot.right - edgePadding) {
+        align = 'right';
+        drawX = candidate.x - edgePadding;
+        right = drawX;
+        left = drawX - widthEstimate;
+      }
+      if (left < plot.left || right > plot.right) return;
+      let lane = -1;
+      for (let candidateLane = 0; candidateLane < laneCount; candidateLane += 1) {
+        const collides = occupied[candidateLane].some(box => left < box.right + collisionPadding && right > box.left - collisionPadding);
+        if (!collides) { lane = candidateLane; break; }
+      }
+      if (lane < 0) return;
+      occupied[lane].push({left, right});
+      selected.push({...candidate, drawX, align, lane});
+    });
+    selected.sort((first, second) => first.lane - second.lane || first.x - second.x);
+    context.save();
+    context.font = `${fontSize}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+    context.textBaseline = 'top';
+    selected.forEach(candidate => {
+      context.fillStyle = candidate.color;
+      context.textAlign = candidate.align;
+      context.fillText(candidate.text, candidate.drawX, 4 + candidate.lane * 15);
+    });
+    context.restore();
+  };
+  const drawSeriesUnavailable = (runs, color, label, xShift, priority) => {
     if (!runs.length) return;
     context.save();
     context.strokeStyle = color;
@@ -993,6 +1052,9 @@ function drawTrend() {
       context.fillText('×', x, plot.bottom + 13);
     });
     if (!compact) {
+      // Mirror telemetry-gap density handling: label every run when there are
+      // at most two, otherwise label only the longest run and leave the full
+      // count in the availability summary below the chart.
       const labeledRuns = runs.length <= 2
         ? runs
         : [...runs].sort((first, second) => second.duration - first.duration || second.count - first.count).slice(0, 1);
@@ -1001,10 +1063,7 @@ function drawTrend() {
         const lastOffset = timelineLayout.positions[run.endIndex];
         if (!Number.isFinite(firstOffset) || !Number.isFinite(lastOffset)) return;
         const x = plot.left + (firstOffset + lastOffset) / 2 + xShift;
-        const suffix = run.count > 1 ? ` · ${run.count} intervals` : '';
-        const labelText = `${label} unavailable${suffix}`;
-        context.textBaseline = 'top';
-        context.fillText(labelText, clampedLabelX(labelText, x, compact ? 10 : 11), plot.top + 6 + labelRow * 14);
+        queueGapLabel(`${label} unavailable · ${trendGapDurationLabel(run.duration)}`, x, color, run.duration, priority);
       });
     }
     context.restore();
@@ -1014,8 +1073,8 @@ function drawTrend() {
   // the sample exists, but one derived metric cannot be trusted for that
   // interval (for example after a process restart or counter reset). Keep the
   // line disconnected and mark the exact interval in the series color.
-  drawSeriesUnavailable(requestUnavailableRuns, requestColor, 'EdgeProxy request rate', -2, 0);
-  drawSeriesUnavailable(blockedUnavailableRuns, blockedColor, 'SecurityEdge rejection rate', 2, 1);
+  drawSeriesUnavailable(requestUnavailableRuns, requestColor, 'EdgeProxy request rate', -2, 1);
+  drawSeriesUnavailable(blockedUnavailableRuns, blockedColor, 'SecurityEdge rejection rate', 2, 2);
 
   if (temporalGaps.length) {
     context.save();
@@ -1049,13 +1108,17 @@ function drawTrend() {
         : [...temporalGaps].sort((first, second) => second.duration - first.duration).slice(0, 1);
       labeledGaps.forEach(gap => {
         const x = plot.left + (gap.startOffset + gap.endOffset) / 2;
-        const labelText = `Telemetry gap · ${trendGapDurationLabel(gap.duration)}`;
-        context.textBaseline = 'top';
-        context.fillText(labelText, clampedLabelX(labelText, x, compact ? 9 : 10), plot.top + 6);
+        queueGapLabel(`Telemetry gap · ${trendGapDurationLabel(gap.duration)}`, x, gapColor, gap.duration, 3);
       });
     }
     context.restore();
   }
+
+  // Draw all inline gap labels in one collision-aware pass. Labels stay
+  // anchored to the corresponding dashed marker as the rolling timeline moves
+  // left; when labels would overlap, the more significant candidate remains
+  // visible and the complete details remain available in the summaries below.
+  drawGapLabels(gapLabelCandidates);
 
   const retainedCount = state.trend.length;
   const requestCount = state.trend.filter(point => Number.isFinite(point.requests)).length;

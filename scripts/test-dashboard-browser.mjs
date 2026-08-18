@@ -915,6 +915,7 @@ try {
   let telemetryTrendLegendSemanticsContract = null;
   let telemetryTrendPartialAvailabilityLegendContract = null;
   let telemetryTrendSeriesAvailabilityMarkerContract = null;
+  let telemetryTrendSeriesMarkerMotionContract = null;
   let telemetryTrendSeriesIsolationContract = null;
   let telemetryTrendLatestAvailabilityContract = null;
   let telemetryTrendEmptyContract = null;
@@ -1566,6 +1567,8 @@ try {
         wideRequestLabels:markerLabels(wideOperations, 'EdgeProxy request rate unavailable'),
         wideBlockedLabels:markerLabels(wideOperations, 'SecurityEdge rejection rate unavailable'),
         wideBlockedLabelXs:wideOperations.filter(operation => operation.type === 'text' && operation.text.startsWith('SecurityEdge rejection rate unavailable')).map(operation => operation.x),
+        wideBlockedLabelYs:wideOperations.filter(operation => operation.type === 'text' && operation.text.startsWith('SecurityEdge rejection rate unavailable')).map(operation => operation.y),
+        wideBlockedMarkerTop:wideOperations.filter(operation => operation.type === 'move' && operation.color === blockedColor && operation.dash === '3,3').map(operation => ({x:operation.x,y:operation.y})),
         wideTelemetryMarkers:wideOperations.filter(operation => operation.type === 'text' && operation.text === '//').length,
         compactBlockedMarkerLines:markerLines(compactOperations, blockedColor).length,
         compactBlockedMarkerSymbols:markerSymbols(compactOperations, blockedColor),
@@ -1589,8 +1592,12 @@ try {
         telemetryTrendSeriesAvailabilityMarkerContract.wideBlockedMarkerSymbols !== 1 ||
         telemetryTrendSeriesAvailabilityMarkerContract.wideRequestLabels.length !== 0 ||
         telemetryTrendSeriesAvailabilityMarkerContract.wideBlockedLabels.length !== 1 ||
-        telemetryTrendSeriesAvailabilityMarkerContract.wideBlockedLabels[0] !== 'SecurityEdge rejection rate unavailable' ||
+        telemetryTrendSeriesAvailabilityMarkerContract.wideBlockedLabels[0] !== 'SecurityEdge rejection rate unavailable · 5s' ||
         telemetryTrendSeriesAvailabilityMarkerContract.wideBlockedLabelXs.length !== 1 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.wideBlockedLabelYs.length !== 1 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.wideBlockedMarkerTop.length !== 1 ||
+        Math.abs(telemetryTrendSeriesAvailabilityMarkerContract.wideBlockedLabelXs[0] - telemetryTrendSeriesAvailabilityMarkerContract.wideBlockedMarkerTop[0].x) > 0.01 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.wideBlockedLabelYs[0] >= telemetryTrendSeriesAvailabilityMarkerContract.wideBlockedMarkerTop[0].y ||
         telemetryTrendSeriesAvailabilityMarkerContract.wideBlockedLabelXs[0] < 60 ||
         telemetryTrendSeriesAvailabilityMarkerContract.wideBlockedLabelXs[0] > 626 ||
         telemetryTrendSeriesAvailabilityMarkerContract.wideTelemetryMarkers !== 0 ||
@@ -1606,6 +1613,96 @@ try {
         !telemetryTrendSeriesAvailabilityMarkerContract.summary.includes('never zero-filled') ||
         telemetryTrendSeriesAvailabilityMarkerContract.summary.includes('telemetry gap')) {
       throw new Error(`Series-specific unavailable-rate marker contract failed: ${JSON.stringify(telemetryTrendSeriesAvailabilityMarkerContract)}`);
+    }
+
+    telemetryTrendSeriesMarkerMotionContract = await cdp.evaluate(`(() => {
+      const previous = state.overview;
+      const canvas = document.getElementById('trend-chart');
+      const originalGetContext = canvas.getContext;
+      const originalCanvasWidth = canvas.style.width;
+      const originalCanvasMaxWidth = canvas.style.maxWidth;
+      const fakeContext = operations => ({
+        _strokeStyle:'', _fillStyle:'', _lineDash:[], lineWidth:1, lineJoin:'', lineCap:'', font:'', textAlign:'', textBaseline:'',
+        set strokeStyle(value) { this._strokeStyle = value; }, get strokeStyle() { return this._strokeStyle; },
+        set fillStyle(value) { this._fillStyle = value; }, get fillStyle() { return this._fillStyle; },
+        setLineDash(values){ this._lineDash = Array.isArray(values) ? [...values] : []; },
+        scale(){}, clearRect(){}, beginPath(){}, stroke(){}, fill(){}, save(){}, restore(){},
+        moveTo(x,y){ operations.push({type:'move', color:this._strokeStyle, dash:this._lineDash.join(','), x, y}); },
+        lineTo(x,y){ operations.push({type:'line', color:this._strokeStyle, dash:this._lineDash.join(','), x, y}); },
+        arc(x,y){ operations.push({type:'point', color:this._fillStyle, x, y}); },
+        fillText(text,x,y){ operations.push({type:'text', color:this._fillStyle, text, x, y, align:this.textAlign}); }
+      });
+      const drawSamples = (requestMissing, blockedMissing) => {
+        const baseTime = Date.now() - 120 * 5000;
+        const samples = Array.from({length:120}, (_, index) => ({
+          generated_at:new Date(baseTime + index * 5000).toISOString(),
+          security:{rejected_rate_available:!blockedMissing.includes(index),rejected_per_second:0},
+          edgeproxy:{available:true,request_rate_available:!requestMissing.includes(index),requests_per_second:0}
+        }));
+        const candidate = structuredClone(previous);
+        candidate.telemetry_history = {samples};
+        state.overview = candidate;
+        canvas.getContext = originalGetContext;
+        renderOverview();
+        const operations = [];
+        canvas.style.maxWidth = 'none';
+        canvas.style.width = '640px';
+        canvas.getContext = () => fakeContext(operations);
+        drawTrend();
+        return operations;
+      };
+      const blockedColor = cssColor('--chart-blocked', '#ff7188');
+      const requestColor = cssColor('--chart-requests', '#67a6ff');
+      const markerX = (operations, color) => operations.find(operation => operation.type === 'move' && operation.color === color && operation.dash === '3,3')?.x ?? null;
+      const label = (operations, prefix) => operations.find(operation => operation.type === 'text' && operation.text.startsWith(prefix)) || null;
+      let first = [], shifted = [], dense = [], dual = [];
+      try {
+        first = drawSamples([], [73]);
+        shifted = drawSamples([], [72]);
+        dense = drawSamples([], [18,36,54,72,90]);
+        dual = drawSamples([20], [100]);
+      } finally {
+        canvas.getContext = originalGetContext;
+        canvas.style.width = originalCanvasWidth;
+        canvas.style.maxWidth = originalCanvasMaxWidth;
+        state.overview = previous;
+        renderAll();
+      }
+      const firstMarkerX = markerX(first, blockedColor);
+      const shiftedMarkerX = markerX(shifted, blockedColor);
+      const firstLabel = label(first, 'SecurityEdge rejection rate unavailable');
+      const shiftedLabel = label(shifted, 'SecurityEdge rejection rate unavailable');
+      const denseBlockedLabels = dense.filter(operation => operation.type === 'text' && operation.text.startsWith('SecurityEdge rejection rate unavailable'));
+      const denseBlockedSymbols = dense.filter(operation => operation.type === 'text' && operation.color === blockedColor && operation.text === '×');
+      const dualRequestLabel = label(dual, 'EdgeProxy request rate unavailable');
+      const dualBlockedLabel = label(dual, 'SecurityEdge rejection rate unavailable');
+      return {
+        firstMarkerX, shiftedMarkerX,
+        firstLabelX:firstLabel?.x ?? null, shiftedLabelX:shiftedLabel?.x ?? null,
+        firstLabelText:firstLabel?.text || '', shiftedLabelText:shiftedLabel?.text || '',
+        markerDelta:Number.isFinite(firstMarkerX) && Number.isFinite(shiftedMarkerX) ? shiftedMarkerX-firstMarkerX : null,
+        labelDelta:Number.isFinite(firstLabel?.x) && Number.isFinite(shiftedLabel?.x) ? shiftedLabel.x-firstLabel.x : null,
+        denseBlockedLabelCount:denseBlockedLabels.length,
+        denseBlockedLabels:denseBlockedLabels.map(operation => operation.text),
+        denseBlockedSymbolCount:denseBlockedSymbols.length,
+        dualRequestLabel:dualRequestLabel?.text || '',
+        dualBlockedLabel:dualBlockedLabel?.text || ''
+      };
+    })()`);
+    if (!Number.isFinite(telemetryTrendSeriesMarkerMotionContract.firstMarkerX) ||
+        !Number.isFinite(telemetryTrendSeriesMarkerMotionContract.shiftedMarkerX) ||
+        !Number.isFinite(telemetryTrendSeriesMarkerMotionContract.firstLabelX) ||
+        !Number.isFinite(telemetryTrendSeriesMarkerMotionContract.shiftedLabelX) ||
+        Math.abs(telemetryTrendSeriesMarkerMotionContract.markerDelta) < 1 ||
+        Math.abs(telemetryTrendSeriesMarkerMotionContract.markerDelta - telemetryTrendSeriesMarkerMotionContract.labelDelta) > 0.01 ||
+        telemetryTrendSeriesMarkerMotionContract.firstLabelText !== 'SecurityEdge rejection rate unavailable · 5s' ||
+        telemetryTrendSeriesMarkerMotionContract.shiftedLabelText !== 'SecurityEdge rejection rate unavailable · 5s' ||
+        telemetryTrendSeriesMarkerMotionContract.denseBlockedSymbolCount !== 5 ||
+        telemetryTrendSeriesMarkerMotionContract.denseBlockedLabelCount !== 1 ||
+        telemetryTrendSeriesMarkerMotionContract.denseBlockedLabels[0] !== 'SecurityEdge rejection rate unavailable · 5s' ||
+        telemetryTrendSeriesMarkerMotionContract.dualRequestLabel !== 'EdgeProxy request rate unavailable · 5s' ||
+        telemetryTrendSeriesMarkerMotionContract.dualBlockedLabel !== 'SecurityEdge rejection rate unavailable · 5s') {
+      throw new Error(`Series-specific gap label anchoring/density contract failed: ${JSON.stringify(telemetryTrendSeriesMarkerMotionContract)}`);
     }
 
     telemetryTrendSeriesIsolationContract = await cdp.evaluate(`(() => {
@@ -2812,7 +2909,7 @@ try {
     connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
     authentication_ui_contract:authenticationUIContract, cumulative_rate_precision_contract:cumulativeRatePrecisionContract, percentage_truthfulness_contract:percentageTruthfulnessContract, latency_truthfulness_contract:latencyTruthfulnessContract, telemetry_availability_contract:telemetryAvailabilityContract,
-    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract, telemetry_trend_many_gap_contract:telemetryTrendManyGapContract, telemetry_trend_long_gap_compression_contract:telemetryTrendLongGapCompressionContract, telemetry_trend_outlier_contract:telemetryTrendOutlierContract, telemetry_trend_zero_baseline_contract:telemetryTrendZeroBaselineContract, telemetry_trend_legend_semantics_contract:telemetryTrendLegendSemanticsContract, telemetry_trend_partial_availability_legend_contract:telemetryTrendPartialAvailabilityLegendContract, telemetry_trend_series_availability_marker_contract:telemetryTrendSeriesAvailabilityMarkerContract, telemetry_trend_series_isolation_contract:telemetryTrendSeriesIsolationContract, telemetry_trend_latest_availability_contract:telemetryTrendLatestAvailabilityContract, telemetry_trend_empty_contract:telemetryTrendEmptyContract,
+    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract, telemetry_trend_many_gap_contract:telemetryTrendManyGapContract, telemetry_trend_long_gap_compression_contract:telemetryTrendLongGapCompressionContract, telemetry_trend_outlier_contract:telemetryTrendOutlierContract, telemetry_trend_zero_baseline_contract:telemetryTrendZeroBaselineContract, telemetry_trend_legend_semantics_contract:telemetryTrendLegendSemanticsContract, telemetry_trend_partial_availability_legend_contract:telemetryTrendPartialAvailabilityLegendContract, telemetry_trend_series_availability_marker_contract:telemetryTrendSeriesAvailabilityMarkerContract, telemetry_trend_series_marker_motion_contract:telemetryTrendSeriesMarkerMotionContract, telemetry_trend_series_isolation_contract:telemetryTrendSeriesIsolationContract, telemetry_trend_latest_availability_contract:telemetryTrendLatestAvailabilityContract, telemetry_trend_empty_contract:telemetryTrendEmptyContract,
     undefined_metric_rendering_contract:undefinedMetricRenderingContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
   }, null, 2));
 } catch (error) {

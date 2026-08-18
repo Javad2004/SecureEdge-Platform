@@ -589,9 +589,16 @@ func TestDashboardTrendPresentationContract(t *testing.T) {
 		`function trendAxisTickIndexes(layout, count)`,
 		`function trendDateTimeLabel(timestamp, includeSeconds = false, includeYear = false)`,
 		`draw('blocked', blockedColor);`,
-		`drawSeriesUnavailable(requestUnavailableRuns, requestColor, 'EdgeProxy request rate', -2, 0);`,
-		`drawSeriesUnavailable(blockedUnavailableRuns, blockedColor, 'SecurityEdge rejection rate', 2, 1);`,
+		`drawSeriesUnavailable(requestUnavailableRuns, requestColor, 'EdgeProxy request rate', -2, 1);`,
+		`drawSeriesUnavailable(blockedUnavailableRuns, blockedColor, 'SecurityEdge rejection rate', 2, 2);`,
 		`context.fillText('×', x, plot.bottom + 13);`,
+		"queueGapLabel(`${label} unavailable · ${trendGapDurationLabel(run.duration)}`,",
+		"queueGapLabel(`Telemetry gap · ${trendGapDurationLabel(gap.duration)}`,",
+		`drawGapLabels(gapLabelCandidates);`,
+		`const laneCount = 2;`,
+		`top: compact ? 20 : 42,`,
+		`Labels stay`,
+
 		`Color-coded dashed markers identify these series-specific intervals`,
 		`No rejections${qualifier} ·`,
 		`in observed intervals`,
@@ -615,6 +622,9 @@ func TestDashboardTrendPresentationContract(t *testing.T) {
 		if !strings.Contains(content, required) {
 			t.Fatalf("dashboard trend presentation contract is missing %q", required)
 		}
+	}
+	if strings.Contains(string(app), `clampedLabelX`) {
+		t.Fatal("trend gap labels still use detached/clamped x positioning")
 	}
 	if strings.Contains(string(app), `Math.max(1, ...values)`) {
 		t.Fatal("trend chart still forces a 1 req/s minimum scale")

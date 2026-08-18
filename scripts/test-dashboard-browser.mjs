@@ -913,6 +913,7 @@ try {
   let telemetryTrendOutlierContract = null;
   let telemetryTrendZeroBaselineContract = null;
   let telemetryTrendLegendSemanticsContract = null;
+  let telemetryTrendPartialAvailabilityLegendContract = null;
   let telemetryTrendSeriesIsolationContract = null;
   let telemetryTrendLatestAvailabilityContract = null;
   let telemetryTrendEmptyContract = null;
@@ -1434,6 +1435,58 @@ try {
         telemetryTrendLegendSemanticsContract.bodyScrollWidth > telemetryTrendLegendSemanticsContract.viewportWidth + 1 ||
         !telemetryTrendLegendSemanticsContract.summary.includes('no telemetry gaps')) {
       throw new Error(`Trend legend semantics/wrapping contract failed: ${JSON.stringify(telemetryTrendLegendSemanticsContract)}`);
+    }
+
+    telemetryTrendPartialAvailabilityLegendContract = await cdp.evaluate(`(() => {
+      const previous = state.overview;
+      const baseTime = Date.now() - 7 * 5000;
+      const samples = Array.from({length:7}, (_, index) => ({
+        generated_at:new Date(baseTime + index * 5000).toISOString(),
+        security:{
+          rejected_rate_available:[1,3,4,6].includes(index),
+          rejected_per_second:0
+        },
+        edgeproxy:{
+          available:true,
+          request_rate_available:[1,3,5].includes(index),
+          requests_per_second:0
+        }
+      }));
+      const candidate = structuredClone(previous);
+      candidate.telemetry_history = {sample_interval:'5s',samples};
+      state.overview = candidate;
+      renderOverview();
+      const result = {
+        requestCoverage:document.getElementById('trend-requests-coverage').textContent,
+        blockedCoverage:document.getElementById('trend-blocked-coverage').textContent,
+        summary:document.getElementById('trend-chart-summary').textContent
+      };
+
+      const gapOffsets = [0,5000,10000,70000,75000,80000,85000];
+      candidate.telemetry_history.samples = gapOffsets.map((offset, index) => ({
+        generated_at:new Date(baseTime + offset).toISOString(),
+        security:{rejected_rate_available:index > 0,rejected_per_second:0},
+        edgeproxy:{available:true,request_rate_available:index > 0,requests_per_second:0}
+      }));
+      state.overview = candidate;
+      renderOverview();
+      result.temporalGapRequestCoverage = document.getElementById('trend-requests-coverage').textContent;
+      result.temporalGapBlockedCoverage = document.getElementById('trend-blocked-coverage').textContent;
+      result.temporalGapSummary = document.getElementById('trend-chart-summary').textContent;
+
+      state.overview = previous;
+      renderAll();
+      return result;
+    })()`);
+    if (telemetryTrendPartialAvailabilityLegendContract.requestCoverage !== 'No requests in observed intervals · 3 rate intervals available from 7 samples' ||
+        telemetryTrendPartialAvailabilityLegendContract.blockedCoverage !== 'No rejections in observed intervals · 4 rate intervals available from 7 samples' ||
+        !telemetryTrendPartialAvailabilityLegendContract.summary.includes('Unavailable intervals left blank') ||
+        !telemetryTrendPartialAvailabilityLegendContract.summary.includes('never zero-filled') ||
+        telemetryTrendPartialAvailabilityLegendContract.temporalGapRequestCoverage !== 'No requests in observed intervals · 6 rate intervals available from 7 samples' ||
+        telemetryTrendPartialAvailabilityLegendContract.temporalGapBlockedCoverage !== 'No rejections in observed intervals · 6 rate intervals available from 7 samples' ||
+        !telemetryTrendPartialAvailabilityLegendContract.temporalGapSummary.includes('1 telemetry gap') ||
+        !telemetryTrendPartialAvailabilityLegendContract.temporalGapSummary.includes('never zero-filled')) {
+      throw new Error(`Partially unavailable all-zero trend legend overstated what telemetry proves: ${JSON.stringify(telemetryTrendPartialAvailabilityLegendContract)}`);
     }
 
     telemetryTrendSeriesIsolationContract = await cdp.evaluate(`(() => {
@@ -2640,7 +2693,7 @@ try {
     connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
     authentication_ui_contract:authenticationUIContract, cumulative_rate_precision_contract:cumulativeRatePrecisionContract, percentage_truthfulness_contract:percentageTruthfulnessContract, latency_truthfulness_contract:latencyTruthfulnessContract, telemetry_availability_contract:telemetryAvailabilityContract,
-    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract, telemetry_trend_many_gap_contract:telemetryTrendManyGapContract, telemetry_trend_long_gap_compression_contract:telemetryTrendLongGapCompressionContract, telemetry_trend_outlier_contract:telemetryTrendOutlierContract, telemetry_trend_zero_baseline_contract:telemetryTrendZeroBaselineContract, telemetry_trend_legend_semantics_contract:telemetryTrendLegendSemanticsContract, telemetry_trend_series_isolation_contract:telemetryTrendSeriesIsolationContract, telemetry_trend_latest_availability_contract:telemetryTrendLatestAvailabilityContract, telemetry_trend_empty_contract:telemetryTrendEmptyContract,
+    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract, telemetry_trend_many_gap_contract:telemetryTrendManyGapContract, telemetry_trend_long_gap_compression_contract:telemetryTrendLongGapCompressionContract, telemetry_trend_outlier_contract:telemetryTrendOutlierContract, telemetry_trend_zero_baseline_contract:telemetryTrendZeroBaselineContract, telemetry_trend_legend_semantics_contract:telemetryTrendLegendSemanticsContract, telemetry_trend_partial_availability_legend_contract:telemetryTrendPartialAvailabilityLegendContract, telemetry_trend_series_isolation_contract:telemetryTrendSeriesIsolationContract, telemetry_trend_latest_availability_contract:telemetryTrendLatestAvailabilityContract, telemetry_trend_empty_contract:telemetryTrendEmptyContract,
     undefined_metric_rendering_contract:undefinedMetricRenderingContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
   }, null, 2));
 } catch (error) {

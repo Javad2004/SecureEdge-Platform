@@ -967,18 +967,25 @@ function drawTrend() {
   $('trend-requests-latest').textContent = rateText(requestLatest);
   $('trend-blocked-latest').textContent = rateText(blockedLatest);
 
-  const coverageText = (kind, count, seriesValues) => {
+  const coverageText = (kind, key, count, seriesValues) => {
     if (!retainedCount) return 'Waiting for rate samples';
     const sampleText = `${retainedCount} sample${retainedCount === 1 ? '' : 's'} retained`;
     if (!count) return `No rate intervals available · ${sampleText}`;
     const intervalText = `${count} rate interval${count === 1 ? '' : 's'} available from ${retainedCount} sample${retainedCount === 1 ? '' : 's'}`;
     if (seriesValues.length && seriesValues.every(value => value === 0)) {
-      return kind === 'blocked' ? `No rejections · ${intervalText}` : `No requests · ${intervalText}`;
+      // A zero is only evidence about an interval that was actually observed.
+      // Keep the concise wording for complete histories (including the normal
+      // first-sample baseline), but scope the claim when later intervals or
+      // whole time spans are unavailable so missing telemetry is never read as
+      // evidence of zero traffic.
+      const unavailableAfterBaseline = state.trend.slice(1).some(point => !Number.isFinite(point[key]));
+      const qualifier = unavailableAfterBaseline || temporalGaps.length ? ' in observed intervals' : '';
+      return kind === 'blocked' ? `No rejections${qualifier} · ${intervalText}` : `No requests${qualifier} · ${intervalText}`;
     }
     return intervalText;
   };
-  $('trend-requests-coverage').textContent = coverageText('requests', requestCount, state.trend.map(point => point.requests).filter(Number.isFinite));
-  $('trend-blocked-coverage').textContent = coverageText('blocked', blockedCount, state.trend.map(point => point.blocked).filter(Number.isFinite));
+  $('trend-requests-coverage').textContent = coverageText('requests', 'requests', requestCount, state.trend.map(point => point.requests).filter(Number.isFinite));
+  $('trend-blocked-coverage').textContent = coverageText('blocked', 'blocked', blockedCount, state.trend.map(point => point.blocked).filter(Number.isFinite));
 
   const retainedRangeText = trendRangeText(retainedBounds);
   const retainedCountText = `${retainedCount} sample${retainedCount === 1 ? '' : 's'}`;

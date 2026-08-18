@@ -908,6 +908,7 @@ try {
   }
 
   let telemetryTrendGapContract = null;
+  let telemetryTrendManyGapContract = null;
   let telemetryTrendLongGapCompressionContract = null;
   let telemetryTrendOutlierContract = null;
   let telemetryTrendZeroBaselineContract = null;
@@ -1079,6 +1080,82 @@ try {
         !telemetryTrendGapContract.summary.includes('never zero-filled') ||
         telemetryTrendGapContract.emptyHidden !== true) {
       throw new Error(`Trend legend/range/accessibility summary contract failed: ${JSON.stringify(telemetryTrendGapContract)}`);
+    }
+
+    telemetryTrendManyGapContract = await cdp.evaluate(`(() => {
+      const previous = state.overview;
+      const baseTime = Date.now() - 10 * 60 * 1000;
+      // Fifteen regular 10-second intervals keep the inferred cadence stable;
+      // four deliberately longer breaks exercise the dense-gap rendering path.
+      const offsets = [
+        0,10000,20000,30000,
+        80000,90000,100000,110000,
+        180000,190000,200000,210000,
+        300000,310000,320000,330000,
+        450000,460000,470000,480000
+      ];
+      const samples = offsets.map((offset, index) => ({
+        generated_at:new Date(baseTime + offset).toISOString(),
+        security:{rejected_rate_available:true,rejected_per_second:index % 5 === 0 ? 0.1 : 0},
+        edgeproxy:{available:true,request_rate_available:true,requests_per_second:0.25 + (index % 4) * 0.05}
+      }));
+      const candidate = structuredClone(previous);
+      candidate.telemetry_history = {samples};
+      state.overview = candidate;
+      renderOverview();
+
+      const canvas = document.getElementById('trend-chart');
+      const originalGetContext = canvas.getContext;
+      const originalCanvasWidth = canvas.style.width;
+      const originalCanvasMaxWidth = canvas.style.maxWidth;
+      const operations = [];
+      const context = {
+        _strokeStyle:'', _fillStyle:'', _lineDash:[], lineWidth:1, lineJoin:'', lineCap:'', font:'', textAlign:'', textBaseline:'',
+        set strokeStyle(value) { this._strokeStyle = value; }, get strokeStyle() { return this._strokeStyle; },
+        set fillStyle(value) { this._fillStyle = value; }, get fillStyle() { return this._fillStyle; },
+        setLineDash(values){ this._lineDash = Array.isArray(values) ? [...values] : []; },
+        scale(){}, clearRect(){}, beginPath(){}, stroke(){}, fill(){}, save(){}, restore(){},
+        moveTo(x,y){ operations.push({type:'move', color:this._strokeStyle, dash:this._lineDash.join(','), x, y}); },
+        lineTo(x,y){ operations.push({type:'line', color:this._strokeStyle, dash:this._lineDash.join(','), x, y}); },
+        arc(x,y){ operations.push({type:'point', color:this._fillStyle, x, y}); },
+        fillText(text,x,y){ operations.push({type:'text', color:this._fillStyle, text, x, y}); }
+      };
+      canvas.style.maxWidth = 'none';
+      canvas.style.width = '640px';
+      canvas.getContext = () => context;
+      try { drawTrend(); } finally {
+        canvas.getContext = originalGetContext;
+        canvas.style.width = originalCanvasWidth;
+        canvas.style.maxWidth = originalCanvasMaxWidth;
+      }
+      const requestColor = cssColor('--chart-requests', '#67a6ff');
+      const blockedColor = cssColor('--chart-blocked', '#ff6b84');
+      const requestLineOps = operations.filter(operation => operation.color === requestColor && ['move','line'].includes(operation.type));
+      const blockedLineOps = operations.filter(operation => operation.color === blockedColor && ['move','line'].includes(operation.type));
+      const gaps = trendTemporalGaps(state.trend);
+      const result = {
+        gapCount:gaps.length,
+        gapDurations:gaps.map(gap => gap.duration),
+        gapMarkers:operations.filter(operation => operation.type === 'text' && operation.text === '//').length,
+        gapLabels:operations.filter(operation => operation.type === 'text' && operation.text.startsWith('Telemetry gap ·')).map(operation => operation.text),
+        requestMoves:requestLineOps.filter(operation => operation.type === 'move').length,
+        blockedMoves:blockedLineOps.filter(operation => operation.type === 'move').length,
+        summary:document.getElementById('trend-chart-summary').textContent
+      };
+      state.overview = previous;
+      renderAll();
+      return result;
+    })()`);
+    if (telemetryTrendManyGapContract.gapCount !== 4 ||
+        telemetryTrendManyGapContract.gapMarkers !== 4 ||
+        telemetryTrendManyGapContract.gapLabels.length !== 1 ||
+        telemetryTrendManyGapContract.gapLabels[0] !== 'Telemetry gap · 2m' ||
+        telemetryTrendManyGapContract.requestMoves !== 5 ||
+        telemetryTrendManyGapContract.blockedMoves !== 5 ||
+        !telemetryTrendManyGapContract.summary.includes('4 telemetry gaps') ||
+        !telemetryTrendManyGapContract.summary.includes('longest 2m') ||
+        !telemetryTrendManyGapContract.summary.includes('never zero-filled')) {
+      throw new Error(`Dense telemetry-gap rendering contract failed: ${JSON.stringify(telemetryTrendManyGapContract)}`);
     }
 
     telemetryTrendLongGapCompressionContract = await cdp.evaluate(`(() => {
@@ -2512,7 +2589,7 @@ try {
     connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
     authentication_ui_contract:authenticationUIContract, cumulative_rate_precision_contract:cumulativeRatePrecisionContract, percentage_truthfulness_contract:percentageTruthfulnessContract, latency_truthfulness_contract:latencyTruthfulnessContract, telemetry_availability_contract:telemetryAvailabilityContract,
-    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract, telemetry_trend_long_gap_compression_contract:telemetryTrendLongGapCompressionContract, telemetry_trend_outlier_contract:telemetryTrendOutlierContract, telemetry_trend_zero_baseline_contract:telemetryTrendZeroBaselineContract, telemetry_trend_series_isolation_contract:telemetryTrendSeriesIsolationContract, telemetry_trend_latest_availability_contract:telemetryTrendLatestAvailabilityContract, telemetry_trend_empty_contract:telemetryTrendEmptyContract,
+    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract, telemetry_trend_many_gap_contract:telemetryTrendManyGapContract, telemetry_trend_long_gap_compression_contract:telemetryTrendLongGapCompressionContract, telemetry_trend_outlier_contract:telemetryTrendOutlierContract, telemetry_trend_zero_baseline_contract:telemetryTrendZeroBaselineContract, telemetry_trend_series_isolation_contract:telemetryTrendSeriesIsolationContract, telemetry_trend_latest_availability_contract:telemetryTrendLatestAvailabilityContract, telemetry_trend_empty_contract:telemetryTrendEmptyContract,
     undefined_metric_rendering_contract:undefinedMetricRenderingContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
   }, null, 2));
 } catch (error) {

@@ -971,8 +971,12 @@ PYNET
     securityedge) compose=compose.securityedge.yml ;;
     platform) compose=compose.platform.yml ;;
   esac
-  (cd "$prod_dir" && docker compose --env-file .env -f "$compose" config -q) || fail=1
-  echo "Docker Compose render: OK ($compose)"
+  if (cd "$prod_dir" && docker compose --env-file .env -f "$compose" config -q); then
+    echo "Docker Compose render: OK ($compose)"
+  else
+    echo "Docker Compose render: FAILED ($compose)" >&2
+    fail=1
+  fi
 else
   if [[ "${host_exact_route:-false}" == true ]]; then
     echo "production Docker subnet has an exact host route, but Docker Compose is unavailable to prove that the route belongs to this deployment" >&2

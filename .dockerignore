@@ -8,6 +8,10 @@
 **/.dev/
 **/.cache/
 
+# Python tooling/test artifacts
+**/__pycache__/
+**/*.py[cod]
+
 **/*.log
 **/*.ndjson
 **/*.exe

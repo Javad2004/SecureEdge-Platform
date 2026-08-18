@@ -24,6 +24,10 @@ tmp/
 temp/
 .cache/
 
+# Python tooling/test artifacts
+**/__pycache__/
+*.py[cod]
+
 .vscode/
 .idea/
 .DS_Store

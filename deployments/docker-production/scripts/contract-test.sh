@@ -64,10 +64,29 @@ for compose in "$prod_dir"/compose.*.yml; do
     exit 1
   }
   grep -q 'cap_drop:' "$compose"
-  grep -q 'no-new-privileges:true' "$compose"
+  grep -q 'no-new-privileges=true' "$compose"
+  ! grep -q 'no-new-privileges:true' "$compose"
   grep -q '/healthz' "$compose"
   if grep -q '/readyz' "$compose"; then
     echo "container healthcheck must use process health, not dependency readiness: $compose" >&2
+    exit 1
+  fi
+done
+
+# Docker Engine accepts both separators today, but current daemons deprecate
+# the colon form for security options. Keep every checked-in Compose workflow
+# on the canonical option=value form so container recreation stays warning-free.
+all_compose=(
+  "$prod_dir/compose.edgeproxy.yml"
+  "$prod_dir/compose.securityedge.yml"
+  "$prod_dir/compose.platform.yml"
+  "$repo_root/deployments/docker/compose.yml"
+  "$repo_root/apps/edgeproxy/docker-compose.yml"
+)
+for compose in "${all_compose[@]}"; do
+  grep -q 'no-new-privileges=true' "$compose"
+  if grep -q 'no-new-privileges:true' "$compose"; then
+    echo "deprecated Docker security-opt separator remains: $compose" >&2
     exit 1
   fi
 done
@@ -182,6 +201,22 @@ for bad_endpoint in \
 done
 if python3 "$endpoint_checker" --key ADMIN --value 'http://8.8.8.8:9090' --required-scheme http --scope private >/dev/null 2>&1; then
   echo 'production external Admin guardrail accepted globally routed HTTP endpoint' >&2
+  exit 1
+fi
+
+# Full-platform validation must remain safe while the production SecurityEdge
+# container already owns its fixed ipv4_address. The one-off validator selects
+# another free address on the same network rather than colliding with the live
+# service.
+grep -q 'platform_validation_ip()' "$script_dir/validate.sh"
+grep -q 'SECURITYEDGE_CONTAINER_IPV4="$validation_ip"' "$script_dir/validate.sh"
+grep -q 'select-validation-ip.py' "$script_dir/validate.sh"
+validation_picker="$script_dir/select-validation-ip.py"
+[[ "$(printf '%s\n' '[]' | python3 "$validation_picker" --subnet 172.31.250.0/24 --gateway 172.31.250.1 --reserved-ip 172.31.250.10)" == 172.31.250.254 ]]
+occupied_network='[{"Containers":{"edge":{"IPv4Address":"172.31.250.2/24"},"live-security":{"IPv4Address":"172.31.250.10/24"},"other":{"IPv4Address":"172.31.250.254/24"}}}]'
+[[ "$(printf '%s\n' "$occupied_network" | python3 "$validation_picker" --subnet 172.31.250.0/24 --gateway 172.31.250.1 --reserved-ip 172.31.250.10)" == 172.31.250.253 ]]
+if printf '%s\n' '[]' | python3 "$validation_picker" --subnet 192.0.2.0/30 --gateway 192.0.2.1 --reserved-ip 192.0.2.2 >/dev/null 2>&1; then
+  echo 'validation IP picker accepted a subnet with no spare address' >&2
   exit 1
 fi
 

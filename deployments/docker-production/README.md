@@ -253,7 +253,13 @@ bash ./scripts/validate.sh platform
 ```
 
 Use `edgeproxy` or `securityedge` instead of `platform` for single-service
-modes. Do not put production traffic on the containers until both commands pass.
+modes. In full-platform mode the validator is safe to run during an in-place
+update: the live SecurityEdge keeps its fixed production address while the
+one-off validation container automatically receives another free temporary
+address on the same Docker network. This avoids the `Address already in use`
+collision that a plain `docker compose run securityedge ...` would cause while
+the production container is running. Do not put fresh production traffic on
+new containers until both commands pass.
 
 ## 5. Start a fresh Docker deployment
 

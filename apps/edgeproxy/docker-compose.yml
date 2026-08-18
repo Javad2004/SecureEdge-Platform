@@ -12,7 +12,7 @@ services:
     cap_drop:
       - ALL
     security_opt:
-      - no-new-privileges:true
+      - no-new-privileges=true
 
   proxy:
     build:
@@ -35,7 +35,7 @@ services:
     cap_drop:
       - ALL
     security_opt:
-      - no-new-privileges:true
+      - no-new-privileges=true
 
 volumes:
   edgeproxy-config:

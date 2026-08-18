@@ -77,6 +77,29 @@ func TestDerivedMetricsRemainInternallyConsistent(t *testing.T) {
 	}
 }
 
+func TestLatencyPercentilesNeverExceedObservedMaximum(t *testing.T) {
+	r := New()
+	done := r.Begin()
+	done(Observation{Route: "demo", Method: "GET", Action: "ALLOW", Duration: 5694970 * time.Microsecond})
+
+	latency := r.Snapshot().Total.Latency
+	if latency.MaximumMS != 5694.97 {
+		t.Fatalf("maximum=%v ms, want 5694.97 ms", latency.MaximumMS)
+	}
+	for name, percentile := range map[string]float64{
+		"p50": latency.P50MS,
+		"p95": latency.P95MS,
+		"p99": latency.P99MS,
+	} {
+		if percentile > latency.MaximumMS {
+			t.Fatalf("%s=%v ms exceeds observed maximum=%v ms", name, percentile, latency.MaximumMS)
+		}
+		if percentile != latency.MaximumMS {
+			t.Fatalf("%s=%v ms, want single-sample maximum=%v ms", name, percentile, latency.MaximumMS)
+		}
+	}
+}
+
 func TestCanceledOnlySnapshotHasNoEvaluatedRatesOrLatency(t *testing.T) {
 	r := New()
 	done := r.Begin()

@@ -587,7 +587,11 @@ func percentileUpperBound(buckets []uint64, count uint64, quantile float64, maxi
 		cumulative += bucketCount
 		if cumulative >= target {
 			if i < len(latencyBounds) {
-				return durationToMS(latencyBounds[i])
+				estimate := durationToMS(latencyBounds[i])
+				if estimate > maximum {
+					return maximum
+				}
+				return estimate
 			}
 			return maximum
 		}

@@ -235,9 +235,9 @@ func snap(c *counters) CounterSnapshot {
 		out.Latency.AverageMS = float64(c.durationNS.Load()) / float64(evaluated) / float64(time.Millisecond)
 	}
 	out.Latency.MaximumMS = float64(c.maxDurationNS.Load()) / float64(time.Millisecond)
-	out.Latency.P50MS = percentile(c, evaluated, 0.50)
-	out.Latency.P95MS = percentile(c, evaluated, 0.95)
-	out.Latency.P99MS = percentile(c, evaluated, 0.99)
+	out.Latency.P50MS = percentile(c, evaluated, 0.50, out.Latency.MaximumMS)
+	out.Latency.P95MS = percentile(c, evaluated, 0.95, out.Latency.MaximumMS)
+	out.Latency.P99MS = percentile(c, evaluated, 0.99, out.Latency.MaximumMS)
 	return out
 }
 
@@ -291,7 +291,7 @@ func latencyBucket(d time.Duration) int {
 	return len(latencyBounds)
 }
 
-func percentile(c *counters, total uint64, q float64) float64 {
+func percentile(c *counters, total uint64, q float64, maximum float64) float64 {
 	if total == 0 {
 		return 0
 	}
@@ -301,12 +301,16 @@ func percentile(c *counters, total uint64, q float64) float64 {
 		cumulative += c.latencyBuckets[i].Load()
 		if cumulative >= target {
 			if i < len(latencyBounds) {
-				return float64(latencyBounds[i]) / float64(time.Millisecond)
+				estimate := float64(latencyBounds[i]) / float64(time.Millisecond)
+				if estimate > maximum {
+					return maximum
+				}
+				return estimate
 			}
-			return float64(c.maxDurationNS.Load()) / float64(time.Millisecond)
+			return maximum
 		}
 	}
-	return float64(c.maxDurationNS.Load()) / float64(time.Millisecond)
+	return maximum
 }
 
 func metricMethod(method string) string {

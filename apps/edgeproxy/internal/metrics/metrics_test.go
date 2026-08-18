@@ -185,6 +185,28 @@ func TestHistogramPreservesRealZeroMinimum(t *testing.T) {
 	}
 }
 
+func TestHistogramPercentilesNeverExceedObservedMaximum(t *testing.T) {
+	var h histogram
+	h.Observe(5694970 * time.Microsecond)
+
+	snapshot := h.Snapshot()
+	if snapshot.Maximum != 5694.97 {
+		t.Fatalf("maximum=%v ms, want 5694.97 ms", snapshot.Maximum)
+	}
+	for name, percentile := range map[string]float64{
+		"p50": snapshot.P50,
+		"p95": snapshot.P95,
+		"p99": snapshot.P99,
+	} {
+		if percentile > snapshot.Maximum {
+			t.Fatalf("%s=%v ms exceeds observed maximum=%v ms", name, percentile, snapshot.Maximum)
+		}
+		if percentile != snapshot.Maximum {
+			t.Fatalf("%s=%v ms, want single-sample maximum=%v ms", name, percentile, snapshot.Maximum)
+		}
+	}
+}
+
 func TestHistogramEmptySnapshot(t *testing.T) {
 	var h histogram
 	snapshot := h.Snapshot()

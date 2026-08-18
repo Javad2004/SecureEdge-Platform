@@ -428,6 +428,10 @@ func TestDashboardVisualControlStylesContract(t *testing.T) {
 	css := string(styles)
 	for _, required := range []string{
 		`overflow-x:hidden`,
+		`html:has(.editor-dialog[open]),`,
+		`body:has(.editor-dialog[open])`,
+		`overflow-y:hidden`,
+		`scrollbar-gutter:stable`,
 		`.shell {`,
 		`grid-template-columns:250px minmax(0,1fr)`,
 		`min-height:100dvh`,

@@ -2556,7 +2556,9 @@ try {
         closePlaceItems: closeStyle.placeItems,
         footerPosition:footerStyle.position,
         footerBottomGap:formRect.bottom-footerButton.bottom,
-        footerPaddingBottom:parseFloat(footerStyle.paddingBottom)
+        footerPaddingBottom:parseFloat(footerStyle.paddingBottom),
+        htmlOverflowY:getComputedStyle(document.documentElement).overflowY,
+        bodyOverflowY:getComputedStyle(document.body).overflowY
       };
     })()`);
     if (routeEditorLayout.compactTopDelta > 1 || routeEditorLayout.compactBottomDelta > 1 ||
@@ -2569,6 +2571,9 @@ try {
     if (routeEditorLayout.footerPosition !== 'sticky' || routeEditorLayout.footerBottomGap < 16 ||
         routeEditorLayout.footerBottomGap > 32 || routeEditorLayout.footerPaddingBottom < 18) {
       throw new Error(`Route dialog footer lacks professional bottom breathing room: ${JSON.stringify(routeEditorLayout)}`);
+    }
+    if (routeEditorLayout.htmlOverflowY !== 'hidden' || routeEditorLayout.bodyOverflowY !== 'hidden') {
+      throw new Error(`Route dialog does not isolate background scrolling: ${JSON.stringify(routeEditorLayout)}`);
     }
   }
   const routeEditor = await cdp.evaluate(`({
@@ -2585,6 +2590,7 @@ try {
 
   let originDialogLayout = null;
   let telemetryDetailLayout = null;
+  let dialogScrollLockContract = null;
   if (fixtureRoot) {
     await cdp.evaluate(`document.querySelector('[data-origin-edit]').click()`);
     await eventually(async () => await cdp.evaluate(`document.getElementById('origin-dialog').open`), 'Origin editor');
@@ -2599,7 +2605,9 @@ try {
       return {
         switchGap:tlsSwitch.top-fields.bottom,
         footerBottomGap:formRect.bottom-footerButton.bottom,
-        footerPosition:getComputedStyle(footer).position
+        footerPosition:getComputedStyle(footer).position,
+        htmlOverflowY:getComputedStyle(document.documentElement).overflowY,
+        bodyOverflowY:getComputedStyle(document.body).overflowY
       };
     })()`);
     if (originDialogLayout.switchGap < 12 || originDialogLayout.switchGap > 20) {
@@ -2608,6 +2616,9 @@ try {
     if (originDialogLayout.footerPosition === 'sticky' || originDialogLayout.footerBottomGap < 20 ||
         originDialogLayout.footerBottomGap > 30) {
       throw new Error(`Origin dialog footer bottom spacing is inconsistent: ${JSON.stringify(originDialogLayout)}`);
+    }
+    if (originDialogLayout.htmlOverflowY !== 'hidden' || originDialogLayout.bodyOverflowY !== 'hidden') {
+      throw new Error(`Origin dialog does not isolate background scrolling: ${JSON.stringify(originDialogLayout)}`);
     }
     await cdp.evaluate(`document.getElementById('origin-dialog').close()`);
 
@@ -2631,7 +2642,11 @@ try {
         barRowWidths,
         footerPosition:footerStyle.position,
         footerBottomGap:formRect.bottom-footerButton.bottom,
-        footerPaddingBottom:parseFloat(footerStyle.paddingBottom)
+        footerPaddingBottom:parseFloat(footerStyle.paddingBottom),
+        htmlOverflowY:getComputedStyle(document.documentElement).overflowY,
+        bodyOverflowY:getComputedStyle(document.body).overflowY,
+        formClientHeight:form.clientHeight,
+        formScrollHeight:form.scrollHeight
       };
     })()`);
     if (telemetryDetailLayout.leftDelta > 1 || telemetryDetailLayout.rightDelta > 1 ||
@@ -2643,7 +2658,63 @@ try {
         telemetryDetailLayout.footerBottomGap > 32 || telemetryDetailLayout.footerPaddingBottom < 18) {
       throw new Error(`Telemetry dialog footer lacks professional bottom breathing room: ${JSON.stringify(telemetryDetailLayout)}`);
     }
+    if (telemetryDetailLayout.htmlOverflowY !== 'hidden' || telemetryDetailLayout.bodyOverflowY !== 'hidden') {
+      throw new Error(`Telemetry dialog does not isolate background scrolling: ${JSON.stringify(telemetryDetailLayout)}`);
+    }
+
+    await cdp.send('Emulation.setDeviceMetricsOverride', {width:1365,height:700,deviceScaleFactor:1,mobile:false});
+    await sleep(100);
+    const scrollLockBefore = await cdp.evaluate(`(() => {
+      window.scrollTo(0, 0);
+      const dialog = document.getElementById('telemetry-dialog');
+      const form = dialog.querySelector('.editor-form');
+      form.scrollTop = 0;
+      return {
+        pageY:window.scrollY,
+        pageScrollable:document.documentElement.scrollHeight > document.documentElement.clientHeight,
+        bodyWidth:document.body.getBoundingClientRect().width,
+        htmlOverflowY:getComputedStyle(document.documentElement).overflowY,
+        bodyOverflowY:getComputedStyle(document.body).overflowY,
+        formClientHeight:form.clientHeight,
+        formScrollHeight:form.scrollHeight
+      };
+    })()`);
+    if (!scrollLockBefore.pageScrollable || scrollLockBefore.htmlOverflowY !== 'hidden' ||
+        scrollLockBefore.bodyOverflowY !== 'hidden' ||
+        scrollLockBefore.formScrollHeight <= scrollLockBefore.formClientHeight) {
+      throw new Error(`Telemetry modal scroll-lock precondition failed: ${JSON.stringify(scrollLockBefore)}`);
+    }
+    await cdp.send('Input.dispatchMouseEvent', {type:'mouseWheel',x:20,y:350,deltaX:0,deltaY:400});
+    await sleep(150);
+    const backdropWheel = await cdp.evaluate(`({pageY:window.scrollY,dialogOpen:document.getElementById('telemetry-dialog').open})`);
+    const dialogScroll = await cdp.evaluate(`(() => {
+      const form = document.getElementById('telemetry-dialog').querySelector('.editor-form');
+      form.scrollTop = Math.min(120, form.scrollHeight - form.clientHeight);
+      return {scrollTop:form.scrollTop,clientHeight:form.clientHeight,scrollHeight:form.scrollHeight};
+    })()`);
+    if (backdropWheel.pageY !== 0 || !backdropWheel.dialogOpen || dialogScroll.scrollTop <= 0) {
+      throw new Error(`Open dialog does not fully isolate page scroll while preserving internal scrolling: ${JSON.stringify({backdropWheel,dialogScroll})}`);
+    }
+    const openBodyWidth = scrollLockBefore.bodyWidth;
     await cdp.evaluate(`document.getElementById('telemetry-dialog').close()`);
+    await sleep(100);
+    const closedState = await cdp.evaluate(`(() => ({
+      pageY:window.scrollY,
+      bodyWidth:document.body.getBoundingClientRect().width,
+      htmlOverflowY:getComputedStyle(document.documentElement).overflowY,
+      bodyOverflowY:getComputedStyle(document.body).overflowY
+    }))()`);
+    await cdp.send('Input.dispatchMouseEvent', {type:'mouseWheel',x:1000,y:650,deltaX:0,deltaY:400});
+    await sleep(150);
+    const restoredPageY = await cdp.evaluate(`window.scrollY`);
+    dialogScrollLockContract = {before:scrollLockBefore,backdropWheel,dialogScroll,closedState,restoredPageY};
+    if (closedState.htmlOverflowY === 'hidden' || closedState.bodyOverflowY === 'hidden' ||
+        Math.abs(openBodyWidth - closedState.bodyWidth) > 1 || restoredPageY <= 0) {
+      throw new Error(`Dialog scroll restoration or scrollbar stability failed: ${JSON.stringify(dialogScrollLockContract)}`);
+    }
+    await cdp.evaluate(`window.scrollTo(0,0)`);
+    await cdp.send('Emulation.setDeviceMetricsOverride', {width:1365,height:900,deviceScaleFactor:1,mobile:false});
+    await sleep(100);
   }
 
   let rawConfigLayout = null;
@@ -2757,7 +2828,8 @@ try {
         const form = dialogNode.querySelector('.editor-form');
         return {dialogLeft:dialog.left, dialogRight:dialog.right, dialogWidth:dialog.width, viewportWidth:root.clientWidth,
           dialogClientWidth:dialogNode.clientWidth, dialogScrollWidth:dialogNode.scrollWidth,
-          formClientWidth:form.clientWidth, formScrollWidth:form.scrollWidth};
+          formClientWidth:form.clientWidth, formScrollWidth:form.scrollWidth,
+          htmlOverflowY:getComputedStyle(root).overflowY, bodyOverflowY:getComputedStyle(document.body).overflowY};
       })()`);
       mobileLayout.width = width;
       await cdp.evaluate(`document.getElementById('route-dialog').close()`);
@@ -2768,7 +2840,8 @@ try {
         const formRect = dialog.querySelector('.editor-form').getBoundingClientRect();
         const footer = dialog.querySelector('.dialog-actions:last-child');
         const button = footer.querySelector('button[type="submit"]').getBoundingClientRect();
-        return {position:getComputedStyle(footer).position,bottomGap:formRect.bottom-button.bottom};
+        return {position:getComputedStyle(footer).position,bottomGap:formRect.bottom-button.bottom,
+          htmlOverflowY:getComputedStyle(document.documentElement).overflowY,bodyOverflowY:getComputedStyle(document.body).overflowY};
       })()`);
       await cdp.evaluate(`document.getElementById('origin-dialog').close()`);
       await cdp.evaluate(`document.querySelector('[data-origin-telemetry]').click()`);
@@ -2785,7 +2858,9 @@ try {
           bottomGap:formRect.bottom-button.bottom,
           paddingBottom:parseFloat(footerStyle.paddingBottom),
           formClientWidth:form.clientWidth,
-          formScrollWidth:form.scrollWidth
+          formScrollWidth:form.scrollWidth,
+          htmlOverflowY:getComputedStyle(document.documentElement).overflowY,
+          bodyOverflowY:getComputedStyle(document.body).overflowY
         };
       })()`);
       await cdp.evaluate(`document.getElementById('telemetry-dialog').close()`);
@@ -2797,6 +2872,11 @@ try {
           mobileLayout.formScrollWidth > mobileLayout.formClientWidth + 1 ||
           mobileLayout.telemetryFooter.formScrollWidth > mobileLayout.telemetryFooter.formClientWidth + 1) {
         throw new Error(`Mobile editor dialog leaks horizontal overflow internally at ${width}px: ${JSON.stringify(mobileLayout)}`);
+      }
+      if (mobileLayout.htmlOverflowY !== 'hidden' || mobileLayout.bodyOverflowY !== 'hidden' ||
+          mobileLayout.originFooter.htmlOverflowY !== 'hidden' || mobileLayout.originFooter.bodyOverflowY !== 'hidden' ||
+          mobileLayout.telemetryFooter.htmlOverflowY !== 'hidden' || mobileLayout.telemetryFooter.bodyOverflowY !== 'hidden') {
+        throw new Error(`Mobile editor dialog does not isolate background scrolling at ${width}px: ${JSON.stringify(mobileLayout)}`);
       }
       if (mobileLayout.originFooter.position === 'sticky' || mobileLayout.originFooter.bottomGap < 20 ||
           mobileLayout.originFooter.bottomGap > 30) {
@@ -3096,7 +3176,7 @@ try {
     title:contract.title, route:routeEditor.name, algorithm:routeEditor.algorithm,
     cache_route_options:cacheOptions, system_forms_populated:true, system_form_submission:systemFormSubmission, live_mutations_skipped:!fixtureRoot,
     refresh_coalescing:refreshCoalescing, mobile_nav_layouts:mobileNavLayouts, responsive_layouts:responsiveLayouts, mobile_dialog_layouts:mobileDialogLayouts,
-    route_editor_layout:routeEditorLayout, origin_dialog_layout:originDialogLayout, telemetry_detail_layout:telemetryDetailLayout,
+    route_editor_layout:routeEditorLayout, origin_dialog_layout:originDialogLayout, telemetry_detail_layout:telemetryDetailLayout, dialog_scroll_lock_contract:dialogScrollLockContract,
     raw_config_layout:rawConfigLayout, system_header_layout:systemHeaderLayout,
     login_brand_layout:loginBrandLayout, sidebar_brand_layout:sidebarBrandLayout,
     sidebar_layout:sidebarLayout, overview_topology_layout:overviewTopologyLayout, theme_contract:themeContract,

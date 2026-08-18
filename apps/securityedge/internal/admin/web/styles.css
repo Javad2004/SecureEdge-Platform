@@ -26,6 +26,13 @@
 html {
   overflow-x:hidden
 }
+html:has(.editor-dialog[open]),
+body:has(.editor-dialog[open]) {
+  overflow-y:hidden
+}
+html:has(.editor-dialog[open]) {
+  scrollbar-gutter:stable
+}
 body {
   margin:0;
   background:radial-gradient(circle at 80% 0,#17294b 0,transparent 30%),var(--bg);

@@ -969,12 +969,13 @@ function drawTrend() {
 
   const coverageText = (kind, count, seriesValues) => {
     if (!retainedCount) return 'Waiting for rate samples';
-    if (!count) return 'No observed rate intervals';
-    const countText = `${count}/${retainedCount} interval${retainedCount === 1 ? '' : 's'} observed`;
+    const sampleText = `${retainedCount} sample${retainedCount === 1 ? '' : 's'} retained`;
+    if (!count) return `No rate intervals available · ${sampleText}`;
+    const intervalText = `${count} rate interval${count === 1 ? '' : 's'} available from ${retainedCount} sample${retainedCount === 1 ? '' : 's'}`;
     if (seriesValues.length && seriesValues.every(value => value === 0)) {
-      return kind === 'blocked' ? `No rejections · ${countText}` : `No requests · ${countText}`;
+      return kind === 'blocked' ? `No rejections · ${intervalText}` : `No requests · ${intervalText}`;
     }
-    return countText;
+    return intervalText;
   };
   $('trend-requests-coverage').textContent = coverageText('requests', requestCount, state.trend.map(point => point.requests).filter(Number.isFinite));
   $('trend-blocked-coverage').textContent = coverageText('blocked', blockedCount, state.trend.map(point => point.blocked).filter(Number.isFinite));
@@ -999,7 +1000,12 @@ function drawTrend() {
 
   if (values.length) {
     const notes = [];
-    const hasUnavailable = requestCount < retainedCount || blockedCount < retainedCount;
+    // The first retained sample is a baseline when it has no derived rate yet;
+    // it is not a missing interval. Only unavailable rate points after that
+    // baseline should trigger the unavailable-interval note.
+    const requestUnavailableIntervals = state.trend.slice(1).filter(point => !Number.isFinite(point.requests)).length;
+    const blockedUnavailableIntervals = state.trend.slice(1).filter(point => !Number.isFinite(point.blocked)).length;
+    const hasUnavailable = requestUnavailableIntervals > 0 || blockedUnavailableIntervals > 0;
     if (hasUnavailable || temporalGaps.length) {
       const longestGap = temporalGaps.length ? Math.max(...temporalGaps.map(gap => gap.duration)) : 0;
       const gapText = temporalGaps.length

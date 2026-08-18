@@ -731,13 +731,14 @@ canvas {
   font-weight:600
 }
 .trend-series-copy small {
-  overflow:hidden;
+  overflow:visible;
   color:var(--muted);
   font-size:10.5px;
   font-weight:500;
-  line-height:1.25;
-  text-overflow:ellipsis;
-  white-space:nowrap
+  line-height:1.3;
+  overflow-wrap:anywhere;
+  text-overflow:clip;
+  white-space:normal
 }
 .trend-swatch {
   width:20px;

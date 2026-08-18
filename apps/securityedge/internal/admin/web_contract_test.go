@@ -588,6 +588,8 @@ func TestDashboardTrendPresentationContract(t *testing.T) {
 		`function trendDateTimeLabel(timestamp, includeSeconds = false, includeYear = false)`,
 		`draw('blocked', cssColor('--chart-blocked', '#ff7188'));`,
 		`No rejections ·`,
+		`rate interval${count === 1 ? '' : 's'} available from`,
+		`No rate intervals available ·`,
 		`unavailable intervals left blank, never zero-filled.`,
 		`id="trend-scale"`,
 		`const scaleDetailText = !values.length`,
@@ -619,6 +621,21 @@ func TestDashboardTrendPresentationContract(t *testing.T) {
 	}
 	if strings.Contains(string(app), `draw('blocked', cssColor('--chart-blocked', '#ff7188'), [6, 4])`) || strings.Contains(string(styles), `border-top:3px dashed var(--chart-blocked)`) {
 		t.Fatal("SecurityEdge rejection trend still uses the deprecated dashed presentation")
+	}
+	if strings.Contains(string(app), `${count}/${retainedCount}`) || strings.Contains(string(app), `intervals observed`) {
+		t.Fatal("trend legend still presents rate availability as an ambiguous observed/retained ratio")
+	}
+	trendCopyRule := regexp.MustCompile(`(?s)\.trend-series-copy small \{([^}]*)\}`).FindStringSubmatch(string(styles))
+	if len(trendCopyRule) != 2 {
+		t.Fatal("trend legend secondary-copy rule is missing")
+	}
+	for _, required := range []string{`overflow:visible`, `overflow-wrap:anywhere`, `text-overflow:clip`, `white-space:normal`} {
+		if !strings.Contains(trendCopyRule[1], required) {
+			t.Fatalf("trend legend secondary copy does not preserve full visible text: missing %q", required)
+		}
+	}
+	if strings.Contains(trendCopyRule[1], `text-overflow:ellipsis`) || strings.Contains(trendCopyRule[1], `white-space:nowrap`) || strings.Contains(trendCopyRule[1], `overflow:hidden`) {
+		t.Fatal("trend legend secondary copy can still truncate telemetry semantics")
 	}
 	if !strings.Contains(string(app), `long gaps compressed on the time axis`) {
 		t.Fatal("trend chart does not disclose compressed long telemetry gaps")

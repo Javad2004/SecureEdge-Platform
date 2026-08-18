@@ -73,6 +73,21 @@ func TestNewInspectorRejectsOutOfRangeCustomScore(t *testing.T) {
 		t.Fatalf("expected direct compilation to reject oversized score, got %v", err)
 	}
 }
+func TestSensitiveFileProbeMeetsDefaultBlockThreshold(t *testing.T) {
+	policy := config.Default().DefaultPolicy
+	req := httptest.NewRequest("GET", "http://project.test/.env", nil)
+	got, err := inspector(t).Inspect(req, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Score < policy.AnomalyThreshold {
+		t.Fatalf("sensitive-file score=%d must meet default anomaly threshold=%d", got.Score, policy.AnomalyThreshold)
+	}
+	if len(got.Matches) != 1 || got.Matches[0].RuleID != "PATH-002" {
+		t.Fatalf("unexpected sensitive-file matches: %#v", got.Matches)
+	}
+}
+
 func TestCleanRequest(t *testing.T) {
 	req := httptest.NewRequest("GET", "http://project.test/api/products?page=2", nil)
 	got, err := inspector(t).Inspect(req, config.Default().DefaultPolicy)

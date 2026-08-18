@@ -547,10 +547,13 @@ try {
       shellInert:document.getElementById('app-shell').inert,
       loginVisible:document.getElementById('login').classList.contains('visible'),
       inputValue:document.getElementById('token').value,
-      activeIsNav:document.activeElement?.classList?.contains('nav-item') || false
+      activeIsNav:document.activeElement?.classList?.contains('nav-item') || false,
+      toastVisible:document.getElementById('toast').classList.contains('show'),
+      toastText:document.getElementById('toast').textContent.trim()
     }))()`);
-    if (authenticatedUI.shellInert || authenticatedUI.loginVisible || authenticatedUI.inputValue) {
-      throw new Error(`Authenticated Dashboard did not release modal isolation or clear the credential input: ${JSON.stringify(authenticatedUI)}`);
+    if (authenticatedUI.shellInert || authenticatedUI.loginVisible || authenticatedUI.inputValue ||
+        authenticatedUI.toastVisible || authenticatedUI.toastText) {
+      throw new Error(`Authenticated Dashboard did not fully clear stale authentication UI state: ${JSON.stringify(authenticatedUI)}`);
     }
     authenticationUIContract.authenticated = authenticatedUI;
   }
@@ -916,6 +919,7 @@ try {
   let telemetryTrendPartialAvailabilityLegendContract = null;
   let telemetryTrendSeriesAvailabilityMarkerContract = null;
   let telemetryTrendSeriesMarkerMotionContract = null;
+  let telemetryTrendResponsiveGapLabelContract = [];
   let telemetryTrendSeriesIsolationContract = null;
   let telemetryTrendLatestAvailabilityContract = null;
   let telemetryTrendEmptyContract = null;
@@ -976,6 +980,8 @@ try {
         mapped, blockedMapped, displayMapped, displayBlockedMapped, requestOps, blockedOps,
         requestXs:requestLineOps.map(operation => operation.x),
         canvasWidth:canvas.clientWidth,
+        viewportWidth:window.innerWidth,
+        inlineGapLabelsEnabled:trendInlineGapLabelsEnabled(),
         rangeMs,
         lowTrafficScale:niceTrendMaximum(0.24),
         zeroScale:niceTrendMaximum(0),
@@ -1000,10 +1006,9 @@ try {
         emptyHidden:document.getElementById('trend-empty').hidden
       };
 
-      // The fixture card can be compact even on a desktop viewport because it
-      // shares a multi-column grid. Force one wide draw so the inline gap-label
-      // contract is exercised in a real browser rather than only by a static
-      // source assertion.
+      // The fixture card can be narrow even on a desktop viewport because it
+      // shares a multi-column grid. Force one wide draw as a second geometry
+      // check; desktop label visibility must not depend on card width.
       const originalCanvasWidth = canvas.style.width;
       const originalCanvasMaxWidth = canvas.style.maxWidth;
       const wideOperations = [];
@@ -1071,9 +1076,10 @@ try {
         telemetryTrendGapContract.blockedCoverage !== '4 rate intervals available from 7 samples' ||
         telemetryTrendGapContract.temporalGapCount !== 1 ||
         telemetryTrendGapContract.gapMarkers !== 1 ||
-        (telemetryTrendGapContract.canvasWidth >= 460
-          ? telemetryTrendGapContract.gapLabels.length !== 1 || !telemetryTrendGapContract.gapLabels[0].startsWith('Telemetry gap ·')
-          : telemetryTrendGapContract.gapLabels.length !== 0) ||
+        telemetryTrendGapContract.viewportWidth <= 700 ||
+        !telemetryTrendGapContract.inlineGapLabelsEnabled ||
+        telemetryTrendGapContract.gapLabels.length !== 1 ||
+        !telemetryTrendGapContract.gapLabels[0].startsWith('Telemetry gap ·') ||
         telemetryTrendGapContract.wideCanvasWidth !== 640 ||
         telemetryTrendGapContract.wideGapLabels.length !== 1 ||
         !telemetryTrendGapContract.wideGapLabels[0].startsWith('Telemetry gap ·') ||
@@ -1650,7 +1656,8 @@ try {
         telemetryTrendSeriesAvailabilityMarkerContract.wideTelemetryMarkers !== 0 ||
         telemetryTrendSeriesAvailabilityMarkerContract.compactBlockedMarkerLines !== 2 ||
         telemetryTrendSeriesAvailabilityMarkerContract.compactBlockedMarkerSymbols !== 1 ||
-        telemetryTrendSeriesAvailabilityMarkerContract.compactBlockedLabels.length !== 0 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.compactBlockedLabels.length !== 1 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.compactBlockedLabels[0] !== 'SecurityEdge rejection rate unavailable · 5s' ||
         telemetryTrendSeriesAvailabilityMarkerContract.requestCoverage !== '120 rate intervals available from 120 samples' ||
         telemetryTrendSeriesAvailabilityMarkerContract.blockedCoverage !== 'No rejections in observed intervals · 119 rate intervals available from 120 samples' ||
         !telemetryTrendSeriesAvailabilityMarkerContract.noteLabels.includes('Availability') ||
@@ -1750,6 +1757,61 @@ try {
         telemetryTrendSeriesMarkerMotionContract.dualRequestLabel !== 'EdgeProxy request rate unavailable · 5s' ||
         telemetryTrendSeriesMarkerMotionContract.dualBlockedLabel !== 'SecurityEdge rejection rate unavailable · 5s') {
       throw new Error(`Series-specific gap label anchoring/density contract failed: ${JSON.stringify(telemetryTrendSeriesMarkerMotionContract)}`);
+    }
+
+    for (const width of [1365,1250,1100,961,901,701,700,390,320]) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', {width,height:900,deviceScaleFactor:1,mobile:width <= 700});
+      await sleep(60);
+      const result = await cdp.evaluate(`(() => {
+        const previous = state.overview;
+        const baseTime = Date.now() - 120 * 5000;
+        const samples = Array.from({length:120}, (_, index) => ({
+          generated_at:new Date(baseTime + index * 5000).toISOString(),
+          security:{rejected_rate_available:index !== 73,rejected_per_second:0},
+          edgeproxy:{available:true,request_rate_available:index !== 20,requests_per_second:1 + (index % 4) * 0.2}
+        }));
+        const candidate = structuredClone(previous);
+        candidate.telemetry_history = {samples};
+        state.overview = candidate;
+        renderOverview();
+        const canvas = document.getElementById('trend-chart');
+        const originalGetContext = canvas.getContext;
+        const operations = [];
+        const context = {
+          _strokeStyle:'', _fillStyle:'', _lineDash:[], lineWidth:1, lineJoin:'', lineCap:'', font:'', textAlign:'', textBaseline:'',
+          set strokeStyle(value) { this._strokeStyle = value; }, get strokeStyle() { return this._strokeStyle; },
+          set fillStyle(value) { this._fillStyle = value; }, get fillStyle() { return this._fillStyle; },
+          setLineDash(values){ this._lineDash = Array.isArray(values) ? [...values] : []; },
+          scale(){}, clearRect(){}, beginPath(){}, stroke(){}, fill(){}, save(){}, restore(){},
+          moveTo(){}, lineTo(){}, arc(){},
+          fillText(text,x,y){ operations.push({type:'text', text, x, y, color:this._fillStyle}); }
+        };
+        canvas.getContext = () => context;
+        try { drawTrend(); } finally {
+          canvas.getContext = originalGetContext;
+          state.overview = previous;
+          renderAll();
+        }
+        return {
+          viewportWidth:window.innerWidth,
+          canvasWidth:canvas.clientWidth,
+          enabled:trendInlineGapLabelsEnabled(),
+          labels:operations.filter(operation => operation.type === 'text' && operation.text.includes('unavailable ·')).map(operation => operation.text)
+        };
+      })()`);
+      result.requestedWidth = width;
+      telemetryTrendResponsiveGapLabelContract.push(result);
+    }
+    await cdp.send('Emulation.setDeviceMetricsOverride', {width:1365,height:900,deviceScaleFactor:1,mobile:false});
+    for (const result of telemetryTrendResponsiveGapLabelContract) {
+      const shouldShow = result.requestedWidth > 700;
+      const requestLabel = result.labels.includes('EdgeProxy request rate unavailable · 5s');
+      const blockedLabel = result.labels.includes('SecurityEdge rejection rate unavailable · 5s');
+      if (result.enabled !== shouldShow ||
+          (shouldShow && (!requestLabel || !blockedLabel || result.labels.length !== 2)) ||
+          (!shouldShow && result.labels.length !== 0)) {
+        throw new Error(`Responsive series-gap labels are incorrect at ${result.requestedWidth}px: ${JSON.stringify(result)}`);
+      }
     }
 
     telemetryTrendSeriesIsolationContract = await cdp.evaluate(`(() => {
@@ -2609,12 +2671,16 @@ try {
           dialogLeft: dialog.left,
           dialogRight: dialog.right,
           dialogWidth: dialog.width,
-          viewportWidth: root.clientWidth
+          viewportWidth: root.clientWidth,
+          inlineGapLabelsEnabled:trendInlineGapLabelsEnabled()
         };
       })()`);
       await cdp.evaluate(`document.getElementById('route-dialog').close()`);
       layout.width = width;
       responsiveLayouts.push(layout);
+      if (layout.inlineGapLabelsEnabled !== (width > 700)) {
+        throw new Error(`Inline telemetry-gap label breakpoint is incorrect at ${width}px: ${JSON.stringify(layout)}`);
+      }
       if (layout.horizontalScrollbarPx > 1 || layout.bodyScrollWidth > layout.viewportWidth + 1 ||
           layout.pageOverflowX !== 'hidden' || layout.bodyOverflowX !== 'hidden') {
         throw new Error(`Dashboard exposes page-level horizontal overflow at ${width}px: ${JSON.stringify(layout)}`);
@@ -2956,7 +3022,7 @@ try {
     connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
     authentication_ui_contract:authenticationUIContract, cumulative_rate_precision_contract:cumulativeRatePrecisionContract, percentage_truthfulness_contract:percentageTruthfulnessContract, latency_truthfulness_contract:latencyTruthfulnessContract, telemetry_availability_contract:telemetryAvailabilityContract,
-    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract, telemetry_trend_many_gap_contract:telemetryTrendManyGapContract, telemetry_trend_long_gap_compression_contract:telemetryTrendLongGapCompressionContract, telemetry_trend_outlier_contract:telemetryTrendOutlierContract, telemetry_trend_zero_baseline_contract:telemetryTrendZeroBaselineContract, telemetry_trend_legend_semantics_contract:telemetryTrendLegendSemanticsContract, telemetry_trend_partial_availability_legend_contract:telemetryTrendPartialAvailabilityLegendContract, telemetry_trend_series_availability_marker_contract:telemetryTrendSeriesAvailabilityMarkerContract, telemetry_trend_series_marker_motion_contract:telemetryTrendSeriesMarkerMotionContract, telemetry_trend_series_isolation_contract:telemetryTrendSeriesIsolationContract, telemetry_trend_latest_availability_contract:telemetryTrendLatestAvailabilityContract, telemetry_trend_empty_contract:telemetryTrendEmptyContract,
+    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract, telemetry_trend_many_gap_contract:telemetryTrendManyGapContract, telemetry_trend_long_gap_compression_contract:telemetryTrendLongGapCompressionContract, telemetry_trend_outlier_contract:telemetryTrendOutlierContract, telemetry_trend_zero_baseline_contract:telemetryTrendZeroBaselineContract, telemetry_trend_legend_semantics_contract:telemetryTrendLegendSemanticsContract, telemetry_trend_partial_availability_legend_contract:telemetryTrendPartialAvailabilityLegendContract, telemetry_trend_series_availability_marker_contract:telemetryTrendSeriesAvailabilityMarkerContract, telemetry_trend_series_marker_motion_contract:telemetryTrendSeriesMarkerMotionContract, telemetry_trend_responsive_gap_label_contract:telemetryTrendResponsiveGapLabelContract, telemetry_trend_series_isolation_contract:telemetryTrendSeriesIsolationContract, telemetry_trend_latest_availability_contract:telemetryTrendLatestAvailabilityContract, telemetry_trend_empty_contract:telemetryTrendEmptyContract,
     undefined_metric_rendering_contract:undefinedMetricRenderingContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
   }, null, 2));
 } catch (error) {

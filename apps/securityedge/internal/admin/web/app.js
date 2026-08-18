@@ -129,6 +129,14 @@ function toast(message) {
   toast.timer = setTimeout(() => element.classList.remove('show'), 3000);
 }
 
+function clearToast() {
+  const element = $('toast');
+  clearTimeout(toast.timer);
+  toast.timer = null;
+  element.classList.remove('show');
+  element.textContent = '';
+}
+
 function setConsoleLocked(locked, focusLogin = false) {
   const loginPanel = $('login');
   const shell = $('app-shell');
@@ -162,6 +170,7 @@ async function login(token) {
   }
   sessionSet('securityedge_token', token);
   $('token').value = '';
+  clearToast();
   setConsoleLocked(false);
   $('live-dot').classList.add('live');
   $('connection-label').textContent = 'Checking dependencies';
@@ -822,6 +831,10 @@ function renderTrendNotes(notes) {
   });
 }
 
+function trendInlineGapLabelsEnabled() {
+  return !window.matchMedia('(max-width: 700px)').matches;
+}
+
 function drawTrend() {
   const canvas = $('trend-chart');
   if (!canvas) return;
@@ -836,10 +849,11 @@ function drawTrend() {
   context.clearRect(0, 0, width, height);
 
   const compact = width < 460;
+  const showInlineGapLabels = trendInlineGapLabelsEnabled();
   const plot = {
     left: compact ? 46 : 58,
     right: width - 12,
-    top: compact ? 20 : 42,
+    top: showInlineGapLabels ? 42 : 20,
     bottom: height - 34
   };
   const plotWidth = Math.max(1, plot.right - plot.left);
@@ -968,11 +982,11 @@ function drawTrend() {
   const blockedUnavailableRuns = trendSeriesUnavailableRuns(displayTrend, 'blocked', temporalGapIndexes);
   const gapLabelCandidates = [];
   const queueGapLabel = (text, x, color, duration, priority = 0) => {
-    if (compact || !text || !Number.isFinite(x)) return;
+    if (!showInlineGapLabels || !text || !Number.isFinite(x)) return;
     gapLabelCandidates.push({text, x, color, duration:Math.max(0, Number(duration) || 0), priority});
   };
   const drawGapLabels = candidates => {
-    if (compact || !candidates.length) return;
+    if (!showInlineGapLabels || !candidates.length) return;
     const fontSize = 10;
     const edgePadding = 4;
     const collisionPadding = 10;
@@ -1057,7 +1071,7 @@ function drawTrend() {
       const x = plot.left + (firstOffset + lastOffset) / 2 + xShift;
       context.fillText('×', x, plot.bottom + 13);
     });
-    if (!compact) {
+    if (showInlineGapLabels) {
       // Mirror telemetry-gap density handling: label every run when there are
       // at most two, otherwise label only the longest run and leave the full
       // count in the availability summary below the chart.
@@ -1104,7 +1118,7 @@ function drawTrend() {
       const x = plot.left + (gap.startOffset + gap.endOffset) / 2;
       context.fillText('//', x, plot.bottom + 13);
     });
-    if (!compact) {
+    if (showInlineGapLabels) {
       // Keep the reason for a time break visible without turning a dense old
       // history into a wall of overlapping labels. With one or two gaps we
       // label every break; with many gaps the longest break gets the explicit

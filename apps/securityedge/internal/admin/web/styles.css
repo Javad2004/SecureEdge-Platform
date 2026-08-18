@@ -859,6 +859,9 @@ canvas {
   background:color-mix(in srgb,var(--warn) 7%,var(--panel2))
 }
 @media(max-width:1250px) {
+  #view-overview > .grid.two {
+    grid-template-columns:1fr
+  }
   .kpi-grid {
     grid-template-columns:repeat(3,1fr)
   }

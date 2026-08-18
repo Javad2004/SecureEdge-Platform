@@ -604,6 +604,8 @@ func TestDashboardTrendPresentationContract(t *testing.T) {
 		`drawGapLabels(gapLabelCandidates);`,
 		`const laneCount = 2;`,
 		`top: showInlineGapLabels ? 42 : 20,`,
+		`const labelY = plot.top - 14 - candidate.lane * 15;`,
+		`context.fillText(candidate.text, candidate.drawX, labelY);`,
 		`Labels stay`,
 
 		`Color-coded dashed markers identify these series-specific intervals`,

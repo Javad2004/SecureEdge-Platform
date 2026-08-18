@@ -1707,7 +1707,7 @@ try {
       };
       const blockedColor = cssColor('--chart-blocked', '#ff7188');
       const requestColor = cssColor('--chart-requests', '#67a6ff');
-      const markerX = (operations, color) => operations.find(operation => operation.type === 'move' && operation.color === color && operation.dash === '3,3')?.x ?? null;
+      const marker = (operations, color) => operations.find(operation => operation.type === 'move' && operation.color === color && operation.dash === '3,3') || null;
       const label = (operations, prefix) => operations.find(operation => operation.type === 'text' && operation.text.startsWith(prefix)) || null;
       let first = [], shifted = [], dense = [], dual = [];
       try {
@@ -1722,8 +1722,10 @@ try {
         state.overview = previous;
         renderAll();
       }
-      const firstMarkerX = markerX(first, blockedColor);
-      const shiftedMarkerX = markerX(shifted, blockedColor);
+      const firstMarker = marker(first, blockedColor);
+      const shiftedMarker = marker(shifted, blockedColor);
+      const firstMarkerX = firstMarker?.x ?? null;
+      const shiftedMarkerX = shiftedMarker?.x ?? null;
       const firstLabel = label(first, 'SecurityEdge rejection rate unavailable');
       const shiftedLabel = label(shifted, 'SecurityEdge rejection rate unavailable');
       const denseBlockedLabels = dense.filter(operation => operation.type === 'text' && operation.text.startsWith('SecurityEdge rejection rate unavailable'));
@@ -1732,7 +1734,9 @@ try {
       const dualBlockedLabel = label(dual, 'SecurityEdge rejection rate unavailable');
       return {
         firstMarkerX, shiftedMarkerX,
+        firstMarkerY:firstMarker?.y ?? null, shiftedMarkerY:shiftedMarker?.y ?? null,
         firstLabelX:firstLabel?.x ?? null, shiftedLabelX:shiftedLabel?.x ?? null,
+        firstLabelY:firstLabel?.y ?? null, shiftedLabelY:shiftedLabel?.y ?? null,
         firstLabelText:firstLabel?.text || '', shiftedLabelText:shiftedLabel?.text || '',
         markerDelta:Number.isFinite(firstMarkerX) && Number.isFinite(shiftedMarkerX) ? shiftedMarkerX-firstMarkerX : null,
         labelDelta:Number.isFinite(firstLabel?.x) && Number.isFinite(shiftedLabel?.x) ? shiftedLabel.x-firstLabel.x : null,
@@ -1749,6 +1753,11 @@ try {
         !Number.isFinite(telemetryTrendSeriesMarkerMotionContract.shiftedLabelX) ||
         Math.abs(telemetryTrendSeriesMarkerMotionContract.markerDelta) < 1 ||
         Math.abs(telemetryTrendSeriesMarkerMotionContract.markerDelta - telemetryTrendSeriesMarkerMotionContract.labelDelta) > 0.01 ||
+        !Number.isFinite(telemetryTrendSeriesMarkerMotionContract.firstMarkerY) ||
+        !Number.isFinite(telemetryTrendSeriesMarkerMotionContract.firstLabelY) ||
+        telemetryTrendSeriesMarkerMotionContract.firstLabelY >= telemetryTrendSeriesMarkerMotionContract.firstMarkerY ||
+        telemetryTrendSeriesMarkerMotionContract.firstMarkerY - telemetryTrendSeriesMarkerMotionContract.firstLabelY < 14 ||
+        telemetryTrendSeriesMarkerMotionContract.firstMarkerY - telemetryTrendSeriesMarkerMotionContract.firstLabelY > 20 ||
         telemetryTrendSeriesMarkerMotionContract.firstLabelText !== 'SecurityEdge rejection rate unavailable · 5s' ||
         telemetryTrendSeriesMarkerMotionContract.shiftedLabelText !== 'SecurityEdge rejection rate unavailable · 5s' ||
         telemetryTrendSeriesMarkerMotionContract.denseBlockedSymbolCount !== 5 ||

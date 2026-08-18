@@ -1039,7 +1039,11 @@ function drawTrend() {
     selected.forEach(candidate => {
       context.fillStyle = candidate.color;
       context.textAlign = candidate.align;
-      context.fillText(candidate.text, candidate.drawX, 4 + candidate.lane * 15);
+      // Keep the closest label lane visually attached to the top of its dashed
+      // marker. Additional collision lanes stack upward from that anchor rather
+      // than starting at the top edge of the canvas.
+      const labelY = plot.top - 14 - candidate.lane * 15;
+      context.fillText(candidate.text, candidate.drawX, labelY);
     });
     context.restore();
   };

@@ -455,6 +455,8 @@ func TestDashboardVisualControlStylesContract(t *testing.T) {
 		`transform:translate(-50%,-50%)`,
 		`.wide-dialog .dialog-head {`,
 		`padding:18px 18px 17px`,
+		`.wide-dialog .editor-form > .dialog-actions:last-child {`,
+		`padding:14px 2px max(18px,env(safe-area-inset-bottom))`,
 		`.icon-button::before,.icon-button::after`,
 		`place-items:center`,
 		`.grid > .panel {`,

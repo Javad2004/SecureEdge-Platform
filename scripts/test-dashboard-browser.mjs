@@ -2540,7 +2540,12 @@ try {
       const probe = document.getElementById('route-health-path').getBoundingClientRect();
       const cacheCompact = document.getElementById('route-cache-enabled').closest('.switch-row.compact').getBoundingClientRect();
       const cacheTTL = document.getElementById('route-cache-ttl').getBoundingClientRect();
-      const close = document.querySelector('#route-dialog .icon-button');
+      const dialog = document.getElementById('route-dialog');
+      const formRect = dialog.querySelector('.editor-form').getBoundingClientRect();
+      const footer = dialog.querySelector('.dialog-actions:last-child');
+      const footerStyle = getComputedStyle(footer);
+      const footerButton = footer.querySelector('button[type="submit"]').getBoundingClientRect();
+      const close = dialog.querySelector('.icon-button');
       const closeStyle = getComputedStyle(close);
       return {
         compactTopDelta: Math.abs(compact.top - probe.top),
@@ -2548,7 +2553,10 @@ try {
         cacheTopDelta: Math.abs(cacheCompact.top - cacheTTL.top),
         cacheBottomDelta: Math.abs(cacheCompact.bottom - cacheTTL.bottom),
         closeDisplay: closeStyle.display,
-        closePlaceItems: closeStyle.placeItems
+        closePlaceItems: closeStyle.placeItems,
+        footerPosition:footerStyle.position,
+        footerBottomGap:formRect.bottom-footerButton.bottom,
+        footerPaddingBottom:parseFloat(footerStyle.paddingBottom)
       };
     })()`);
     if (routeEditorLayout.compactTopDelta > 1 || routeEditorLayout.compactBottomDelta > 1 ||
@@ -2557,6 +2565,10 @@ try {
     }
     if (routeEditorLayout.closeDisplay !== 'grid' || !routeEditorLayout.closePlaceItems.includes('center')) {
       throw new Error(`Dialog close control is not geometrically centered: ${JSON.stringify(routeEditorLayout)}`);
+    }
+    if (routeEditorLayout.footerPosition !== 'sticky' || routeEditorLayout.footerBottomGap < 16 ||
+        routeEditorLayout.footerBottomGap > 32 || routeEditorLayout.footerPaddingBottom < 18) {
+      throw new Error(`Route dialog footer lacks professional bottom breathing room: ${JSON.stringify(routeEditorLayout)}`);
     }
   }
   const routeEditor = await cdp.evaluate(`({
@@ -2578,12 +2590,24 @@ try {
     await eventually(async () => await cdp.evaluate(`document.getElementById('origin-dialog').open`), 'Origin editor');
     originDialogLayout = await cdp.evaluate(`(() => {
       const dialog = document.getElementById('origin-dialog');
+      const form = dialog.querySelector('.editor-form');
+      const formRect = form.getBoundingClientRect();
       const fields = dialog.querySelector('.form-grid').getBoundingClientRect();
       const tlsSwitch = dialog.querySelector('.switch-row').getBoundingClientRect();
-      return {switchGap:tlsSwitch.top-fields.bottom};
+      const footer = dialog.querySelector('.dialog-actions:last-child');
+      const footerButton = footer.querySelector('button[type="submit"]').getBoundingClientRect();
+      return {
+        switchGap:tlsSwitch.top-fields.bottom,
+        footerBottomGap:formRect.bottom-footerButton.bottom,
+        footerPosition:getComputedStyle(footer).position
+      };
     })()`);
     if (originDialogLayout.switchGap < 12 || originDialogLayout.switchGap > 20) {
       throw new Error(`Origin TLS verification control spacing is inconsistent: ${JSON.stringify(originDialogLayout)}`);
+    }
+    if (originDialogLayout.footerPosition === 'sticky' || originDialogLayout.footerBottomGap < 20 ||
+        originDialogLayout.footerBottomGap > 30) {
+      throw new Error(`Origin dialog footer bottom spacing is inconsistent: ${JSON.stringify(originDialogLayout)}`);
     }
     await cdp.evaluate(`document.getElementById('origin-dialog').close()`);
 
@@ -2591,21 +2615,33 @@ try {
     await eventually(async () => await cdp.evaluate(`document.getElementById('telemetry-dialog').open`), 'Origin telemetry dialog');
     telemetryDetailLayout = await cdp.evaluate(`(() => {
       const dialog = document.getElementById('telemetry-dialog');
+      const form = dialog.querySelector('.editor-form');
+      const formRect = form.getBoundingClientRect();
       const statusPanel = dialog.querySelector('.telemetry-detail-grid + .subsection').getBoundingClientRect();
       const rawPanel = dialog.querySelector('.raw-details').getBoundingClientRect();
       const barList = dialog.querySelector('.bar-list').getBoundingClientRect();
       const barRowWidths = [...dialog.querySelectorAll('.bar-row')].map(row => row.getBoundingClientRect().width);
+      const footer = dialog.querySelector('.dialog-actions:last-child');
+      const footerStyle = getComputedStyle(footer);
+      const footerButton = footer.querySelector('button').getBoundingClientRect();
       return {
         leftDelta:Math.abs(statusPanel.left-rawPanel.left),
         rightDelta:Math.abs(statusPanel.right-rawPanel.right),
         barListWidth:barList.width,
-        barRowWidths
+        barRowWidths,
+        footerPosition:footerStyle.position,
+        footerBottomGap:formRect.bottom-footerButton.bottom,
+        footerPaddingBottom:parseFloat(footerStyle.paddingBottom)
       };
     })()`);
     if (telemetryDetailLayout.leftDelta > 1 || telemetryDetailLayout.rightDelta > 1 ||
         telemetryDetailLayout.barRowWidths.length < 1 ||
         telemetryDetailLayout.barRowWidths.some(width => Math.abs(width-telemetryDetailLayout.barListWidth) > 1)) {
       throw new Error(`Telemetry status distribution is not aligned with the raw telemetry panel: ${JSON.stringify(telemetryDetailLayout)}`);
+    }
+    if (telemetryDetailLayout.footerPosition !== 'sticky' || telemetryDetailLayout.footerBottomGap < 16 ||
+        telemetryDetailLayout.footerBottomGap > 32 || telemetryDetailLayout.footerPaddingBottom < 18) {
+      throw new Error(`Telemetry dialog footer lacks professional bottom breathing room: ${JSON.stringify(telemetryDetailLayout)}`);
     }
     await cdp.evaluate(`document.getElementById('telemetry-dialog').close()`);
   }
@@ -2724,14 +2760,51 @@ try {
           formClientWidth:form.clientWidth, formScrollWidth:form.scrollWidth};
       })()`);
       mobileLayout.width = width;
-      mobileDialogLayouts.push(mobileLayout);
       await cdp.evaluate(`document.getElementById('route-dialog').close()`);
+      await cdp.evaluate(`document.querySelector('[data-origin-edit]').click()`);
+      await eventually(async () => await cdp.evaluate(`document.getElementById('origin-dialog').open`), `Mobile Origin dialog at ${width}px`);
+      mobileLayout.originFooter = await cdp.evaluate(`(() => {
+        const dialog = document.getElementById('origin-dialog');
+        const formRect = dialog.querySelector('.editor-form').getBoundingClientRect();
+        const footer = dialog.querySelector('.dialog-actions:last-child');
+        const button = footer.querySelector('button[type="submit"]').getBoundingClientRect();
+        return {position:getComputedStyle(footer).position,bottomGap:formRect.bottom-button.bottom};
+      })()`);
+      await cdp.evaluate(`document.getElementById('origin-dialog').close()`);
+      await cdp.evaluate(`document.querySelector('[data-origin-telemetry]').click()`);
+      await eventually(async () => await cdp.evaluate(`document.getElementById('telemetry-dialog').open`), `Mobile Telemetry dialog at ${width}px`);
+      mobileLayout.telemetryFooter = await cdp.evaluate(`(() => {
+        const dialog = document.getElementById('telemetry-dialog');
+        const form = dialog.querySelector('.editor-form');
+        const formRect = form.getBoundingClientRect();
+        const footer = dialog.querySelector('.dialog-actions:last-child');
+        const footerStyle = getComputedStyle(footer);
+        const button = footer.querySelector('button').getBoundingClientRect();
+        return {
+          position:footerStyle.position,
+          bottomGap:formRect.bottom-button.bottom,
+          paddingBottom:parseFloat(footerStyle.paddingBottom),
+          formClientWidth:form.clientWidth,
+          formScrollWidth:form.scrollWidth
+        };
+      })()`);
+      await cdp.evaluate(`document.getElementById('telemetry-dialog').close()`);
+      mobileDialogLayouts.push(mobileLayout);
       if (mobileLayout.dialogLeft < -1 || mobileLayout.dialogRight > mobileLayout.viewportWidth + 1) {
         throw new Error(`Mobile Route dialog escapes the viewport at ${width}px: ${JSON.stringify(mobileLayout)}`);
       }
       if (mobileLayout.dialogScrollWidth > mobileLayout.dialogClientWidth + 1 ||
-          mobileLayout.formScrollWidth > mobileLayout.formClientWidth + 1) {
-        throw new Error(`Mobile Route dialog leaks horizontal overflow internally at ${width}px: ${JSON.stringify(mobileLayout)}`);
+          mobileLayout.formScrollWidth > mobileLayout.formClientWidth + 1 ||
+          mobileLayout.telemetryFooter.formScrollWidth > mobileLayout.telemetryFooter.formClientWidth + 1) {
+        throw new Error(`Mobile editor dialog leaks horizontal overflow internally at ${width}px: ${JSON.stringify(mobileLayout)}`);
+      }
+      if (mobileLayout.originFooter.position === 'sticky' || mobileLayout.originFooter.bottomGap < 20 ||
+          mobileLayout.originFooter.bottomGap > 30) {
+        throw new Error(`Mobile Origin dialog footer spacing is inconsistent at ${width}px: ${JSON.stringify(mobileLayout)}`);
+      }
+      if (mobileLayout.telemetryFooter.position !== 'sticky' || mobileLayout.telemetryFooter.bottomGap < 16 ||
+          mobileLayout.telemetryFooter.bottomGap > 32 || mobileLayout.telemetryFooter.paddingBottom < 18) {
+        throw new Error(`Mobile Telemetry dialog footer lacks safe bottom spacing at ${width}px: ${JSON.stringify(mobileLayout)}`);
       }
     }
     const breakpointLayouts = [];

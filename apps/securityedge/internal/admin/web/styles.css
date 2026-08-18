@@ -1679,12 +1679,13 @@ canvas {
   flex:0 0 40px;
   margin-top:1px
 }
-.sticky-actions {
+.sticky-actions,
+.wide-dialog .editor-form > .dialog-actions:last-child {
   position:sticky;
   bottom:0;
   z-index:4;
   margin:18px -2px 0;
-  padding:14px 2px 18px;
+  padding:14px 2px max(18px,env(safe-area-inset-bottom));
   background:linear-gradient(0deg,#121a2d 78%,rgba(18,26,45,.9));
   border-top:1px solid var(--border)
 }
@@ -2435,7 +2436,8 @@ html[data-theme="light"] .wide-dialog .dialog-head {
   box-shadow:0 12px 24px rgba(30,52,82,.10)
 }
 html[data-theme="light"] .wide-dialog .dialog-head p:not(.eyebrow) { color:#42536a }
-html[data-theme="light"] .sticky-actions {
+html[data-theme="light"] .sticky-actions,
+html[data-theme="light"] .wide-dialog .editor-form > .dialog-actions:last-child {
   background:linear-gradient(0deg,#ffffff 78%,rgba(255,255,255,.92))
 }
 html[data-theme="light"] .route-facts span,

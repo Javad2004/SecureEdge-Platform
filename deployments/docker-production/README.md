@@ -1,8 +1,8 @@
 # Standalone Production Docker Deployment
 
 This directory is the **production** Docker deployment family for SecureEdge.
-It is intentionally separate from the repository's existing local/demo Docker
-workflows, which remain unchanged.
+It is intentionally separate from the repository's local/demo Docker workflows,
+which remain available for development and self-contained demonstrations.
 
 The production deployment is fully standalone: a fresh Linux VPS needs Docker
 Engine, Docker Compose v2, Python 3 and OpenSSL, but it does **not** need

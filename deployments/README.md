@@ -4,7 +4,7 @@ This directory contains tested deployment definitions for local/demo, production
 
 Available deployment paths:
 
-- [`docker/`](docker/README.md) — unchanged local/demo three-container Compose stack for Origin, EdgeProxy, and SecurityEdge.
+- [`docker/`](docker/README.md) — local/demo three-container Compose stack for Origin, EdgeProxy, and SecurityEdge.
 - [`docker-production/`](docker-production/README.md) — production Docker deployments for EdgeProxy-only, SecurityEdge-only, or the complete EdgeProxy + SecurityEdge platform with a real external Origin.
 - Linux `systemd` host deployment — hardened application-owned units and environment templates:
   - [`../apps/edgeproxy/deploy/systemd/`](../apps/edgeproxy/deploy/systemd/)

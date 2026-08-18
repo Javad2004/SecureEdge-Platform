@@ -1167,6 +1167,53 @@ try {
       throw new Error(`Dense telemetry-gap rendering contract failed: ${JSON.stringify(telemetryTrendManyGapContract)}`);
     }
 
+    const telemetryTrendDurationLabelContract = await cdp.evaluate(`(() => ({
+      seconds:trendGapDurationLabel(5000),
+      minute:trendGapDurationLabel(60000),
+      minuteCarry:trendGapDurationLabel(3599000),
+      hourCarry:trendGapDurationLabel(7199000),
+      dayCarry:trendGapDurationLabel(172799000)
+    }))()`);
+    if (telemetryTrendDurationLabelContract.seconds !== '5s' ||
+        telemetryTrendDurationLabelContract.minute !== '1m' ||
+        telemetryTrendDurationLabelContract.minuteCarry !== '1h' ||
+        telemetryTrendDurationLabelContract.hourCarry !== '2h' ||
+        telemetryTrendDurationLabelContract.dayCarry !== '2d') {
+      throw new Error(`Telemetry-gap duration formatting contract failed: ${JSON.stringify(telemetryTrendDurationLabelContract)}`);
+    }
+    const telemetryTrendRetainedGapSummaryContract = await cdp.evaluate(`(() => {
+      const previous = state.overview;
+      const baseTime = Date.now() - 4000000;
+      const samples = [0,1,2,3,4].map(index => ({
+        generated_at:new Date(baseTime + index * 5000).toISOString(),
+        security:{rejected_rate_available:true,rejected_per_second:0},
+        edgeproxy:{available:true,request_rate_available:true,requests_per_second:0}
+      }));
+      samples.push({
+        generated_at:new Date(baseTime + 3600000).toISOString(),
+        security:{rejected_rate_available:false,rejected_per_second:0},
+        edgeproxy:{available:false,request_rate_available:false,requests_per_second:0}
+      });
+      const candidate = structuredClone(previous);
+      candidate.telemetry_history = {samples};
+      state.overview = candidate;
+      renderOverview();
+      const result = {
+        retainedGapCount:trendTemporalGaps(state.trend).length,
+        displayedGapCount:trendTemporalGaps(trendDisplayPoints(state.trend)).length,
+        summary:document.getElementById('trend-chart-summary').textContent
+      };
+      state.overview = previous;
+      renderAll();
+      return result;
+    })()`);
+    if (telemetryTrendRetainedGapSummaryContract.retainedGapCount !== 1 ||
+        telemetryTrendRetainedGapSummaryContract.displayedGapCount !== 0 ||
+        !telemetryTrendRetainedGapSummaryContract.summary.includes('1 telemetry gap') ||
+        !telemetryTrendRetainedGapSummaryContract.summary.includes('longest 1h') ||
+        !telemetryTrendRetainedGapSummaryContract.summary.includes('never zero-filled')) {
+      throw new Error(`Retained telemetry-gap summary contract failed: ${JSON.stringify(telemetryTrendRetainedGapSummaryContract)}`);
+    }
     telemetryTrendLongGapCompressionContract = await cdp.evaluate(`(() => {
       const previous = state.overview;
       const recentStart = Date.now() - 20 * 60 * 1000;

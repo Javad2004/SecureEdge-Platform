@@ -252,6 +252,10 @@ func TestDashboardTrendPreservesTelemetryRateGaps(t *testing.T) {
 		"if (!Number.isFinite(value)) { segmentStarted = false; return; }",
 		"Telemetry gap · ${trendGapDurationLabel(gap.duration)}",
 		"second.duration - first.duration",
+		"const totalMinutes = Math.max(1, Math.round(totalSeconds / 60))",
+		"const totalHours = Math.max(1, Math.round(totalSeconds / 3600))",
+		"if (retainedTemporalGaps.length)",
+		"Math.max(...retainedTemporalGaps.map(gap => gap.duration))",
 	} {
 		if !strings.Contains(javascript, required) {
 			t.Fatalf("dashboard telemetry-gap contract is missing %q", required)

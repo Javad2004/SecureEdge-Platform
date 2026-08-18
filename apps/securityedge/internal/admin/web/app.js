@@ -659,16 +659,22 @@ function trendSeriesUnavailableRuns(points, key, temporalGapIndexes = new Set())
 function trendGapDurationLabel(milliseconds) {
   const totalSeconds = Math.max(0, Math.round((Number(milliseconds) || 0) / 1000));
   if (totalSeconds >= 86400) {
-    const days = Math.floor(totalSeconds / 86400);
-    const hours = Math.round((totalSeconds % 86400) / 3600);
+    const totalHours = Math.max(1, Math.round(totalSeconds / 3600));
+    const days = Math.floor(totalHours / 24);
+    const hours = totalHours % 24;
     return hours ? `${days}d ${hours}h` : `${days}d`;
   }
   if (totalSeconds >= 3600) {
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.round((totalSeconds % 3600) / 60);
+    const totalMinutes = Math.max(1, Math.round(totalSeconds / 60));
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    if (hours >= 24) return '1d';
     return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
   }
-  if (totalSeconds >= 60) return `${Math.round(totalSeconds / 60)}m`;
+  if (totalSeconds >= 60) {
+    const minutes = Math.max(1, Math.round(totalSeconds / 60));
+    return minutes >= 60 ? '1h' : `${minutes}m`;
+  }
   return `${totalSeconds}s`;
 }
 
@@ -1176,11 +1182,11 @@ function drawTrend() {
     const requestUnavailableIntervals = retainedRequestUnavailableRuns.reduce((total, run) => total + run.count, 0);
     const blockedUnavailableIntervals = retainedBlockedUnavailableRuns.reduce((total, run) => total + run.count, 0);
 
-    if (temporalGaps.length) {
-      const longestGap = Math.max(...temporalGaps.map(gap => gap.duration));
+    if (retainedTemporalGaps.length) {
+      const longestGap = Math.max(...retainedTemporalGaps.map(gap => gap.duration));
       notes.push({
         label:'Gaps',
-        text:`${temporalGaps.length} telemetry gap${temporalGaps.length === 1 ? '' : 's'} · long gaps compressed on the time axis${longestGap > 0 ? ` (longest ${trendGapDurationLabel(longestGap)})` : ''}; missing time spans remain blank and are never zero-filled.`
+        text:`${retainedTemporalGaps.length} telemetry gap${retainedTemporalGaps.length === 1 ? '' : 's'} · long gaps compressed on the time axis${longestGap > 0 ? ` (longest ${trendGapDurationLabel(longestGap)})` : ''}; missing time spans remain blank and are never zero-filled.`
       });
     }
     if (requestUnavailableIntervals > 0 || blockedUnavailableIntervals > 0) {

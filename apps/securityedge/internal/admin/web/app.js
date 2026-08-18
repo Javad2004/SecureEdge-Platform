@@ -619,6 +619,43 @@ function trendTemporalGaps(points) {
   return gaps;
 }
 
+function trendSeriesUnavailableRuns(points, key, temporalGapIndexes = new Set()) {
+  const mapped = Array.isArray(points) ? points : [];
+  const excluded = temporalGapIndexes instanceof Set ? temporalGapIndexes : new Set();
+  const runs = [];
+  let startIndex = null;
+
+  const finishRun = endIndex => {
+    if (startIndex === null || endIndex < startIndex) return;
+    const previousIndex = Math.max(0, startIndex - 1);
+    const previousTime = mapped[previousIndex]?.time;
+    const endTime = mapped[endIndex]?.time;
+    runs.push({
+      startIndex,
+      endIndex,
+      count:endIndex - startIndex + 1,
+      duration:Number.isFinite(previousTime) && Number.isFinite(endTime) && endTime > previousTime
+        ? endTime - previousTime
+        : 0
+    });
+    startIndex = null;
+  };
+
+  // Index zero is the normal baseline boundary for derived interval rates. A
+  // missing value there does not prove that an observed interval was lost.
+  for (let index = 1; index < mapped.length; index += 1) {
+    const unavailable = !Number.isFinite(mapped[index]?.[key]);
+    const belongsToTelemetryGap = excluded.has(index);
+    if (unavailable && !belongsToTelemetryGap) {
+      if (startIndex === null) startIndex = index;
+      continue;
+    }
+    finishRun(index - 1);
+  }
+  finishRun(mapped.length - 1);
+  return runs;
+}
+
 function trendGapDurationLabel(milliseconds) {
   const totalSeconds = Math.max(0, Math.round((Number(milliseconds) || 0) / 1000));
   if (totalSeconds >= 86400) {
@@ -916,8 +953,69 @@ function drawTrend() {
     });
     context.restore();
   };
-  draw('requests', cssColor('--chart-requests', '#67a6ff'));
-  draw('blocked', cssColor('--chart-blocked', '#ff7188'));
+  const requestColor = cssColor('--chart-requests', '#67a6ff');
+  const blockedColor = cssColor('--chart-blocked', '#ff7188');
+  draw('requests', requestColor);
+  draw('blocked', blockedColor);
+
+  const requestUnavailableRuns = trendSeriesUnavailableRuns(displayTrend, 'requests', temporalGapIndexes);
+  const blockedUnavailableRuns = trendSeriesUnavailableRuns(displayTrend, 'blocked', temporalGapIndexes);
+  const clampedLabelX = (text, x, fontSize) => {
+    const estimatedHalfWidth = Math.min(plotWidth / 2, String(text || '').length * Math.max(1, Number(fontSize) || 10) * 0.28);
+    return Math.min(plot.right - estimatedHalfWidth - 2, Math.max(plot.left + estimatedHalfWidth + 2, x));
+  };
+  const drawSeriesUnavailable = (runs, color, label, xShift, labelRow) => {
+    if (!runs.length) return;
+    context.save();
+    context.strokeStyle = color;
+    context.fillStyle = color;
+    context.lineWidth = 1.15;
+    if (typeof context.setLineDash === 'function') context.setLineDash([3, 3]);
+    runs.forEach(run => {
+      const firstOffset = timelineLayout.positions[Math.max(0, run.startIndex - 1)];
+      const lastOffset = timelineLayout.positions[run.endIndex];
+      if (!Number.isFinite(firstOffset) || !Number.isFinite(lastOffset)) return;
+      const x = plot.left + (firstOffset + lastOffset) / 2 + xShift;
+      context.beginPath();
+      context.moveTo(x, plot.top + 2);
+      context.lineTo(x, plot.bottom);
+      context.stroke();
+    });
+    if (typeof context.setLineDash === 'function') context.setLineDash([]);
+    context.font = `${compact ? 10 : 11}px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`;
+    context.textAlign = 'center';
+    context.textBaseline = 'alphabetic';
+    runs.forEach(run => {
+      const firstOffset = timelineLayout.positions[Math.max(0, run.startIndex - 1)];
+      const lastOffset = timelineLayout.positions[run.endIndex];
+      if (!Number.isFinite(firstOffset) || !Number.isFinite(lastOffset)) return;
+      const x = plot.left + (firstOffset + lastOffset) / 2 + xShift;
+      context.fillText('×', x, plot.bottom + 13);
+    });
+    if (!compact) {
+      const labeledRuns = runs.length <= 2
+        ? runs
+        : [...runs].sort((first, second) => second.duration - first.duration || second.count - first.count).slice(0, 1);
+      labeledRuns.forEach(run => {
+        const firstOffset = timelineLayout.positions[Math.max(0, run.startIndex - 1)];
+        const lastOffset = timelineLayout.positions[run.endIndex];
+        if (!Number.isFinite(firstOffset) || !Number.isFinite(lastOffset)) return;
+        const x = plot.left + (firstOffset + lastOffset) / 2 + xShift;
+        const suffix = run.count > 1 ? ` · ${run.count} intervals` : '';
+        const labelText = `${label} unavailable${suffix}`;
+        context.textBaseline = 'top';
+        context.fillText(labelText, clampedLabelX(labelText, x, compact ? 10 : 11), plot.top + 6 + labelRow * 14);
+      });
+    }
+    context.restore();
+  };
+
+  // A series-specific unavailable rate is different from a telemetry time gap:
+  // the sample exists, but one derived metric cannot be trusted for that
+  // interval (for example after a process restart or counter reset). Keep the
+  // line disconnected and mark the exact interval in the series color.
+  drawSeriesUnavailable(requestUnavailableRuns, requestColor, 'EdgeProxy request rate', -2, 0);
+  drawSeriesUnavailable(blockedUnavailableRuns, blockedColor, 'SecurityEdge rejection rate', 2, 1);
 
   if (temporalGaps.length) {
     context.save();
@@ -951,8 +1049,9 @@ function drawTrend() {
         : [...temporalGaps].sort((first, second) => second.duration - first.duration).slice(0, 1);
       labeledGaps.forEach(gap => {
         const x = plot.left + (gap.startOffset + gap.endOffset) / 2;
+        const labelText = `Telemetry gap · ${trendGapDurationLabel(gap.duration)}`;
         context.textBaseline = 'top';
-        context.fillText(`Telemetry gap · ${trendGapDurationLabel(gap.duration)}`, x, plot.top + 6);
+        context.fillText(labelText, clampedLabelX(labelText, x, compact ? 9 : 10), plot.top + 6);
       });
     }
     context.restore();
@@ -1007,18 +1106,32 @@ function drawTrend() {
 
   if (values.length) {
     const notes = [];
-    // The first retained sample is a baseline when it has no derived rate yet;
-    // it is not a missing interval. Only unavailable rate points after that
-    // baseline should trigger the unavailable-interval note.
-    const requestUnavailableIntervals = state.trend.slice(1).filter(point => !Number.isFinite(point.requests)).length;
-    const blockedUnavailableIntervals = state.trend.slice(1).filter(point => !Number.isFinite(point.blocked)).length;
-    const hasUnavailable = requestUnavailableIntervals > 0 || blockedUnavailableIntervals > 0;
-    if (hasUnavailable || temporalGaps.length) {
-      const longestGap = temporalGaps.length ? Math.max(...temporalGaps.map(gap => gap.duration)) : 0;
-      const gapText = temporalGaps.length
-        ? `${temporalGaps.length} telemetry gap${temporalGaps.length === 1 ? '' : 's'} · long gaps compressed on the time axis${longestGap > 0 ? ` (longest ${trendGapDurationLabel(longestGap)})` : ''}; unavailable intervals left blank, never zero-filled.`
-        : 'Unavailable intervals left blank · never zero-filled.';
-      notes.push({label:'Gaps', text:gapText});
+    const retainedTemporalGaps = trendTemporalGaps(state.trend);
+    const retainedTemporalGapIndexes = new Set(retainedTemporalGaps.map(gap => gap.beforeIndex));
+    const retainedRequestUnavailableRuns = trendSeriesUnavailableRuns(state.trend, 'requests', retainedTemporalGapIndexes);
+    const retainedBlockedUnavailableRuns = trendSeriesUnavailableRuns(state.trend, 'blocked', retainedTemporalGapIndexes);
+    const requestUnavailableIntervals = retainedRequestUnavailableRuns.reduce((total, run) => total + run.count, 0);
+    const blockedUnavailableIntervals = retainedBlockedUnavailableRuns.reduce((total, run) => total + run.count, 0);
+
+    if (temporalGaps.length) {
+      const longestGap = Math.max(...temporalGaps.map(gap => gap.duration));
+      notes.push({
+        label:'Gaps',
+        text:`${temporalGaps.length} telemetry gap${temporalGaps.length === 1 ? '' : 's'} · long gaps compressed on the time axis${longestGap > 0 ? ` (longest ${trendGapDurationLabel(longestGap)})` : ''}; missing time spans remain blank and are never zero-filled.`
+      });
+    }
+    if (requestUnavailableIntervals > 0 || blockedUnavailableIntervals > 0) {
+      const availabilityParts = [];
+      if (requestUnavailableIntervals > 0) {
+        availabilityParts.push(`EdgeProxy request rate unavailable for ${requestUnavailableIntervals} observed interval${requestUnavailableIntervals === 1 ? '' : 's'}`);
+      }
+      if (blockedUnavailableIntervals > 0) {
+        availabilityParts.push(`SecurityEdge rejection rate unavailable for ${blockedUnavailableIntervals} observed interval${blockedUnavailableIntervals === 1 ? '' : 's'}`);
+      }
+      notes.push({
+        label:'Availability',
+        text:`${availabilityParts.join('; ')}. Color-coded dashed markers identify these series-specific intervals; values remain blank and are never zero-filled.`
+      });
     }
     if (!notes.length) {
       notes.push({

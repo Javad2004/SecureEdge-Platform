@@ -914,6 +914,7 @@ try {
   let telemetryTrendZeroBaselineContract = null;
   let telemetryTrendLegendSemanticsContract = null;
   let telemetryTrendPartialAvailabilityLegendContract = null;
+  let telemetryTrendSeriesAvailabilityMarkerContract = null;
   let telemetryTrendSeriesIsolationContract = null;
   let telemetryTrendLatestAvailabilityContract = null;
   let telemetryTrendEmptyContract = null;
@@ -966,8 +967,8 @@ try {
       try { drawTrend(); } finally { canvas.getContext = originalGetContext; }
       const requestColor = cssColor('--chart-requests', '#67a6ff');
       const blockedColor = cssColor('--chart-blocked', '#ff6b84');
-      const requestLineOps = operations.filter(operation => operation.color === requestColor && (operation.type === 'move' || operation.type === 'line'));
-      const blockedLineOps = operations.filter(operation => operation.color === blockedColor && (operation.type === 'move' || operation.type === 'line'));
+      const requestLineOps = operations.filter(operation => operation.color === requestColor && operation.dash === '' && (operation.type === 'move' || operation.type === 'line'));
+      const blockedLineOps = operations.filter(operation => operation.color === blockedColor && operation.dash === '' && (operation.type === 'move' || operation.type === 'line'));
       const requestOps = requestLineOps.map(operation => operation.type);
       const blockedOps = blockedLineOps.map(operation => operation.type);
       const result = {
@@ -993,6 +994,7 @@ try {
         renderedRecentFraction:requestLineOps.length >= 3 ? (requestLineOps[2].x - requestLineOps[1].x) / canvas.clientWidth : 0,
         rawRecentFraction:rangeMs > 0 ? 1000 / rangeMs : 0,
         noteCount:document.querySelectorAll('#trend-chart-summary .trend-status-item').length,
+        noteLabels:Array.from(document.querySelectorAll('#trend-chart-summary .trend-status-item strong')).map(node => node.textContent),
         summary:document.getElementById('trend-chart-summary').textContent,
         emptyHidden:document.getElementById('trend-empty').hidden
       };
@@ -1076,8 +1078,12 @@ try {
         !telemetryTrendGapContract.wideGapLabels[0].startsWith('Telemetry gap ·') ||
         !telemetryTrendGapContract.scaleValue.startsWith('0–') ||
         telemetryTrendGapContract.scaleDetail !== 'Adaptive scale' ||
-        telemetryTrendGapContract.noteCount !== 1 ||
+        telemetryTrendGapContract.noteCount !== 2 ||
+        !telemetryTrendGapContract.noteLabels.includes('Gaps') ||
+        !telemetryTrendGapContract.noteLabels.includes('Availability') ||
         !telemetryTrendGapContract.summary.includes('1 telemetry gap') ||
+        !telemetryTrendGapContract.summary.includes('EdgeProxy request rate unavailable for 3 observed intervals') ||
+        !telemetryTrendGapContract.summary.includes('SecurityEdge rejection rate unavailable for 2 observed intervals') ||
         !telemetryTrendGapContract.summary.includes('compressed on the time axis') ||
         !telemetryTrendGapContract.summary.includes('never zero-filled') ||
         telemetryTrendGapContract.emptyHidden !== true) {
@@ -1132,8 +1138,8 @@ try {
       }
       const requestColor = cssColor('--chart-requests', '#67a6ff');
       const blockedColor = cssColor('--chart-blocked', '#ff6b84');
-      const requestLineOps = operations.filter(operation => operation.color === requestColor && ['move','line'].includes(operation.type));
-      const blockedLineOps = operations.filter(operation => operation.color === blockedColor && ['move','line'].includes(operation.type));
+      const requestLineOps = operations.filter(operation => operation.color === requestColor && operation.dash === '' && ['move','line'].includes(operation.type));
+      const blockedLineOps = operations.filter(operation => operation.color === blockedColor && operation.dash === '' && ['move','line'].includes(operation.type));
       const gaps = trendTemporalGaps(state.trend);
       const result = {
         gapCount:gaps.length,
@@ -1201,8 +1207,8 @@ try {
 
       const requestColor = cssColor('--chart-requests', '#67a6ff');
       const blockedColor = cssColor('--chart-blocked', '#ff6b84');
-      const requestLineOps = operations.filter(operation => operation.color === requestColor && ['move','line'].includes(operation.type));
-      const blockedLineOps = operations.filter(operation => operation.color === blockedColor && ['move','line'].includes(operation.type));
+      const requestLineOps = operations.filter(operation => operation.color === requestColor && operation.dash === '' && ['move','line'].includes(operation.type));
+      const blockedLineOps = operations.filter(operation => operation.color === blockedColor && operation.dash === '' && ['move','line'].includes(operation.type));
       const recentStartOp = requestLineOps[3];
       const recentEndOp = requestLineOps.at(-1);
       const axisLabels = operations.filter(operation => operation.type === 'text' && Math.abs(operation.y - 232) < 0.01).map(operation => operation.text);
@@ -1291,7 +1297,7 @@ try {
       const blockedColor = cssColor('--chart-blocked', '#ff6b84');
       const markers = operations.filter(operation => operation.type === 'text' && operation.color === requestColor && operation.text === '▲');
       const blockedSeriesOps = operations.filter(operation => operation.color === blockedColor && ['move','line','point'].includes(operation.type));
-      const blockedLineOps = operations.filter(operation => operation.color === blockedColor && ['move','line'].includes(operation.type));
+      const blockedLineOps = operations.filter(operation => operation.color === blockedColor && operation.dash === '' && ['move','line'].includes(operation.type));
       const sustainedModel = trendScaleModel([0.10,0.14,0.18,0.22,0.28,0.34,0.42,0.51,0.60,0.70,0.78,0.86]);
       const result = {
         model, sustainedModel,
@@ -1356,8 +1362,8 @@ try {
 
       const requestColor = cssColor('--chart-requests', '#67a6ff');
       const blockedColor = cssColor('--chart-blocked', '#ff6b84');
-      const requestLineOps = operations.filter(operation => operation.color === requestColor && ['move','line'].includes(operation.type));
-      const blockedLineOps = operations.filter(operation => operation.color === blockedColor && ['move','line'].includes(operation.type));
+      const requestLineOps = operations.filter(operation => operation.color === requestColor && operation.dash === '' && ['move','line'].includes(operation.type));
+      const blockedLineOps = operations.filter(operation => operation.color === blockedColor && operation.dash === '' && ['move','line'].includes(operation.type));
       const result = {
         requestLineOps:requestLineOps.length,
         blockedLineOps:blockedLineOps.length,
@@ -1480,13 +1486,126 @@ try {
     })()`);
     if (telemetryTrendPartialAvailabilityLegendContract.requestCoverage !== 'No requests in observed intervals · 3 rate intervals available from 7 samples' ||
         telemetryTrendPartialAvailabilityLegendContract.blockedCoverage !== 'No rejections in observed intervals · 4 rate intervals available from 7 samples' ||
-        !telemetryTrendPartialAvailabilityLegendContract.summary.includes('Unavailable intervals left blank') ||
+        !telemetryTrendPartialAvailabilityLegendContract.summary.includes('Color-coded dashed markers') ||
         !telemetryTrendPartialAvailabilityLegendContract.summary.includes('never zero-filled') ||
         telemetryTrendPartialAvailabilityLegendContract.temporalGapRequestCoverage !== 'No requests in observed intervals · 6 rate intervals available from 7 samples' ||
         telemetryTrendPartialAvailabilityLegendContract.temporalGapBlockedCoverage !== 'No rejections in observed intervals · 6 rate intervals available from 7 samples' ||
         !telemetryTrendPartialAvailabilityLegendContract.temporalGapSummary.includes('1 telemetry gap') ||
+        !telemetryTrendPartialAvailabilityLegendContract.temporalGapSummary.includes('missing time spans remain blank') ||
         !telemetryTrendPartialAvailabilityLegendContract.temporalGapSummary.includes('never zero-filled')) {
       throw new Error(`Partially unavailable all-zero trend legend overstated what telemetry proves: ${JSON.stringify(telemetryTrendPartialAvailabilityLegendContract)}`);
+    }
+
+    telemetryTrendSeriesAvailabilityMarkerContract = await cdp.evaluate(`(() => {
+      const previous = state.overview;
+      const baseTime = Date.now() - 120 * 5000;
+      const samples = Array.from({length:120}, (_, index) => ({
+        generated_at:new Date(baseTime + index * 5000).toISOString(),
+        security:{rejected_rate_available:index !== 73,rejected_per_second:0},
+        edgeproxy:{available:true,request_rate_available:true,requests_per_second:index >= 80 && index <= 92 ? 2.2 + (index % 2) * 0.2 : 0}
+      }));
+      const candidate = structuredClone(previous);
+      candidate.telemetry_history = {samples};
+      state.overview = candidate;
+      renderOverview();
+
+      const canvas = document.getElementById('trend-chart');
+      const originalGetContext = canvas.getContext;
+      const originalCanvasWidth = canvas.style.width;
+      const originalCanvasMaxWidth = canvas.style.maxWidth;
+      const fakeContext = operations => ({
+        _strokeStyle:'', _fillStyle:'', _lineDash:[], lineWidth:1, lineJoin:'', lineCap:'', font:'', textAlign:'', textBaseline:'',
+        set strokeStyle(value) { this._strokeStyle = value; }, get strokeStyle() { return this._strokeStyle; },
+        set fillStyle(value) { this._fillStyle = value; }, get fillStyle() { return this._fillStyle; },
+        setLineDash(values){ this._lineDash = Array.isArray(values) ? [...values] : []; },
+        scale(){}, clearRect(){}, beginPath(){}, stroke(){}, fill(){}, save(){}, restore(){},
+        moveTo(x,y){ operations.push({type:'move', color:this._strokeStyle, dash:this._lineDash.join(','), x, y}); },
+        lineTo(x,y){ operations.push({type:'line', color:this._strokeStyle, dash:this._lineDash.join(','), x, y}); },
+        arc(x,y){ operations.push({type:'point', color:this._fillStyle, x, y}); },
+        fillText(text,x,y){ operations.push({type:'text', color:this._fillStyle, text, x, y}); }
+      });
+      const drawAtWidth = width => {
+        const operations = [];
+        canvas.style.maxWidth = 'none';
+        canvas.style.width = String(width) + 'px';
+        canvas.getContext = () => fakeContext(operations);
+        drawTrend();
+        return operations;
+      };
+      let wideOperations = [];
+      let compactOperations = [];
+      try {
+        wideOperations = drawAtWidth(640);
+        compactOperations = drawAtWidth(390);
+      } finally {
+        canvas.getContext = originalGetContext;
+        canvas.style.width = originalCanvasWidth;
+        canvas.style.maxWidth = originalCanvasMaxWidth;
+      }
+      const requestColor = cssColor('--chart-requests', '#67a6ff');
+      const blockedColor = cssColor('--chart-blocked', '#ff7188');
+      const displayTrend = trendDisplayPoints(state.trend);
+      const gapIndexes = new Set(trendTemporalGaps(displayTrend).map(gap => gap.beforeIndex));
+      const requestRuns = trendSeriesUnavailableRuns(displayTrend, 'requests', gapIndexes);
+      const blockedRuns = trendSeriesUnavailableRuns(displayTrend, 'blocked', gapIndexes);
+      const markerLines = (operations, color) => operations.filter(operation =>
+        operation.color === color && operation.dash === '3,3' && (operation.type === 'move' || operation.type === 'line'));
+      const markerLabels = (operations, prefix) => operations.filter(operation =>
+        operation.type === 'text' && operation.text.startsWith(prefix)).map(operation => operation.text);
+      const markerSymbols = (operations, color) => operations.filter(operation =>
+        operation.type === 'text' && operation.color === color && operation.text === '×').length;
+      const result = {
+        temporalGapCount:trendTemporalGaps(displayTrend).length,
+        requestRunCount:requestRuns.length,
+        blockedRunCount:blockedRuns.length,
+        blockedRunIntervals:blockedRuns.reduce((total, run) => total + run.count, 0),
+        wideRequestMarkerLines:markerLines(wideOperations, requestColor).length,
+        wideBlockedMarkerLines:markerLines(wideOperations, blockedColor).length,
+        wideRequestMarkerSymbols:markerSymbols(wideOperations, requestColor),
+        wideBlockedMarkerSymbols:markerSymbols(wideOperations, blockedColor),
+        wideRequestLabels:markerLabels(wideOperations, 'EdgeProxy request rate unavailable'),
+        wideBlockedLabels:markerLabels(wideOperations, 'SecurityEdge rejection rate unavailable'),
+        wideBlockedLabelXs:wideOperations.filter(operation => operation.type === 'text' && operation.text.startsWith('SecurityEdge rejection rate unavailable')).map(operation => operation.x),
+        wideTelemetryMarkers:wideOperations.filter(operation => operation.type === 'text' && operation.text === '//').length,
+        compactBlockedMarkerLines:markerLines(compactOperations, blockedColor).length,
+        compactBlockedMarkerSymbols:markerSymbols(compactOperations, blockedColor),
+        compactBlockedLabels:markerLabels(compactOperations, 'SecurityEdge rejection rate unavailable'),
+        requestCoverage:document.getElementById('trend-requests-coverage').textContent,
+        blockedCoverage:document.getElementById('trend-blocked-coverage').textContent,
+        summary:document.getElementById('trend-chart-summary').textContent,
+        noteLabels:Array.from(document.querySelectorAll('#trend-chart-summary .trend-status-item strong')).map(node => node.textContent)
+      };
+      state.overview = previous;
+      renderAll();
+      return result;
+    })()`);
+    if (telemetryTrendSeriesAvailabilityMarkerContract.temporalGapCount !== 0 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.requestRunCount !== 0 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.blockedRunCount !== 1 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.blockedRunIntervals !== 1 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.wideRequestMarkerLines !== 0 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.wideBlockedMarkerLines !== 2 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.wideRequestMarkerSymbols !== 0 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.wideBlockedMarkerSymbols !== 1 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.wideRequestLabels.length !== 0 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.wideBlockedLabels.length !== 1 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.wideBlockedLabels[0] !== 'SecurityEdge rejection rate unavailable' ||
+        telemetryTrendSeriesAvailabilityMarkerContract.wideBlockedLabelXs.length !== 1 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.wideBlockedLabelXs[0] < 60 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.wideBlockedLabelXs[0] > 626 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.wideTelemetryMarkers !== 0 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.compactBlockedMarkerLines !== 2 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.compactBlockedMarkerSymbols !== 1 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.compactBlockedLabels.length !== 0 ||
+        telemetryTrendSeriesAvailabilityMarkerContract.requestCoverage !== '120 rate intervals available from 120 samples' ||
+        telemetryTrendSeriesAvailabilityMarkerContract.blockedCoverage !== 'No rejections in observed intervals · 119 rate intervals available from 120 samples' ||
+        !telemetryTrendSeriesAvailabilityMarkerContract.noteLabels.includes('Availability') ||
+        telemetryTrendSeriesAvailabilityMarkerContract.noteLabels.includes('Gaps') ||
+        !telemetryTrendSeriesAvailabilityMarkerContract.summary.includes('SecurityEdge rejection rate unavailable for 1 observed interval') ||
+        !telemetryTrendSeriesAvailabilityMarkerContract.summary.includes('Color-coded dashed markers') ||
+        !telemetryTrendSeriesAvailabilityMarkerContract.summary.includes('never zero-filled') ||
+        telemetryTrendSeriesAvailabilityMarkerContract.summary.includes('telemetry gap')) {
+      throw new Error(`Series-specific unavailable-rate marker contract failed: ${JSON.stringify(telemetryTrendSeriesAvailabilityMarkerContract)}`);
     }
 
     telemetryTrendSeriesIsolationContract = await cdp.evaluate(`(() => {
@@ -2693,7 +2812,7 @@ try {
     connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
     authentication_ui_contract:authenticationUIContract, cumulative_rate_precision_contract:cumulativeRatePrecisionContract, percentage_truthfulness_contract:percentageTruthfulnessContract, latency_truthfulness_contract:latencyTruthfulnessContract, telemetry_availability_contract:telemetryAvailabilityContract,
-    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract, telemetry_trend_many_gap_contract:telemetryTrendManyGapContract, telemetry_trend_long_gap_compression_contract:telemetryTrendLongGapCompressionContract, telemetry_trend_outlier_contract:telemetryTrendOutlierContract, telemetry_trend_zero_baseline_contract:telemetryTrendZeroBaselineContract, telemetry_trend_legend_semantics_contract:telemetryTrendLegendSemanticsContract, telemetry_trend_partial_availability_legend_contract:telemetryTrendPartialAvailabilityLegendContract, telemetry_trend_series_isolation_contract:telemetryTrendSeriesIsolationContract, telemetry_trend_latest_availability_contract:telemetryTrendLatestAvailabilityContract, telemetry_trend_empty_contract:telemetryTrendEmptyContract,
+    client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract, telemetry_trend_many_gap_contract:telemetryTrendManyGapContract, telemetry_trend_long_gap_compression_contract:telemetryTrendLongGapCompressionContract, telemetry_trend_outlier_contract:telemetryTrendOutlierContract, telemetry_trend_zero_baseline_contract:telemetryTrendZeroBaselineContract, telemetry_trend_legend_semantics_contract:telemetryTrendLegendSemanticsContract, telemetry_trend_partial_availability_legend_contract:telemetryTrendPartialAvailabilityLegendContract, telemetry_trend_series_availability_marker_contract:telemetryTrendSeriesAvailabilityMarkerContract, telemetry_trend_series_isolation_contract:telemetryTrendSeriesIsolationContract, telemetry_trend_latest_availability_contract:telemetryTrendLatestAvailabilityContract, telemetry_trend_empty_contract:telemetryTrendEmptyContract,
     undefined_metric_rendering_contract:undefinedMetricRenderingContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
   }, null, 2));
 } catch (error) {

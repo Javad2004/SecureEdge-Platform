@@ -1606,6 +1606,7 @@ canvas {
 .dialog-head { margin-bottom:20px }
 .dialog-head h2 { margin:4px 0 0 }
 .dialog-actions { justify-content:flex-end; margin-top:20px }
+.origin-dialog-actions #delete-origin { margin-right:auto }
 .icon-button {
   position:relative;
   display:inline-grid;
@@ -1664,6 +1665,17 @@ canvas {
   .config-editor-grid { grid-template-columns:1fr!important }
 }
 @media(max-width:700px) {
+  .origin-dialog-actions {
+    display:grid;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    align-items:stretch
+  }
+  .origin-dialog-actions #delete-origin {
+    grid-column:1 / -1;
+    width:100%;
+    margin-right:0
+  }
+  .origin-dialog-actions button:not(#delete-origin) { width:100% }
   .control-kpis { grid-template-columns:1fr }
   .control-toolbar { align-items:flex-start; flex-direction:column }
   .control-toolbar .top-actions { width:100%; flex-wrap:wrap }

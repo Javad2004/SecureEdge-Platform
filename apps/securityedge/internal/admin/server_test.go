@@ -56,17 +56,19 @@ func (w *boundedChunkResponseWriter) Write(data []byte) (int, error) {
 }
 
 type fakeRuntime struct {
-	mu         sync.Mutex
-	cfg        config.Config
-	reloadErr  error
-	replaceErr error
-	edgeRaw    json.RawMessage
-	edgeStatus int
-	edgeErr    error
-	lastMethod string
-	lastPath   string
-	lastQuery  url.Values
-	lastBody   any
+	mu                 sync.Mutex
+	cfg                config.Config
+	reloadErr          error
+	replaceErr         error
+	edgeRaw            json.RawMessage
+	edgeStatus         int
+	edgeErr            error
+	edgeRouteReloads   int
+	edgeRouteReloadErr error
+	lastMethod         string
+	lastPath           string
+	lastQuery          url.Values
+	lastBody           any
 }
 
 func (f *fakeRuntime) Config() config.Config { return f.cfg }
@@ -78,6 +80,12 @@ func (f *fakeRuntime) UpdateDefaultPolicy(config.Policy) error       { return ni
 func (f *fakeRuntime) UpdateRoutePolicy(string, config.Policy) error { return nil }
 func (f *fakeRuntime) DeleteRoutePolicy(string) error                { return nil }
 func (f *fakeRuntime) Reload() error                                 { return f.reloadErr }
+func (f *fakeRuntime) ReloadEdgeRoutes() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.edgeRouteReloads++
+	return f.edgeRouteReloadErr
+}
 func (f *fakeRuntime) ReplaceConfig(candidate config.Config) error {
 	if f.replaceErr != nil {
 		return f.replaceErr
@@ -121,6 +129,12 @@ func (f *fakeRuntime) lastEdgeRequest() (string, string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.lastMethod, f.lastPath
+}
+
+func (f *fakeRuntime) edgeRouteReloadCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.edgeRouteReloads
 }
 
 func (f *fakeRuntime) lastEdgeQuery() url.Values {
@@ -690,6 +704,89 @@ func TestEdgeProxyAdvancedControlPlaneForwarding(t *testing.T) {
 	}
 	if got := runtime.lastEdgeQuery().Encode(); got != logQuery.Encode() {
 		t.Fatalf("EdgeProxy log query=%q, want %q", got, logQuery.Encode())
+	}
+}
+
+func TestEdgeProxyRouteTableMutationsSynchronizeImmediately(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Admin.AuthToken = "secret-token"
+	inspector, err := waf.NewInspector(nil, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &fakeRuntime{cfg: cfg}
+	server, err := New(cfg.Admin, runtime, metrics.New(), securitylog.New(100), traffic.New(100, time.Minute), inspector)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	do := func(method, path string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, nil)
+		req.Header.Set("Authorization", "Bearer secret-token")
+		rr := httptest.NewRecorder()
+		server.HTTPServer().Handler.ServeHTTP(rr, req)
+		return rr
+	}
+
+	rr := do(http.MethodDelete, "/api/v1/edgeproxy/routes/demo-app/origins/origin-2")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("DELETE origin status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if method, path := runtime.lastEdgeRequest(); method != http.MethodDelete || path != "/api/v1/routes/demo-app/origins/origin-2" {
+		t.Fatalf("origin delete forwarded as %s %s", method, path)
+	}
+	if got := runtime.edgeRouteReloadCount(); got != 1 {
+		t.Fatalf("route reload count after origin delete=%d, want 1", got)
+	}
+
+	rr = do(http.MethodPost, "/api/v1/edgeproxy/config/reload")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("POST config reload status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if method, path := runtime.lastEdgeRequest(); method != http.MethodPost || path != "/api/v1/config/reload" {
+		t.Fatalf("config reload forwarded as %s %s", method, path)
+	}
+	if got := runtime.edgeRouteReloadCount(); got != 2 {
+		t.Fatalf("route reload count after config reload=%d, want 2", got)
+	}
+
+	runtime.mu.Lock()
+	runtime.edgeRaw = json.RawMessage(`{"error":{"message":"rejected"}}`)
+	runtime.edgeStatus = http.StatusBadRequest
+	runtime.mu.Unlock()
+	rr = do(http.MethodDelete, "/api/v1/edgeproxy/routes/demo-app/origins/origin-2")
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("rejected origin delete status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := runtime.edgeRouteReloadCount(); got != 2 {
+		t.Fatalf("route reload ran after rejected EdgeProxy mutation: count=%d, want 2", got)
+	}
+
+	runtime.mu.Lock()
+	runtime.edgeRaw = json.RawMessage(`{"applied":true}`)
+	runtime.edgeStatus = http.StatusOK
+	runtime.edgeRouteReloadErr = errors.New("fixture shared route-table reload failed")
+	runtime.mu.Unlock()
+	rr = do(http.MethodPost, "/api/v1/edgeproxy/config/reload")
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("reload synchronization failure status=%d body=%s, want 409", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error.Code != "route_table_reload_failed" {
+		t.Fatalf("reload synchronization error code=%q, want route_table_reload_failed", payload.Error.Code)
+	}
+	if got := runtime.edgeRouteReloadCount(); got != 3 {
+		t.Fatalf("route reload failure was not attempted exactly once: count=%d, want 3", got)
 	}
 }
 

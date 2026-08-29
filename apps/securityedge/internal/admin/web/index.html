@@ -325,7 +325,7 @@
       <input id="origin-route-name" type="hidden"><input id="origin-original-name" type="hidden">
       <div class="form-grid"><label>Origin name<input id="origin-name" required maxlength="128"></label><label>Origin URL<input id="origin-url" type="url" required></label><label>Weight<input id="origin-weight" type="number" min="1" max="10000" value="1"></label><label>Priority<input id="origin-priority" type="number" min="1" max="10000" value="1"></label></div>
       <label class="switch-row"><span><strong>Skip TLS certificate verification</strong><small>Use only for controlled development origins.</small></span><input id="origin-insecure" type="checkbox"></label>
-      <p id="origin-form-error" class="error-text"></p><div class="dialog-actions"><button type="button" class="ghost" data-close-dialog="origin-dialog">Cancel</button><button type="submit">Validate & apply</button></div>
+      <p id="origin-form-error" class="error-text"></p><div class="dialog-actions origin-dialog-actions"><button id="delete-origin" type="button" class="danger ghost hidden">Delete origin</button><button type="button" class="ghost" data-close-dialog="origin-dialog">Cancel</button><button type="submit">Validate & apply</button></div>
     </form>
   </dialog>
   <dialog id="telemetry-dialog" class="editor-dialog wide-dialog" aria-labelledby="telemetry-dialog-title">

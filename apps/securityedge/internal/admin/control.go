@@ -196,7 +196,7 @@ func (s *Server) edgeConfigReplace(w http.ResponseWriter, r *http.Request) {
 	s.forwardRawBody(w, r, http.MethodPut, "/api/v1/config", body)
 }
 func (s *Server) edgeConfigReload(w http.ResponseWriter, r *http.Request) {
-	s.forward(w, r, http.MethodPost, "/api/v1/config/reload", nil)
+	s.forwardAndReloadEdgeRoutes(w, r, http.MethodPost, "/api/v1/config/reload", nil)
 }
 func (s *Server) edgeConfigWatch(w http.ResponseWriter, r *http.Request) {
 	s.forward(w, r, http.MethodGet, "/api/v1/config/watch", nil)
@@ -268,7 +268,7 @@ func (s *Server) edgeOriginUpdate(w http.ResponseWriter, r *http.Request) {
 	s.forwardBody(w, r, http.MethodPut, edgeOriginPath(r))
 }
 func (s *Server) edgeOriginDelete(w http.ResponseWriter, r *http.Request) {
-	s.forward(w, r, http.MethodDelete, edgeOriginPath(r), r.URL.Query())
+	s.forwardAndReloadEdgeRoutes(w, r, http.MethodDelete, edgeOriginPath(r), r.URL.Query())
 }
 
 func edgeRoutePath(r *http.Request) string {
@@ -307,6 +307,21 @@ func (s *Server) readForwardBody(w http.ResponseWriter, r *http.Request) (json.R
 
 func (s *Server) forwardRawBody(w http.ResponseWriter, r *http.Request, method, path string, body json.RawMessage) {
 	raw, status, err := s.runtime.EdgeJSON(r.Context(), method, path, r.URL.Query(), body)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "edgeproxy_unavailable", err.Error())
+		return
+	}
+	if status < http.StatusBadRequest {
+		if err := s.reloadEdgeRouteTable(); err != nil {
+			writeError(w, http.StatusConflict, "route_table_reload_failed", "EdgeProxy accepted the change but SecurityEdge could not reload the shared route table: "+err.Error())
+			return
+		}
+	}
+	writeRaw(w, status, raw)
+}
+
+func (s *Server) forwardAndReloadEdgeRoutes(w http.ResponseWriter, r *http.Request, method, path string, query url.Values) {
+	raw, status, err := s.runtime.EdgeJSON(r.Context(), method, path, query, nil)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "edgeproxy_unavailable", err.Error())
 		return

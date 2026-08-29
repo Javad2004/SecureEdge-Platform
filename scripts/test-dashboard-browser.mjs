@@ -582,6 +582,12 @@ try {
       const reasonValues = [...document.getElementById('security-reason-filter').options].map(option => option.value);
       const routeValues = [...document.getElementById('security-route-filter').options].map(option => option.value);
       const ruleValues = [...document.getElementById('security-rule-filter').options].map(option => option.value);
+      const initialPageSizes = {
+        security:document.getElementById('security-log-page-size').value,
+        edge:document.getElementById('edge-log-page-size').value,
+        expectedSecurity:String(state.securityConfig?.admin?.log_store?.default_page_size || 100),
+        expectedEdge:String(state.edgeConfig?.admin?.log_store?.default_page_size || 50)
+      };
 
       setView('security');
       document.getElementById('security-log-page-size').value = '25';
@@ -649,7 +655,7 @@ try {
         requestID:document.querySelector('#edge-log-table tr td:nth-child(9)')?.textContent?.trim() || ''
       };
 
-      return {securityKinds, reasonValues, routeValues, ruleValues, expectedRoute:state.edgeConfig?.routes?.[0]?.name || '', securityFirstPage, securityFirstRead, securityOlderPage, securityOlderRead, securityNewerSequence, firstPage, filteredRead, olderPage, olderRead, newerPage};
+      return {securityKinds, reasonValues, routeValues, ruleValues, initialPageSizes, expectedRoute:state.edgeConfig?.routes?.[0]?.name || '', securityFirstPage, securityFirstRead, securityOlderPage, securityOlderRead, securityNewerSequence, firstPage, filteredRead, olderPage, olderRead, newerPage};
     })()`, true);
     const kinds = requestExplorerContract.securityKinds;
     if (kinds.q !== 'INPUT' || kinds.client_ip !== 'INPUT' || kinds.reason !== 'SELECT' || kinds.route !== 'SELECT' || kinds.rule_id !== 'SELECT') {
@@ -657,6 +663,10 @@ try {
     }
     if (!requestExplorerContract.reasonValues.includes('waf_threshold') || !requestExplorerContract.routeValues.includes(requestExplorerContract.expectedRoute) || !requestExplorerContract.ruleValues.includes('XSS-001')) {
       throw new Error(`Security Explorer dropdown options are incomplete: ${JSON.stringify(requestExplorerContract)}`);
+    }
+    if (requestExplorerContract.initialPageSizes.security !== requestExplorerContract.initialPageSizes.expectedSecurity ||
+        requestExplorerContract.initialPageSizes.edge !== requestExplorerContract.initialPageSizes.expectedEdge) {
+      throw new Error(`Request explorers do not honor configured default page sizes on first render: ${JSON.stringify(requestExplorerContract.initialPageSizes)}`);
     }
     const securityFirstQuery = new URLSearchParams(requestExplorerContract.securityFirstRead?.query || '');
     const securityOlderQuery = new URLSearchParams(requestExplorerContract.securityOlderRead?.query || '');
@@ -2749,6 +2759,60 @@ try {
     }
     await cdp.evaluate(`document.getElementById('origin-dialog').close()`);
 
+    const originDeleteContract = await cdp.evaluate(`(async () => {
+      const originalEdgeConfig = structuredClone(state.edgeConfig);
+      const routeName = ${JSON.stringify(expectedRoute)} || state.edgeConfig?.routes?.[0]?.name || '';
+      const baseRoute = structuredClone(state.edgeConfig?.routes?.find(route => route.name === routeName) || state.edgeConfig?.routes?.[0]);
+      if (!baseRoute?.upstreams?.length) return {error:'fixture route has no origins'};
+      const firstOrigin = structuredClone(baseRoute.upstreams[0]);
+      const closeOriginDialog = () => { const dialog=document.getElementById('origin-dialog'); if (dialog.open) dialog.close(); };
+      try {
+        const oneOriginRoute = {...structuredClone(baseRoute), upstreams:[firstOrigin]};
+        state.edgeConfig = {...structuredClone(originalEdgeConfig), routes:[oneOriginRoute]};
+        renderRoutes();
+        openOriginDialog(oneOriginRoute.name, firstOrigin.name);
+        const single = {
+          hidden:document.getElementById('delete-origin').classList.contains('hidden'),
+          disabled:document.getElementById('delete-origin').disabled,
+          title:document.getElementById('delete-origin').title
+        };
+        closeOriginDialog();
+        openOriginDialog(oneOriginRoute.name);
+        const add = {hidden:document.getElementById('delete-origin').classList.contains('hidden')};
+        closeOriginDialog();
+
+        const secondOrigin = {...structuredClone(firstOrigin), name:'origin-2', url:'http://127.0.0.1:9001'};
+        const twoOriginRoute = {...structuredClone(baseRoute), upstreams:[firstOrigin, secondOrigin]};
+        state.edgeConfig = {...structuredClone(originalEdgeConfig), routes:[twoOriginRoute]};
+        renderRoutes();
+        window.__fixtureRequests.length = 0;
+        openOriginDialog(twoOriginRoute.name, secondOrigin.name);
+        const multiple = {
+          hidden:document.getElementById('delete-origin').classList.contains('hidden'),
+          disabled:document.getElementById('delete-origin').disabled
+        };
+        document.getElementById('delete-origin').click();
+        for (let i=0; i<100; i++) {
+          const requested = window.__fixtureRequests.some(request => request.method === 'DELETE');
+          if (requested && !document.getElementById('origin-dialog').open) break;
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        const request = window.__fixtureRequests.find(request => request.method === 'DELETE') || null;
+        return {single, add, multiple, request, dialogOpen:document.getElementById('origin-dialog').open};
+      } finally {
+        closeOriginDialog();
+        state.edgeConfig = originalEdgeConfig;
+        renderRoutes();
+      }
+    })()`, true);
+    const expectedOriginDeletePath = `/api/v1/edgeproxy/routes/${encodeURIComponent(expectedRoute)}/origins/origin-2`;
+    if (originDeleteContract.error || originDeleteContract.single.hidden || !originDeleteContract.single.disabled ||
+        !originDeleteContract.single.title.includes('at least one origin') || !originDeleteContract.add.hidden ||
+        originDeleteContract.multiple.hidden || originDeleteContract.multiple.disabled || originDeleteContract.dialogOpen ||
+        originDeleteContract.request?.method !== 'DELETE' || originDeleteContract.request?.key !== expectedOriginDeletePath) {
+      throw new Error(`Origin CRUD delete contract failed: ${JSON.stringify(originDeleteContract)}`);
+    }
+
     await cdp.evaluate(`document.querySelector('[data-origin-telemetry]').click()`);
     await eventually(async () => await cdp.evaluate(`document.getElementById('telemetry-dialog').open`), 'Origin telemetry dialog');
     telemetryDetailLayout = await cdp.evaluate(`(() => {
@@ -2967,7 +3031,11 @@ try {
         const formRect = dialog.querySelector('.editor-form').getBoundingClientRect();
         const footer = dialog.querySelector('.dialog-actions:last-child');
         const button = footer.querySelector('button[type="submit"]').getBoundingClientRect();
+        const deleteButton = footer.querySelector('#delete-origin').getBoundingClientRect();
+        const footerRect = footer.getBoundingClientRect();
         return {position:getComputedStyle(footer).position,bottomGap:formRect.bottom-button.bottom,
+          display:getComputedStyle(footer).display, footerClientWidth:footer.clientWidth, footerScrollWidth:footer.scrollWidth,
+          deleteLeft:deleteButton.left, deleteRight:deleteButton.right, footerLeft:footerRect.left, footerRight:footerRect.right,
           htmlOverflowY:getComputedStyle(document.documentElement).overflowY,bodyOverflowY:getComputedStyle(document.body).overflowY};
       })()`);
       await cdp.evaluate(`document.getElementById('origin-dialog').close()`);
@@ -2999,6 +3067,12 @@ try {
           mobileLayout.formScrollWidth > mobileLayout.formClientWidth + 1 ||
           mobileLayout.telemetryFooter.formScrollWidth > mobileLayout.telemetryFooter.formClientWidth + 1) {
         throw new Error(`Mobile editor dialog leaks horizontal overflow internally at ${width}px: ${JSON.stringify(mobileLayout)}`);
+      }
+      if (mobileLayout.originFooter.display !== 'grid' ||
+          mobileLayout.originFooter.footerScrollWidth > mobileLayout.originFooter.footerClientWidth + 1 ||
+          mobileLayout.originFooter.deleteLeft < mobileLayout.originFooter.footerLeft - 1 ||
+          mobileLayout.originFooter.deleteRight > mobileLayout.originFooter.footerRight + 1) {
+        throw new Error(`Mobile Origin destructive-action footer is not contained and responsive at ${width}px: ${JSON.stringify(mobileLayout)}`);
       }
       if (mobileLayout.htmlOverflowY !== 'hidden' || mobileLayout.bodyOverflowY !== 'hidden' ||
           mobileLayout.originFooter.htmlOverflowY !== 'hidden' || mobileLayout.originFooter.bodyOverflowY !== 'hidden' ||

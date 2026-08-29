@@ -119,9 +119,10 @@ function edgeLogMaxPageSize() {
 
 function renderPageSizeOptions(select, maximum, configuredDefault) {
   if (!select) return;
-  const selected = Math.max(1, Number(select.value || 50));
   const max = Math.max(1, Math.floor(Number(maximum) || 100));
   const preferredDefault = Math.max(1, Math.min(max, Math.floor(Number(configuredDefault) || 50)));
+  const current = String(select.value || '').trim();
+  const selected = current ? Math.max(1, Number(current)) : preferredDefault;
   const values = [...new Set([25,50,100,200,500,preferredDefault,max].filter(value => value > 0 && value <= max))].sort((a,b) => a-b);
   if (!values.length) values.push(max);
   select.innerHTML = values.map(value => `<option value="${value}">${value} per page</option>`).join('');
@@ -1759,7 +1760,12 @@ function openOriginDialog(routeName, originName = '') {
   $('origin-route-name').value = route.name; $('origin-original-name').value = origin?.name || '';
   $('origin-name').value = origin?.name || `origin-${(route.upstreams?.length || 0)+1}`; $('origin-name').readOnly = Boolean(origin);
   $('origin-url').value = origin?.url || ''; $('origin-weight').value = origin?.weight || 1; $('origin-priority').value = origin?.priority || ((route.upstreams?.length || 0)+1);
-  $('origin-insecure').checked = Boolean(origin?.insecure_skip_verify); $('origin-form-error').textContent = ''; $('origin-dialog').showModal();
+  $('origin-insecure').checked = Boolean(origin?.insecure_skip_verify); $('origin-form-error').textContent = '';
+  const deleteButton = $('delete-origin');
+  deleteButton.classList.toggle('hidden', !origin);
+  deleteButton.disabled = !origin || (route.upstreams?.length || 0) <= 1;
+  deleteButton.title = deleteButton.disabled && origin ? 'A route must retain at least one origin.' : '';
+  $('origin-dialog').showModal();
 }
 
 function bindRouteActions() {
@@ -1805,6 +1811,25 @@ async function saveOrigin(event) {
     await api(original ? `${base}/${encodeURIComponent(original)}` : base, {method:original ? 'PUT':'POST', body:JSON.stringify(origin)});
     $('origin-dialog').close(); await refreshAll(); toast(original ? 'Origin updated' : 'Origin added');
   } catch(error) { $('origin-form-error').textContent = error.message; }
+}
+
+async function deleteOrigin() {
+  const route = $('origin-route-name').value, origin = $('origin-original-name').value;
+  if (!route || !origin) return;
+  if (!confirm(`Delete origin ${origin} from route ${route}?`)) return;
+  const button = $('delete-origin');
+  button.disabled = true;
+  $('origin-form-error').textContent = '';
+  try {
+    await api(`/api/v1/edgeproxy/routes/${encodeURIComponent(route)}/origins/${encodeURIComponent(origin)}`, {method:'DELETE'});
+    $('origin-dialog').close();
+    await refreshAll();
+    toast('Origin deleted');
+  } catch(error) {
+    $('origin-form-error').textContent = error.message;
+    const currentRoute = findConfigRoute(route);
+    button.disabled = !currentRoute || (currentRoute.upstreams?.length || 0) <= 1;
+  }
 }
 
 function loadCacheEditor(routeName) {
@@ -2015,9 +2040,11 @@ $('clear-bans').onclick = async () => {
   catch (error) { toast(error.message); }
 };
 $('policy-form').onsubmit = savePolicy;
+$('delete-origin').onclick = deleteOrigin;
 $('policy-form').addEventListener('input', () => { state.policyDirty = true; });
 $('policy-form').addEventListener('change', () => { state.policyDirty = true; });
 $('delete-override').onclick = async () => {
+  if (!confirm(`Delete the SecurityEdge policy override for route ${state.selectedPolicy}?`)) return;
   try {
     await api(`/api/v1/policies/${encodeURIComponent(state.selectedPolicy)}`,{method:'DELETE'});
     state.policyDirty = false;

@@ -533,6 +533,10 @@ func TestDashboardRouteAndTableActionLayoutContract(t *testing.T) {
 		`class="table-actions-cell"`,
 		`class="table-actions-heading"`,
 		`<span class="sr-only">Actions</span>`,
+		`id="delete-origin" type="button" class="danger ghost hidden"`,
+		`function deleteOrigin()`,
+		`A route must retain at least one origin.`,
+		`{method:'DELETE'}`,
 	} {
 		if !strings.Contains(content, required) {
 			t.Fatalf("dashboard route/table action layout contract is missing %q", required)

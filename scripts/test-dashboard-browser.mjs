@@ -3676,9 +3676,28 @@ try {
         let oversizedOrigin = '';
         try { validateOriginCandidate({upstreams:[]}, {name:'é'.repeat(129),url:'http://127.0.0.1:9000',weight:1,priority:1,insecure_skip_verify:false}); }
         catch (error) { oversizedOrigin = error.message; }
+        let oversizedRoute = '', duplicateRoute = '';
+        try { validateRouteNameCandidate('é'.repeat(129)); } catch (error) { oversizedRoute = error.message; }
+        try { validateRouteNameCandidate(routeName); } catch (error) { duplicateRoute = error.message; }
+        const relationshipErrors = {};
+        try { validateCacheRelationships({enabled:true,max_bytes:4*1048576,max_object_bytes:8*1048576,default_ttl:'30s',stale_if_error:'2m'}, 'Fixture cache'); }
+        catch (error) { relationshipErrors.cache = error.message; }
+        try { validateHealthRelationships({enabled:true,interval:'2s',timeout:'3s'}, 'Fixture health'); }
+        catch (error) { relationshipErrors.health = error.message; }
+        try { validateSystemRelationships(securityServer, {max_concurrent_requests:10,max_concurrent_per_client:11}); }
+        catch (error) { relationshipErrors.concurrency = error.message; }
+        try { validateSystemRelationships(securityAdmin, {enabled:true,log_store:{capacity:100,default_page_size:51,max_page_size:50},connectivity:{enabled:false},telemetry_history:{enabled:false}}); }
+        catch (error) { relationshipErrors.securityPages = error.message; }
+        try { validateSystemRelationships(securityAdmin, {enabled:true,log_store:{capacity:100,default_page_size:10,max_page_size:50},connectivity:{enabled:true,check_interval:'5s',timeout:'6s',stale_after:'15s'},telemetry_history:{enabled:false}}); }
+        catch (error) { relationshipErrors.connectivity = error.message; }
+        try { validateSystemRelationships(edgeAdmin, {enabled:true,log_store:{enabled:true,capacity:20,default_page_size:10,max_page_size:21}}); }
+        catch (error) { relationshipErrors.edgePages = error.message; }
+        let invalidDuration = '';
+        try { goDurationMilliseconds('5 seconds', 'Fixture duration'); } catch (error) { invalidDuration = error.message; }
         return {
           cacheDisabled,cacheEnabledState,securityTLSOff,securityTLSOn,embedded,adminOff,adminOnFeaturesOff,connectivityOn,dnsOn,historyOn,edgeLogOff,edgeLogOn,
-          validStatuses:statusCodes('200, 404, 200', 'Fixture statuses', false),invalidStatus,oversizedOrigin,
+          validStatuses:statusCodes('200, 404, 200', 'Fixture statuses', false),invalidStatus,oversizedOrigin,oversizedRoute,duplicateRoute,relationshipErrors,invalidDuration,
+          parsedDuration:goDurationMilliseconds('1h30m500ms', 'Fixture duration'),
           routeHeaderMin:document.getElementById('route-max-response-header').min,
           utf8Length:utf8Bytes('é'.repeat(129))
         };
@@ -3714,8 +3733,18 @@ try {
       throw new Error(`EdgeProxy Admin log-store controls do not follow the enabled contract: ${JSON.stringify(featureControlContract)}`);
     }
     if (JSON.stringify(featureControlContract.validStatuses) !== JSON.stringify([200,404]) || !featureControlContract.invalidStatus.includes('100 to 599') ||
-        !featureControlContract.oversizedOrigin.includes('256 UTF-8 bytes') || featureControlContract.utf8Length !== 258 || featureControlContract.routeHeaderMin !== '1') {
+        !featureControlContract.oversizedOrigin.includes('256 UTF-8 bytes') || !featureControlContract.oversizedRoute.includes('256 UTF-8 bytes') ||
+        !featureControlContract.duplicateRoute.includes('already exists') || featureControlContract.utf8Length !== 258 || featureControlContract.routeHeaderMin !== '1') {
       throw new Error(`Client-side validation is not aligned with backend status/name/header limits: ${JSON.stringify(featureControlContract)}`);
+    }
+    if (!featureControlContract.relationshipErrors.cache.includes('cannot exceed') ||
+        !featureControlContract.relationshipErrors.health.includes('cannot exceed') ||
+        !featureControlContract.relationshipErrors.concurrency.includes('cannot exceed') ||
+        !featureControlContract.relationshipErrors.securityPages.includes('cannot exceed') ||
+        !featureControlContract.relationshipErrors.connectivity.includes('cannot exceed') ||
+        !featureControlContract.relationshipErrors.edgePages.includes('cannot exceed') ||
+        !featureControlContract.invalidDuration.includes('valid Go duration') || featureControlContract.parsedDuration !== 5400500) {
+      throw new Error(`Cross-field dashboard validation is not aligned with backend relationships: ${JSON.stringify(featureControlContract)}`);
     }
   }
 

@@ -94,6 +94,82 @@ function statusCodes(value, label, allowEmpty = true) {
   });
   return result;
 }
+
+function goDurationMilliseconds(value, label) {
+  const raw = String(value ?? '').trim();
+  if (raw === '0') return 0;
+  if (!raw) throw new Error(`${label} is required.`);
+  let sign = 1, body = raw;
+  if (body[0] === '+' || body[0] === '-') {
+    if (body[0] === '-') sign = -1;
+    body = body.slice(1);
+  }
+  if (!body) throw new Error(`${label} must be a valid Go duration such as 500ms, 5s, 2m, or 1h30m.`);
+  const factors = {ns:1e-6, us:1e-3, 'µs':1e-3, 'μs':1e-3, ms:1, s:1000, m:60000, h:3600000};
+  const token = /(\d+(?:\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h)/gy;
+  let total = 0, consumed = 0, match;
+  while ((match = token.exec(body)) !== null) {
+    if (match.index !== consumed) break;
+    total += Number(match[1]) * factors[match[2]];
+    consumed = token.lastIndex;
+  }
+  if (consumed !== body.length || !Number.isFinite(total)) {
+    throw new Error(`${label} must be a valid Go duration such as 500ms, 5s, 2m, or 1h30m.`);
+  }
+  return sign * total;
+}
+
+function validateCacheRelationships(cache, label = 'Cache') {
+  if (!cache?.enabled) return;
+  if (!(Number(cache.max_bytes) > 0) || !(Number(cache.max_object_bytes) > 0)) return;
+  if (Number(cache.max_object_bytes) > Number(cache.max_bytes)) {
+    throw new Error(`${label} maximum object size cannot exceed the total cache size.`);
+  }
+  const ttl = goDurationMilliseconds(cache.default_ttl, `${label} default TTL`);
+  const stale = goDurationMilliseconds(cache.stale_if_error, `${label} stale-if-error`);
+  if (ttl <= 0) throw new Error(`${label} default TTL must be positive.`);
+  if (stale < 0) throw new Error(`${label} stale-if-error cannot be negative.`);
+}
+
+function validateHealthRelationships(health, label = 'Health check') {
+  if (!health?.enabled) return;
+  const interval = goDurationMilliseconds(health.interval, `${label} interval`);
+  const timeout = goDurationMilliseconds(health.timeout, `${label} timeout`);
+  if (interval <= 0 || timeout <= 0) throw new Error(`${label} interval and timeout must be positive.`);
+  if (timeout > interval) throw new Error(`${label} timeout cannot exceed its interval.`);
+}
+
+function validateLogStoreRelationships(store, label) {
+  if (!store) return;
+  const capacity = Number(store.capacity), defaultPage = Number(store.default_page_size), maxPage = Number(store.max_page_size);
+  if (defaultPage > maxPage) throw new Error(`${label} default page size cannot exceed maximum page size.`);
+  if (maxPage > capacity) throw new Error(`${label} maximum page size cannot exceed memory capacity.`);
+}
+
+function validateSystemRelationships(form, payload) {
+  const key = form?.dataset?.systemForm;
+  if (key === 'security-server' && Number(payload.max_concurrent_per_client) > Number(payload.max_concurrent_requests)) {
+    throw new Error('Maximum concurrent requests per client cannot exceed the global maximum concurrent requests.');
+  }
+  if (key === 'security-admin' && payload.enabled) {
+    validateLogStoreRelationships(payload.log_store, 'Security event store');
+    if (payload.connectivity?.enabled) {
+      const interval = goDurationMilliseconds(payload.connectivity.check_interval, 'Connectivity check interval');
+      const timeout = goDurationMilliseconds(payload.connectivity.timeout, 'Connectivity probe timeout');
+      const stale = goDurationMilliseconds(payload.connectivity.stale_after, 'Connectivity stale-after');
+      if (interval < 1000 || interval > 3600000) throw new Error('Connectivity check interval must be between 1s and 1h.');
+      if (timeout <= 0 || timeout > interval) throw new Error('Connectivity probe timeout must be positive and cannot exceed the check interval.');
+      if (stale < interval) throw new Error('Connectivity stale-after cannot be shorter than the check interval.');
+    }
+    if (payload.telemetry_history?.enabled) {
+      const interval = goDurationMilliseconds(payload.telemetry_history.sample_interval, 'Telemetry history sample interval');
+      if (interval < 1000 || interval > 3600000) throw new Error('Telemetry history sample interval must be between 1s and 1h.');
+    }
+  }
+  if (key === 'edge-admin' && payload.enabled && payload.log_store?.enabled) {
+    validateLogStoreRelationships(payload.log_store, 'EdgeProxy Admin log store');
+  }
+}
 const bytesToMiB = value => Number(value || 0) / 1048576;
 const mibToBytes = value => Math.round(Number(value || 0) * 1048576);
 const requestTimeoutMS = 15000;
@@ -294,6 +370,18 @@ function syncPolicyFeatureControls(form, restoreDefaults = false) {
     if (!form.ban_duration.value.trim()) form.ban_duration.value = '10m';
     if (!(Number(form.max_tracked_clients.value) > 0)) form.max_tracked_clients.value = 100000;
   }
+}
+
+function validateRouteNameCandidate(value, originalName = '') {
+  const name = String(value || '').trim();
+  if (!name) throw new Error('Route name is required.');
+  if (utf8Bytes(name) > 256) throw new Error('Route name cannot exceed 256 UTF-8 bytes.');
+  if (name.toLowerCase() === '__unmatched__') throw new Error('Route name __unmatched__ is reserved for internal telemetry.');
+  const existing = findConfigRoute(name);
+  if (existing && (!originalName || String(existing.name).toLowerCase() !== String(originalName).toLowerCase())) {
+    throw new Error(`Route name ${name} already exists.`);
+  }
+  return name;
 }
 
 function validateOriginCandidate(route, candidate, originalName = '') {
@@ -1865,6 +1953,7 @@ async function saveSystemForm(event) {
   const button = form.querySelector('button[type="submit"]');
   try {
     const payload = systemFormPayload(form, definition.source() || {});
+    validateSystemRelationships(form, payload);
     button.disabled = true;
     result.textContent = 'Validating and applying…';
     const response = await api(definition.api, {method:'PUT', body:JSON.stringify(payload)});
@@ -2085,10 +2174,7 @@ async function saveRoute(event) {
   try {
     const original = $('route-original-name').value;
     const base = structuredClone(original ? findConfigRoute(original) : defaultRouteTemplate());
-    base.name = $('route-name').value.trim();
-    if (!base.name) throw new Error('Route name is required.');
-    if (utf8Bytes(base.name) > 256) throw new Error('Route name cannot exceed 256 UTF-8 bytes.');
-    if (base.name.toLowerCase() === '__unmatched__') throw new Error('Route name __unmatched__ is reserved for internal telemetry.');
+    base.name = validateRouteNameCandidate($('route-name').value, original);
     base.hosts = csv($('route-hosts').value); base.path_prefix = $('route-path').value.trim();
     base.strip_prefix = $('route-strip-prefix').checked; base.preserve_host = $('route-preserve-host').checked;
     base.load_balancing = {algorithm:$('route-algorithm').value, latency_sensitivity:Number($('route-sensitivity').value), ewma_alpha:Number($('route-alpha').value)};
@@ -2096,9 +2182,11 @@ async function saveRoute(event) {
     const previousCache = base.cache || {};
     const cacheEnabled = $('route-cache-enabled').checked;
     base.cache = {enabled:cacheEnabled, default_ttl:$('route-cache-ttl').value.trim(), stale_if_error:$('route-cache-stale').value.trim(), max_entries:Number($('route-cache-entries').value), max_bytes:mibToBytes($('route-cache-mib').value), max_object_bytes:mibToBytes($('route-cache-object-mib').value), respect_origin_headers:$('route-cache-respect-origin').checked, cache_authorized_requests:$('route-cache-authorized').checked, cache_cookie_requests:$('route-cache-cookie').checked, cache_set_cookie_responses:$('route-cache-set-cookie').checked, vary_request_headers:csv($('route-cache-vary').value), cacheable_status_codes:cacheEnabled ? statusCodes($('route-cache-statuses').value, 'Cacheable status codes', false) : (previousCache.cacheable_status_codes || [])};
+    validateCacheRelationships(base.cache, 'Route cache');
     const previousHealth = base.health_check || {};
     const healthEnabled = $('route-health-enabled').checked;
     base.health_check = {enabled:healthEnabled, path:$('route-health-path').value.trim(), interval:$('route-health-interval').value.trim(), timeout:$('route-health-timeout').value.trim(), healthy_statuses:healthEnabled ? statusCodes($('route-health-statuses').value, 'Healthy status codes', false) : (previousHealth.healthy_statuses || [])};
+    validateHealthRelationships(base.health_check, 'Origin health check');
     if (!original) {
       const initialOrigin = validateOriginCandidate(base, {
         name:$('route-origin-name').value.trim() || 'origin-1', url:$('route-origin-url').value.trim(),
@@ -2173,6 +2261,7 @@ async function saveCacheEditor() {
       cache_cookie_requests:$('cache-editor-cookie').checked, cache_set_cookie_responses:$('cache-editor-set-cookie').checked,
       vary_request_headers:csv($('cache-editor-vary').value), cacheable_status_codes:enabled ? statusCodes($('cache-editor-statuses').value, 'Cacheable status codes', false) : (current.cacheable_status_codes || [])
     };
+    validateCacheRelationships(candidate, 'Route cache');
     await api(`/api/v1/edgeproxy/routes/${encodeURIComponent(route)}/cache`, {method:'PUT', body:JSON.stringify(candidate)});
     state.cacheEditorDirty = false;
     $('cache-config-result').textContent = 'Cache policy validated, persisted atomically, and hot-applied.';

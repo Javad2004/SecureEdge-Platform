@@ -462,6 +462,19 @@ func (s *Server) updateDefaultPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.runtime.UpdateDefaultPolicy(p); err != nil {
+		var restartRequired interface{ RestartRequired() bool }
+		if errors.As(err, &restartRequired) && restartRequired.RestartRequired() {
+			response := map[string]any{
+				"accepted": true, "restart_required": true, "automatic_restart": true,
+				"scope": "default", "message": err.Error(),
+			}
+			if runtime, ok := s.runtime.(configRuntime); ok {
+				response["watch"] = runtime.WatchStatusMap()
+			}
+			s.runtime.Audit("policy_updated", "default security policy update accepted; restart scheduled", auditFields(r, "default"))
+			writeJSON(w, http.StatusAccepted, response)
+			return
+		}
 		writeError(w, 400, "invalid_policy", err.Error())
 		return
 	}

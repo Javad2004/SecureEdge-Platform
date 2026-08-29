@@ -420,7 +420,20 @@ func (r *Runtime) Audit(event, message string, fields map[string]string) {
 }
 
 func (r *Runtime) UpdateDefaultPolicy(p config.Policy) error {
-	return r.update(func(cfg *config.Config) { cfg.DefaultPolicy = p })
+	return r.update(func(cfg *config.Config) {
+		cfg.DefaultPolicy = p
+		// Limiter cleanup/capacity and ban-tracking capacity are process-wide.
+		// Keep every Route override aligned with the new Default Policy values so
+		// a legitimate Default-Policy edit does not become invalid merely because
+		// an existing Route override still carries the previously inherited copy.
+		for name, routePolicy := range cfg.RoutePolicies {
+			routePolicy.RateLimit.CleanupInterval = p.RateLimit.CleanupInterval
+			routePolicy.RateLimit.IdleTTL = p.RateLimit.IdleTTL
+			routePolicy.RateLimit.MaxBuckets = p.RateLimit.MaxBuckets
+			routePolicy.AutoBan.MaxTrackedClients = p.AutoBan.MaxTrackedClients
+			cfg.RoutePolicies[name] = routePolicy
+		}
+	})
 }
 func (r *Runtime) UpdateRoutePolicy(route string, p config.Policy) error {
 	canonical, ok := r.canonicalRouteName(route)
@@ -642,6 +655,23 @@ func (r *Runtime) update(mutator func(*config.Config)) error {
 	}
 	if err := runtimeCfg.Validate(); err != nil {
 		return err
+	}
+	r.mu.RLock()
+	current := cloneConfig(r.cfg)
+	r.mu.RUnlock()
+	if fields := restartRequiredChanges(current, runtimeCfg); len(fields) > 0 {
+		if err := r.validateRestartCandidate(r.configPath, current, runtimeCfg); err != nil {
+			return err
+		}
+		// Persist the validated candidate before scheduling the generation
+		// restart, mirroring ReplaceConfig. This makes structured Control Plane
+		// mutations truthful: a restart-required policy edit is accepted and
+		// durable instead of being reported as an invalid policy.
+		if err := config.Save(r.configPath, candidate); err != nil {
+			return err
+		}
+		r.MarkRestartScheduled(r.configPath)
+		return &restartRequiredError{fields: fields}
 	}
 	prepared, err := r.prepareReload(runtimeCfg)
 	if err != nil {

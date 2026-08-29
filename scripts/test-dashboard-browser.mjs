@@ -271,6 +271,7 @@ try {
       };
       window.__fixtureActiveFetches = 0;
       window.__fixtureMaxActiveFetches = 0;
+      window.__fixturePolicyRestart = false;
       window.fetch = async (input, init = {}) => {
         const raw = typeof input === 'string' ? input : input.url;
         const parsed = new URL(raw, 'http://fixture.local');
@@ -281,11 +282,17 @@ try {
         window.__fixtureMaxActiveFetches = Math.max(window.__fixtureMaxActiveFetches, window.__fixtureActiveFetches);
         if (key === '/api/v1/dashboard/overview') await new Promise(resolve => setTimeout(resolve, 75));
         let body;
+        let responseStatus = 200;
         if (method === 'PUT' || method === 'POST' || method === 'DELETE') {
           let requestBody = null;
           try { requestBody = init.body ? JSON.parse(init.body) : null; } catch {}
           window.__fixtureRequests.push({method, key, body:requestBody});
-          body = {applied:true, restart_required:false, watch:{revision:2, applied_revision:2}};
+          if (key === '/api/v1/policies/default' && window.__fixturePolicyRestart) {
+            responseStatus = 202;
+            body = {accepted:true, restart_required:true, automatic_restart:true, scope:'default', watch:{revision:3, applied_revision:2, restart_scheduled:true}};
+          } else {
+            body = {applied:true, restart_required:false, watch:{revision:2, applied_revision:2}};
+          }
         } else {
           window.__fixtureReadRequests.push({method, key, query:parsed.searchParams.toString()});
           if (key === '/api/v1/edgeproxy/logs') {
@@ -302,7 +309,7 @@ try {
         }
         window.__fixtureActiveFetches--;
         if (body === undefined) return new Response(JSON.stringify({error:{message:'fixture endpoint not found: ' + key}}), {status:404,headers:{'Content-Type':'application/json'}});
-        return new Response(JSON.stringify(body), {status:200,headers:{'Content-Type':'application/json'}});
+        return new Response(JSON.stringify(body), {status:responseStatus,headers:{'Content-Type':'application/json'}});
       };
       window.confirm = () => true;
     })()`;
@@ -3190,6 +3197,8 @@ try {
       const originalPolicies = structuredClone(state.policies);
       const originalSelectedPolicy = state.selectedPolicy;
       const originalPolicyDirty = state.policyDirty;
+      const originalPolicyRestartPending = state.policyRestartPending;
+      const originalSecurityWatch = state.securityWatch;
       const originalOverview = state.overview;
       const originalConfirm = window.confirm;
       const routeName = ${JSON.stringify(expectedRoute)};
@@ -3237,6 +3246,48 @@ try {
         const policyMutation = window.__fixtureRequests.slice(mutationStart).find(request =>
           request.method === 'PUT' && request.key === '/api/v1/policies/' + encodeURIComponent(routeName));
 
+        state.selectedPolicy = 'default';
+        state.policyDirty = false;
+        renderPolicies();
+        const restartForm = document.getElementById('policy-form');
+        const nextMaxBuckets = Math.min(Number(restartForm.max_buckets.max || 1000000), Number(restartForm.max_buckets.value) + 1);
+        restartForm.max_buckets.value = String(nextMaxBuckets);
+        const restartMutationStart = window.__fixtureRequests.length;
+        const originalSetTimeout = window.setTimeout;
+        const restartTimers = [];
+        window.__fixturePolicyRestart = true;
+        window.setTimeout = (handler, timeout, ...args) => {
+          const id = originalSetTimeout(handler, timeout, ...args);
+          restartTimers.push(id);
+          return id;
+        };
+        try {
+          await savePolicy({preventDefault(){}, currentTarget:restartForm});
+        } finally {
+          restartTimers.forEach(id => clearTimeout(id));
+          window.setTimeout = originalSetTimeout;
+          window.__fixturePolicyRestart = false;
+        }
+        const restartMutation = window.__fixtureRequests.slice(restartMutationStart).find(request =>
+          request.method === 'PUT' && request.key === '/api/v1/policies/default');
+        const restartState = {
+          dirty:state.policyDirty,
+          pending:state.policyRestartPending,
+          watchScheduled:Boolean(state.securityWatch?.restart_scheduled),
+          result:document.getElementById('policy-result').textContent.trim(),
+          body:restartMutation?.body || null,
+          expectedMaxBuckets:nextMaxBuckets
+        };
+        if (restartMutation?.body) state.policies.default_policy = structuredClone(restartMutation.body);
+        state.securityWatch = {...(state.securityWatch || {}), restart_scheduled:false, last_error:''};
+        renderPolicies();
+        const restartAppliedState = {
+          dirty:state.policyDirty,
+          pending:state.policyRestartPending,
+          result:document.getElementById('policy-result').textContent.trim(),
+          maxBuckets:form.max_buckets.value
+        };
+
         const candidate = structuredClone(originalOverview);
         candidate.recent_client_traffic = {
           status:'traffic_observed', window_seconds:300, retention_capacity:512, window_truncated:false,
@@ -3257,12 +3308,14 @@ try {
         await document.getElementById('purge-form').onsubmit({preventDefault(){}});
         const purgeMutations = window.__fixtureRequests.slice(purgeStart).filter(request => request.key.includes('/cache/purge')).length;
 
-        return {defaultState, routeState, policyBody:policyMutation?.body || null, defaultPolicy, unmatchedLabel, purgePrompt, purgeMutations};
+        return {defaultState, routeState, policyBody:policyMutation?.body || null, defaultPolicy, restartState, restartAppliedState, unmatchedLabel, purgePrompt, purgeMutations};
       } finally {
         window.confirm = originalConfirm;
         state.policies = originalPolicies;
         state.selectedPolicy = originalSelectedPolicy;
         state.policyDirty = originalPolicyDirty;
+        state.policyRestartPending = originalPolicyRestartPending;
+        state.securityWatch = originalSecurityWatch;
         state.overview = originalOverview;
         renderPolicies();
         renderAll();
@@ -3293,6 +3346,18 @@ try {
         policyEditorContract.policyBody.rate_limit.max_buckets !== policyEditorContract.defaultPolicy.rate_limit.max_buckets ||
         policyEditorContract.policyBody.auto_ban.max_tracked_clients !== policyEditorContract.defaultPolicy.auto_ban.max_tracked_clients) {
       throw new Error(`Route policy submission does not preserve the process-wide backend contract: ${JSON.stringify(policyEditorContract)}`);
+    }
+    if (!policyEditorContract.restartState?.body ||
+        policyEditorContract.restartState.body.rate_limit.max_buckets !== policyEditorContract.restartState.expectedMaxBuckets ||
+        policyEditorContract.restartState.dirty !== true || policyEditorContract.restartState.pending !== true ||
+        policyEditorContract.restartState.watchScheduled !== true ||
+        !policyEditorContract.restartState.result.includes('live values stay pinned until the new generation is active')) {
+      throw new Error(`Restart-required Default policy edit is not preserved and surfaced correctly: ${JSON.stringify(policyEditorContract)}`);
+    }
+    if (policyEditorContract.restartAppliedState.dirty !== false || policyEditorContract.restartAppliedState.pending !== false ||
+        policyEditorContract.restartAppliedState.maxBuckets !== String(policyEditorContract.restartState.expectedMaxBuckets) ||
+        !policyEditorContract.restartAppliedState.result.includes('Policy applied after the graceful SecurityEdge restart')) {
+      throw new Error(`Restart-required Default policy edit does not reconcile after the new generation is active: ${JSON.stringify(policyEditorContract)}`);
     }
     if (policyEditorContract.unmatchedLabel !== 'Unmatched route') {
       throw new Error(`Recent traffic exposes the internal unmatched-route sentinel: ${JSON.stringify(policyEditorContract)}`);
@@ -3503,6 +3568,85 @@ try {
     await eventually(async () => await cdp.evaluate(`window.__fixtureRequests.some(request => request.method === 'PUT' && request.key === '/api/v1/waf' && request.body?.maximum_matches_per_request === 48)`), 'Structured WAF form submission');
     systemFormSubmission = true;
   }
+  let restartEditorContract = null;
+  if (fixtureRoot) {
+    restartEditorContract = await cdp.evaluate(`(() => {
+      const originalSecurityConfig = structuredClone(state.securityConfig);
+      const originalEdgeConfig = structuredClone(state.edgeConfig);
+      const originalSecurityWatch = state.securityWatch;
+      const originalEdgeWatch = state.edgeWatch;
+      const originalSystemDirty = {...state.systemDirty};
+      const originalPendingSystem = {...state.pendingSystemRestarts};
+      const originalPendingRaw = {...state.pendingRawRestarts};
+      const originalEdgeDirty = state.edgeEditorDirty;
+      const originalSecurityDirty = state.securityEditorDirty;
+      const securityForm = document.getElementById('system-security-server-form');
+      const securityListen = securityForm.elements.listen_addr;
+      const edgeEditor = document.getElementById('edge-config-editor');
+      try {
+        const pendingSecurityListen = '127.0.0.1:18081';
+        securityListen.value = pendingSecurityListen;
+        state.systemDirty['security-server'] = true;
+        state.pendingSystemRestarts['security-server'] = {seenScheduled:true,targetRevision:0};
+        state.securityWatch = {...(state.securityWatch || {}), restart_scheduled:true, last_error:''};
+        reconcilePendingRestartEditors();
+        renderSystemForms();
+        const systemPending = {dirty:state.systemDirty['security-server'], value:securityListen.value};
+
+        state.securityConfig = structuredClone(originalSecurityConfig);
+        state.securityConfig.server.listen_addr = pendingSecurityListen;
+        state.securityWatch = {...(state.securityWatch || {}), restart_scheduled:false, last_error:''};
+        reconcilePendingRestartEditors();
+        renderSystemForms();
+        const systemApplied = {
+          dirty:state.systemDirty['security-server'],
+          value:securityListen.value,
+          result:securityForm.querySelector('[data-system-result]').textContent.trim()
+        };
+
+        const edgeCandidate = structuredClone(originalEdgeConfig);
+        edgeCandidate.server.listen_addr = '127.0.0.1:18080';
+        edgeEditor.value = JSON.stringify(edgeCandidate, null, 2);
+        state.edgeEditorDirty = true;
+        state.pendingRawRestarts.edge = {seenScheduled:false,targetRevision:7};
+        state.edgeWatch = {...(state.edgeWatch || {}), revision:6, applied_revision:6, restart_scheduled:true, last_error:''};
+        reconcilePendingRestartEditors();
+        renderRoutes();
+        const rawPending = {dirty:state.edgeEditorDirty, listen:JSON.parse(edgeEditor.value).server.listen_addr};
+
+        state.edgeConfig = edgeCandidate;
+        state.edgeWatch = {...(state.edgeWatch || {}), revision:7, applied_revision:7, restart_scheduled:false, last_error:''};
+        reconcilePendingRestartEditors();
+        renderRoutes();
+        const rawApplied = {
+          dirty:state.edgeEditorDirty,
+          listen:JSON.parse(edgeEditor.value).server.listen_addr,
+          result:document.getElementById('edge-config-result').textContent.trim()
+        };
+        return {systemPending,systemApplied,rawPending,rawApplied};
+      } finally {
+        state.securityConfig = originalSecurityConfig;
+        state.edgeConfig = originalEdgeConfig;
+        state.securityWatch = originalSecurityWatch;
+        state.edgeWatch = originalEdgeWatch;
+        state.systemDirty = originalSystemDirty;
+        state.pendingSystemRestarts = originalPendingSystem;
+        state.pendingRawRestarts = originalPendingRaw;
+        state.edgeEditorDirty = originalEdgeDirty;
+        state.securityEditorDirty = originalSecurityDirty;
+        renderAll();
+      }
+    })()`, true);
+    if (restartEditorContract.systemPending.dirty !== true || restartEditorContract.systemPending.value !== '127.0.0.1:18081' ||
+        restartEditorContract.systemApplied.dirty !== false || restartEditorContract.systemApplied.value !== '127.0.0.1:18081' ||
+        !restartEditorContract.systemApplied.result.includes('Applied after the graceful restart') ||
+        restartEditorContract.rawPending.dirty !== true || restartEditorContract.rawPending.listen !== '127.0.0.1:18080' ||
+        restartEditorContract.rawApplied.dirty !== false || restartEditorContract.rawApplied.listen !== '127.0.0.1:18080' ||
+        !restartEditorContract.rawApplied.result.includes('Applied after the graceful restart')) {
+      throw new Error(`Restart-pending System/JSON editors do not preserve submitted values until the new generation is active: ${JSON.stringify(restartEditorContract)}`);
+    }
+  }
+
   let accessibilityContract = null;
   if (fixtureRoot) {
     accessibilityContract = await cdp.evaluate(`(() => {
@@ -3545,7 +3689,7 @@ try {
   console.log(JSON.stringify({
     ok:true, mode, browser, url:fixtureRoot ? 'fixture://dashboard' : url,
     title:contract.title, route:routeEditor.name, algorithm:routeEditor.algorithm,
-    cache_route_options:cacheOptions, system_forms_populated:true, system_form_submission:systemFormSubmission, live_mutations_skipped:!fixtureRoot,
+    cache_route_options:cacheOptions, system_forms_populated:true, system_form_submission:systemFormSubmission, restart_editor_contract:restartEditorContract, live_mutations_skipped:!fixtureRoot,
     refresh_coalescing:refreshCoalescing, mobile_nav_layouts:mobileNavLayouts, responsive_layouts:responsiveLayouts, mobile_dialog_layouts:mobileDialogLayouts,
     route_editor_layout:routeEditorLayout, origin_dialog_layout:originDialogLayout, telemetry_detail_layout:telemetryDetailLayout, dialog_scroll_lock_contract:dialogScrollLockContract,
     raw_config_layout:rawConfigLayout, system_header_layout:systemHeaderLayout,

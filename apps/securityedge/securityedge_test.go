@@ -137,6 +137,72 @@ func TestPolicyWriteDoesNotPersistEnvironmentOverridesOrAbsoluteRoutePath(t *tes
 	}
 }
 
+func TestUpdateDefaultPolicyProcessWideSettingsPropagateAndPersistForRestart(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	override := cfg.DefaultPolicy
+	override.AnomalyThreshold = 17
+	cfg.RoutePolicies = map[string]config.Policy{"demo-app": override}
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	policy := runtime.EffectivePolicy("")
+	policy.RateLimit.CleanupInterval = config.Duration{Duration: 2 * time.Minute}
+	policy.RateLimit.IdleTTL = config.Duration{Duration: 20 * time.Minute}
+	policy.RateLimit.MaxBuckets = 200000
+	policy.AutoBan.MaxTrackedClients = 200000
+	err = runtime.UpdateDefaultPolicy(policy)
+	if err == nil {
+		t.Fatal("process-wide policy edit unexpectedly hot-applied without a restart")
+	}
+	var restart interface{ RestartRequired() bool }
+	if !errors.As(err, &restart) || !restart.RestartRequired() {
+		t.Fatalf("error=%v, want restart-required error", err)
+	}
+
+	saved, err := config.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.DefaultPolicy.RateLimit.CleanupInterval != policy.RateLimit.CleanupInterval ||
+		saved.DefaultPolicy.RateLimit.IdleTTL != policy.RateLimit.IdleTTL ||
+		saved.DefaultPolicy.RateLimit.MaxBuckets != policy.RateLimit.MaxBuckets ||
+		saved.DefaultPolicy.AutoBan.MaxTrackedClients != policy.AutoBan.MaxTrackedClients {
+		t.Fatalf("default process-wide settings were not persisted: %#v", saved.DefaultPolicy)
+	}
+	routePolicy := saved.RoutePolicies["demo-app"]
+	if routePolicy.AnomalyThreshold != 17 {
+		t.Fatalf("route-specific policy value changed during inheritance propagation: %d", routePolicy.AnomalyThreshold)
+	}
+	if routePolicy.RateLimit.CleanupInterval != policy.RateLimit.CleanupInterval ||
+		routePolicy.RateLimit.IdleTTL != policy.RateLimit.IdleTTL ||
+		routePolicy.RateLimit.MaxBuckets != policy.RateLimit.MaxBuckets ||
+		routePolicy.AutoBan.MaxTrackedClients != policy.AutoBan.MaxTrackedClients {
+		t.Fatalf("route policy did not inherit persisted process-wide settings: %#v", routePolicy)
+	}
+	watch := runtime.WatchStatusMap()
+	if scheduled, _ := watch["restart_scheduled"].(bool); !scheduled {
+		t.Fatalf("restart was not marked scheduled: %#v", watch)
+	}
+	if live := runtime.Config(); live.DefaultPolicy.RateLimit.MaxBuckets == policy.RateLimit.MaxBuckets {
+		t.Fatal("restart-required policy settings changed the live generation before restart")
+	}
+}
+
 func TestReloadSkipsAlreadyAppliedControlPlaneRevision(t *testing.T) {
 	dir := t.TempDir()
 	edgePath := filepath.Join(dir, "edge.json")

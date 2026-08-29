@@ -25,8 +25,11 @@ const state = {
   edgeEditorDirty: false,
   securityEditorDirty: false,
   policyDirty: false,
+  policyRestartPending: false,
   cacheEditorDirty: false,
   systemDirty: {},
+  pendingSystemRestarts: {},
+  pendingRawRestarts: {edge:null, security:null},
   refreshPromise: null,
   refreshQueued: false
 };
@@ -347,6 +350,7 @@ async function refreshAll() {
 }
 
 function renderAll() {
+  reconcilePendingRestartEditors();
   renderOverview();
   renderProtection();
   renderTraffic();
@@ -1495,13 +1499,57 @@ async function loadControlData() {
 }
 
 const systemFormDefinitions = {
-  'security-server': {api:'/api/v1/server', source:() => state.securityConfig?.server},
-  'security-admin': {api:'/api/v1/admin', source:() => state.securityConfig?.admin},
-  'security-edgeproxy': {api:'/api/v1/edgeproxy-settings', source:() => state.securityConfig?.edgeproxy},
-  'security-waf': {api:'/api/v1/waf', source:() => state.securityConfig?.waf},
-  'edge-server': {api:'/api/v1/edgeproxy/server', source:() => state.edgeConfig?.server},
-  'edge-admin': {api:'/api/v1/edgeproxy/admin', source:() => state.edgeConfig?.admin}
+  'security-server': {api:'/api/v1/server', service:'security', source:() => state.securityConfig?.server},
+  'security-admin': {api:'/api/v1/admin', service:'security', source:() => state.securityConfig?.admin},
+  'security-edgeproxy': {api:'/api/v1/edgeproxy-settings', service:'security', source:() => state.securityConfig?.edgeproxy},
+  'security-waf': {api:'/api/v1/waf', service:'security', source:() => state.securityConfig?.waf},
+  'edge-server': {api:'/api/v1/edgeproxy/server', service:'edge', source:() => state.edgeConfig?.server},
+  'edge-admin': {api:'/api/v1/edgeproxy/admin', service:'edge', source:() => state.edgeConfig?.admin}
 };
+
+function pendingRestartMarker(response) {
+  return {
+    seenScheduled:Boolean(response?.watch?.restart_scheduled),
+    targetRevision:Number(response?.revision || response?.watch?.revision || 0)
+  };
+}
+
+function pendingRestartOutcome(marker, watch) {
+  if (!marker || !watch) return '';
+  if (watch.restart_scheduled) { marker.seenScheduled = true; return ''; }
+  const revision = Number(watch.revision || 0);
+  const applied = Number(watch.applied_revision || 0);
+  const reachedRevision = marker.targetRevision > 0 && (applied >= marker.targetRevision || revision >= marker.targetRevision);
+  if (!marker.seenScheduled && !reachedRevision) return '';
+  return watch.last_error ? 'failed' : 'applied';
+}
+
+function reconcilePendingRestartEditors() {
+  for (const [key, marker] of Object.entries({...state.pendingSystemRestarts})) {
+    const definition = systemFormDefinitions[key];
+    const watch = definition?.service === 'edge' ? state.edgeWatch : state.securityWatch;
+    const outcome = pendingRestartOutcome(marker, watch);
+    if (!outcome) continue;
+    delete state.pendingSystemRestarts[key];
+    state.systemDirty[key] = false;
+    const result = document.querySelector(`[data-system-form="${key}"] [data-system-result]`);
+    if (result) result.textContent = outcome === 'failed'
+      ? `Restart failed; the previous live configuration was restored: ${watch.last_error}`
+      : 'Applied after the graceful restart.';
+  }
+  for (const service of ['edge','security']) {
+    const marker = state.pendingRawRestarts[service];
+    const watch = service === 'edge' ? state.edgeWatch : state.securityWatch;
+    const outcome = pendingRestartOutcome(marker, watch);
+    if (!outcome) continue;
+    state.pendingRawRestarts[service] = null;
+    if (service === 'edge') state.edgeEditorDirty = false; else state.securityEditorDirty = false;
+    const result = $(service === 'edge' ? 'edge-config-result' : 'security-config-result');
+    result.textContent = outcome === 'failed'
+      ? `Restart failed; the previous live configuration was restored: ${watch.last_error}`
+      : 'Applied after the graceful restart.';
+  }
+}
 
 function nestedValue(object, path) {
   return path.split('.').reduce((value, key) => value == null ? undefined : value[key], object);
@@ -1581,11 +1629,20 @@ async function saveSystemForm(event) {
     button.disabled = true;
     result.textContent = 'Validating and applying…';
     const response = await api(definition.api, {method:'PUT', body:JSON.stringify(payload)});
+    if (response.restart_required) {
+      state.systemDirty[key] = true;
+      state.pendingSystemRestarts[key] = pendingRestartMarker(response);
+      if (definition.service === 'security' && response.watch) state.securityWatch = response.watch;
+      result.textContent = 'Accepted. A graceful generation restart is scheduled; submitted values stay pinned until the new generation is active.';
+      toast('Configuration accepted; restart scheduled');
+      setTimeout(() => refreshAll().catch(() => {}), 1000);
+      return;
+    }
     state.systemDirty[key] = false;
-    result.textContent = response.restart_required ? 'Accepted. A graceful generation restart is scheduled.' : 'Validated, persisted, and applied.';
-    toast(response.restart_required ? 'Configuration accepted; restart scheduled' : 'Configuration applied');
+    delete state.pendingSystemRestarts[key];
+    result.textContent = 'Validated, persisted, and applied.';
+    toast('Configuration applied');
     try { await loadControlData(); renderSystemForms(); } catch {}
-    if (response.restart_required) setTimeout(() => refreshAll(), 1800);
   } catch (error) {
     result.textContent = error.message;
   } finally {
@@ -1895,12 +1952,25 @@ async function openTelemetryDialog(routeName, originName = '') {
 }
 
 async function saveRawConfig(kind) {
-  const edge = kind === 'edge', editor = $(edge ? 'edge-config-editor':'security-config-editor'), result = $(edge ? 'edge-config-result':'security-config-result');
+  const edge = kind === 'edge', service = edge ? 'edge' : 'security';
+  const editor = $(edge ? 'edge-config-editor':'security-config-editor'), result = $(edge ? 'edge-config-result':'security-config-result');
   try {
-    const candidate = JSON.parse(editor.value); const response = await api(edge ? '/api/v1/edgeproxy/config':'/api/v1/config', {method:'PUT', body:JSON.stringify(candidate)});
+    const candidate = JSON.parse(editor.value);
+    const response = await api(edge ? '/api/v1/edgeproxy/config':'/api/v1/config', {method:'PUT', body:JSON.stringify(candidate)});
+    if (response.restart_required) {
+      if (edge) state.edgeEditorDirty = true; else state.securityEditorDirty = true;
+      state.pendingRawRestarts[service] = pendingRestartMarker(response);
+      if (!edge && response.watch) state.securityWatch = response.watch;
+      result.textContent = 'Saved. An automatic graceful restart is scheduled; submitted JSON stays pinned until the new generation is active.';
+      toast(`${edge ? 'EdgeProxy' : 'SecurityEdge'} configuration accepted; restart scheduled`);
+      setTimeout(() => refreshAll().catch(() => {}), 1000);
+      return;
+    }
+    state.pendingRawRestarts[service] = null;
     if (edge) state.edgeEditorDirty = false; else state.securityEditorDirty = false;
-    result.textContent = response.restart_required ? 'Saved. An automatic graceful restart is scheduled.' : 'Validated, saved, and hot-applied.';
-    await refreshAll(); toast(edge ? 'EdgeProxy configuration saved' : 'SecurityEdge configuration saved');
+    result.textContent = 'Validated, saved, and hot-applied.';
+    await refreshAll();
+    toast(edge ? 'EdgeProxy configuration saved' : 'SecurityEdge configuration saved');
   } catch(error) { result.textContent = error.message; }
 }
 
@@ -1929,6 +1999,15 @@ function renderPolicies() {
   const form = $('policy-form');
   $('policy-title').textContent = isDefault ? 'Default policy' : `${state.selectedPolicy} policy`;
   $('delete-override').classList.toggle('hidden', isDefault || !state.policies.route_policies?.[state.selectedPolicy]);
+  if (state.policyRestartPending && state.securityWatch && !state.securityWatch.restart_scheduled) {
+    state.policyRestartPending = false;
+    state.policyDirty = false;
+    if (state.securityWatch.last_error) {
+      $('policy-result').textContent = `Policy restart failed; the previous live configuration was restored: ${state.securityWatch.last_error}`;
+    } else {
+      $('policy-result').textContent = 'Policy applied after the graceful SecurityEdge restart.';
+    }
+  }
   if (state.policyDirty) return;
   setChecked(form,'enabled',policy.enabled); setField(form,'mode',policy.mode); setField(form,'anomaly_threshold',policy.anomaly_threshold);
   setField(form,'max_inspection_body_bytes',policy.max_inspection_body_bytes); setChecked(form,'inspect_request_body',policy.inspect_request_body);
@@ -1987,7 +2066,19 @@ async function savePolicy(event) {
   }
   try {
     const path = state.selectedPolicy === 'default' ? '/api/v1/policies/default' : `/api/v1/policies/${encodeURIComponent(state.selectedPolicy)}`;
-    await api(path, {method:'PUT', body:JSON.stringify(policy)});
+    const response = await api(path, {method:'PUT', body:JSON.stringify(policy)});
+    if (response.restart_required) {
+      // Keep the operator's submitted values visible while the old generation
+      // is still serving. A normal refresh would otherwise repaint the form
+      // with the pre-restart live policy and make an accepted change look lost.
+      state.policyDirty = true;
+      state.policyRestartPending = true;
+      if (response.watch) state.securityWatch = response.watch;
+      $('policy-result').textContent = 'Policy validated and saved. A graceful SecurityEdge restart is scheduled; live values stay pinned until the new generation is active.';
+      toast('Policy accepted; restart scheduled');
+      setTimeout(() => refreshAll().catch(() => {}), 1000);
+      return;
+    }
     state.policyDirty = false;
     $('policy-result').textContent = 'Policy validated, saved, audited, and reloaded.';
     await loadPolicies(); toast('Policy saved');
@@ -2116,8 +2207,9 @@ $('reload-config').onclick = async () => {
 };
 document.querySelectorAll('[data-system-form]').forEach(form => {
   const key = form.dataset.systemForm;
-  form.addEventListener('input', () => { state.systemDirty[key] = true; });
-  form.addEventListener('change', () => { state.systemDirty[key] = true; });
+  const markDirty = () => { state.systemDirty[key] = true; delete state.pendingSystemRestarts[key]; };
+  form.addEventListener('input', markDirty);
+  form.addEventListener('change', markDirty);
   form.addEventListener('submit', saveSystemForm);
 });
 $('refresh-control').onclick = async () => {
@@ -2134,8 +2226,8 @@ $('cache-route-select').onchange = event => { state.cacheEditorDirty = false; lo
 $('save-cache-config').onclick = saveCacheEditor;
 $('route-form').onsubmit = saveRoute; $('origin-form').onsubmit = saveOrigin;
 document.querySelectorAll('[data-close-dialog]').forEach(button => button.onclick = () => $(button.dataset.closeDialog).close());
-$('edge-config-editor').addEventListener('input', () => { state.edgeEditorDirty = true; });
-$('security-config-editor').addEventListener('input', () => { state.securityEditorDirty = true; });
+$('edge-config-editor').addEventListener('input', () => { state.edgeEditorDirty = true; state.pendingRawRestarts.edge = null; });
+$('security-config-editor').addEventListener('input', () => { state.securityEditorDirty = true; state.pendingRawRestarts.security = null; });
 $('save-edge-config').onclick = () => saveRawConfig('edge'); $('save-security-config').onclick = () => saveRawConfig('security');
 $('reload-edge-config').onclick = async () => { try { await api('/api/v1/edgeproxy/config/reload',{method:'POST'}); state.edgeEditorDirty=false; await refreshAll(); toast('EdgeProxy configuration reloaded'); } catch(error) { $('edge-config-result').textContent=error.message; } };
 $('reload-security-config').onclick = async () => { try { await api('/api/v1/reload',{method:'POST'}); state.securityEditorDirty=false; await refreshAll(); toast('SecurityEdge configuration reloaded'); } catch(error) { $('security-config-result').textContent=error.message; } };

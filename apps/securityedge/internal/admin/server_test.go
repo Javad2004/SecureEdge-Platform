@@ -60,6 +60,7 @@ type fakeRuntime struct {
 	cfg                config.Config
 	reloadErr          error
 	replaceErr         error
+	updateDefaultErr   error
 	edgeRaw            json.RawMessage
 	edgeStatus         int
 	edgeErr            error
@@ -76,7 +77,7 @@ func (f *fakeRuntime) Routes() []routes.Route {
 	return []routes.Route{{Name: "demo-app", Hosts: []string{"project.test"}, PathPrefix: "/"}}
 }
 func (f *fakeRuntime) EffectivePolicy(string) config.Policy          { return f.cfg.DefaultPolicy }
-func (f *fakeRuntime) UpdateDefaultPolicy(config.Policy) error       { return nil }
+func (f *fakeRuntime) UpdateDefaultPolicy(config.Policy) error       { return f.updateDefaultErr }
 func (f *fakeRuntime) UpdateRoutePolicy(string, config.Policy) error { return nil }
 func (f *fakeRuntime) DeleteRoutePolicy(string) error                { return nil }
 func (f *fakeRuntime) Reload() error                                 { return f.reloadErr }
@@ -886,6 +887,40 @@ func TestSecurityConfigSectionEndpoints(t *testing.T) {
 	server.HTTPServer().Handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("PUT WAF with unknown field status=%d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestDefaultPolicyEndpointReturns202ForRestartRequiredUpdate(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Admin.AuthToken = "secret-token"
+	inspector, err := waf.NewInspector(nil, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &fakeRuntime{cfg: cfg, updateDefaultErr: fakeRestartRequiredError{}}
+	server, err := New(cfg.Admin, runtime, metrics.New(), securitylog.New(100), traffic.New(100, time.Minute), inspector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(cfg.DefaultPolicy)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/policies/default", strings.NewReader(string(body)))
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rr := httptest.NewRecorder()
+	server.HTTPServer().Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["restart_required"] != true || response["automatic_restart"] != true || response["scope"] != "default" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	if _, ok := response["watch"]; !ok {
+		t.Fatalf("restart response omitted watch status: %#v", response)
 	}
 }
 

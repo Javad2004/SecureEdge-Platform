@@ -84,7 +84,8 @@ SecurityEdge provides application-layer HTTP protection. SYN floods, UDP floods,
 - bounded, atomically persisted request-rate and Route/Origin telemetry history;
 - dependency monitoring for DNS, SecurityEdge ingress, EdgeProxy data plane, EdgeProxy Admin API, route readiness, and Origin health;
 - EdgeProxy metrics, logs, cache purge, transactional configuration, Route/Origin CRUD, and watcher status through an authenticated backend-for-frontend;
-- policy editing with validation and atomic persistence;
+- policy editing with validation and atomic persistence, including request-body media types and process-wide limiter/ban lifecycle controls; Route overrides clearly inherit shared limiter storage and ban-tracking capacities from the default policy;
+- confirmation-protected cache purge and destructive policy/log/ban/Route/Origin actions;
 - temporary-ban management;
 - CSV and NDJSON event exports;
 - bounded dependency transition history;

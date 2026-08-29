@@ -539,6 +539,26 @@ td {
 .policy-form input,.policy-form select {
   width:100%
 }
+.policy-form label > small:not(.switch-row small) {
+  display:block;
+  color:var(--muted);
+  line-height:1.45
+}
+.policy-form [data-policy-process-wide]:has(input:disabled) {
+  opacity:.72
+}
+.policy-form [data-policy-process-wide] input:disabled {
+  cursor:not-allowed;
+  background:rgba(13,21,40,.62);
+  color:var(--muted)
+}
+.policy-inherited-note {
+  margin:0!important;
+  padding:10px 12px;
+  border:1px solid var(--border);
+  border-radius:9px;
+  background:rgba(103,166,255,.06)
+}
 .form-grid {
   display:grid;
   grid-template-columns:1fr 1fr;

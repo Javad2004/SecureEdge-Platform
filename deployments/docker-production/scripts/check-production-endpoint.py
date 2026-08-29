@@ -122,7 +122,10 @@ def main() -> int:
             raise SystemExit(f"{args.key} still contains a local/placeholder hostname: {host}")
         addresses = None
     else:
-        reject_nonroutable_ip(args.key, address)
+        try:
+            reject_nonroutable_ip(args.key, address)
+        except ValueError as exc:
+            raise SystemExit(str(exc))
         host = str(address)
         addresses = {address}
 

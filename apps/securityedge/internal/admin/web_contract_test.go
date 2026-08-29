@@ -516,6 +516,45 @@ func TestDashboardOverviewTopologyFitsStandardDesktop(t *testing.T) {
 	}
 }
 
+func TestDashboardPolicyEditorMatchesBackendContract(t *testing.T) {
+	index, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(index) + "\n" + string(app)
+	for _, required := range []string{
+		`name="body_content_types"`,
+		`name="max_path_bytes" type="number" min="1" max="1048576"`,
+		`name="max_query_bytes" type="number" min="1" max="16777216"`,
+		`name="max_header_count" type="number" min="1" max="10000"`,
+		`name="max_header_value_bytes" type="number" min="1" max="16777216"`,
+		`name="cleanup_interval" required`,
+		`name="idle_ttl" required`,
+		`data-policy-process-wide`,
+		`data-policy-process-wide-note`,
+		`policy.body_content_types = csv(form.body_content_types.value)`,
+		`input.disabled = !isDefault`,
+		`policy.rate_limit.cleanup_interval = defaultPolicy.rate_limit.cleanup_interval`,
+		`policy.rate_limit.idle_ttl = defaultPolicy.rate_limit.idle_ttl`,
+		`policy.rate_limit.max_buckets = defaultPolicy.rate_limit.max_buckets`,
+		`policy.auto_ban.max_tracked_clients = defaultPolicy.auto_ban.max_tracked_clients`,
+		`id="route-origin-name" value="origin-1" maxlength="256"`,
+		`id="route-origin-url" type="url" required`,
+		`name="maximum_matches_per_request" type="number" min="1" max="256"`,
+		`name="connectivity.history_capacity" type="number" min="1" max="10000"`,
+		`Purge ${scope} for route ${route}? Cached responses in this scope will be removed.`,
+		`const recentRoute = request.route === '__unmatched__' || !request.route ? 'Unmatched' : request.route;`,
+	} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("dashboard policy/backend contract is missing %q", required)
+		}
+	}
+}
+
 func TestDashboardRouteAndTableActionLayoutContract(t *testing.T) {
 	index, err := webAssets.ReadFile("web/index.html")
 	if err != nil {

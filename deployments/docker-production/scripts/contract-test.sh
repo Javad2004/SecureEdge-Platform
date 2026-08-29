@@ -227,6 +227,11 @@ if python3 "$endpoint_checker" --key ADMIN --value 'http://8.8.8.8:9090' --requi
   echo 'production external Admin guardrail accepted globally routed HTTP endpoint' >&2
   exit 1
 fi
+link_local_error=$(python3 "$endpoint_checker" --key DATA --value 'https://169.254.10.20:8443' --required-scheme https --scope any 2>&1 || true)
+if [[ "$link_local_error" != *"link-local address"* ]] || [[ "$link_local_error" == *"Traceback"* ]]; then
+  echo 'production external-endpoint guardrail did not report a clean link-local validation error' >&2
+  exit 1
+fi
 
 # Full-platform validation must remain safe while the production SecurityEdge
 # container already owns its fixed ipv4_address. The one-off validator selects

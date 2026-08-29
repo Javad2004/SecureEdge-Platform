@@ -3184,6 +3184,124 @@ try {
   const cacheOptions = await cdp.evaluate(`document.getElementById('cache-route-select').options.length`);
   if (cacheOptions < 1) throw new Error('Per-route cache editor has no Route options.');
 
+  let policyEditorContract = null;
+  if (fixtureRoot) {
+    policyEditorContract = await cdp.evaluate(`(async () => {
+      const originalPolicies = structuredClone(state.policies);
+      const originalSelectedPolicy = state.selectedPolicy;
+      const originalPolicyDirty = state.policyDirty;
+      const originalOverview = state.overview;
+      const originalConfirm = window.confirm;
+      const routeName = ${JSON.stringify(expectedRoute)};
+      try {
+        state.policies = structuredClone(originalPolicies);
+        state.selectedPolicy = 'default';
+        state.policyDirty = false;
+        renderPolicies();
+        const form = document.getElementById('policy-form');
+        const defaultPolicy = state.policies.default_policy;
+        const processFields = ['cleanup_interval','idle_ttl','max_buckets','max_tracked_clients'];
+        const defaultState = {
+          bodyTypes:form.body_content_types.value,
+          processDisabled:processFields.map(name => form.elements[name].disabled),
+          cleanup:form.cleanup_interval.value,
+          idleTTL:form.idle_ttl.value,
+          maxBuckets:form.max_buckets.value,
+          maxTracked:form.max_tracked_clients.value,
+          note:form.querySelector('[data-policy-process-wide-note]')?.textContent || '',
+          maxPath:form.max_path_bytes.max,
+          maxQuery:form.max_query_bytes.max,
+          maxHeaders:form.max_header_count.max,
+          maxHeaderValue:form.max_header_value_bytes.max,
+          routeOriginNameMax:document.getElementById('route-origin-name').maxLength,
+          routeOriginURLRequired:document.getElementById('route-origin-url').required,
+          wafMaximum:document.querySelector('#system-waf-form [name="maximum_matches_per_request"]').max,
+          adminBodyMaximum:document.querySelector('#system-security-admin-form [name="max_request_body_bytes"]').max,
+          connectivityHistoryMaximum:document.querySelector('#system-security-admin-form [name="connectivity.history_capacity"]').max
+        };
+
+        state.selectedPolicy = routeName;
+        state.policyDirty = false;
+        renderPolicies();
+        const routeState = {
+          processDisabled:processFields.map(name => form.elements[name].disabled),
+          note:form.querySelector('[data-policy-process-wide-note]')?.textContent || ''
+        };
+        form.body_content_types.value = 'application/json, TEXT/PLAIN';
+        form.cleanup_interval.value = '999m';
+        form.idle_ttl.value = '999m';
+        form.max_buckets.value = '2';
+        form.max_tracked_clients.value = '3';
+        const mutationStart = window.__fixtureRequests.length;
+        await savePolicy({preventDefault(){}, currentTarget:form});
+        const policyMutation = window.__fixtureRequests.slice(mutationStart).find(request =>
+          request.method === 'PUT' && request.key === '/api/v1/policies/' + encodeURIComponent(routeName));
+
+        const candidate = structuredClone(originalOverview);
+        candidate.recent_client_traffic = {
+          status:'traffic_observed', window_seconds:300, retention_capacity:512, window_truncated:false,
+          minimum_requests_in_window:1, requests_in_window:1, unique_clients:1, allowed:1, rejected:0, canceled:0,
+          last_observed_at:new Date().toISOString(),
+          last_request:{method:'GET',path:'/no-route',host:'unmatched.example',client_ip:'203.0.113.99',route:'__unmatched__',action:'ALLOW',reason:'',status:404}
+        };
+        state.overview = candidate;
+        renderRecentTraffic();
+        const unmatchedLabel = document.getElementById('recent-traffic-route').textContent.trim();
+
+        document.getElementById('purge-route').value = routeName;
+        document.getElementById('purge-host').value = '';
+        document.getElementById('purge-path').value = '';
+        let purgePrompt = '';
+        window.confirm = message => { purgePrompt = String(message); return false; };
+        const purgeStart = window.__fixtureRequests.length;
+        await document.getElementById('purge-form').onsubmit({preventDefault(){}});
+        const purgeMutations = window.__fixtureRequests.slice(purgeStart).filter(request => request.key.includes('/cache/purge')).length;
+
+        return {defaultState, routeState, policyBody:policyMutation?.body || null, defaultPolicy, unmatchedLabel, purgePrompt, purgeMutations};
+      } finally {
+        window.confirm = originalConfirm;
+        state.policies = originalPolicies;
+        state.selectedPolicy = originalSelectedPolicy;
+        state.policyDirty = originalPolicyDirty;
+        state.overview = originalOverview;
+        renderPolicies();
+        renderAll();
+      }
+    })()`, true);
+    if (!policyEditorContract.defaultState.bodyTypes.includes('application/json') ||
+        policyEditorContract.defaultState.processDisabled.some(Boolean) ||
+        policyEditorContract.defaultState.cleanup !== String(policyEditorContract.defaultPolicy.rate_limit.cleanup_interval) ||
+        policyEditorContract.defaultState.idleTTL !== String(policyEditorContract.defaultPolicy.rate_limit.idle_ttl) ||
+        policyEditorContract.defaultState.maxBuckets !== String(policyEditorContract.defaultPolicy.rate_limit.max_buckets) ||
+        policyEditorContract.defaultState.maxTracked !== String(policyEditorContract.defaultPolicy.auto_ban.max_tracked_clients) ||
+        !policyEditorContract.defaultState.note.includes('process-wide') ||
+        policyEditorContract.defaultState.maxPath !== '1048576' || policyEditorContract.defaultState.maxQuery !== '16777216' ||
+        policyEditorContract.defaultState.maxHeaders !== '10000' || policyEditorContract.defaultState.maxHeaderValue !== '16777216' ||
+        policyEditorContract.defaultState.routeOriginNameMax !== 256 || !policyEditorContract.defaultState.routeOriginURLRequired ||
+        policyEditorContract.defaultState.wafMaximum !== '256' || policyEditorContract.defaultState.adminBodyMaximum !== '16777216' ||
+        policyEditorContract.defaultState.connectivityHistoryMaximum !== '10000') {
+      throw new Error(`Default policy/control limits do not match backend validation: ${JSON.stringify(policyEditorContract)}`);
+    }
+    if (policyEditorContract.routeState.processDisabled.some(disabled => !disabled) ||
+        !policyEditorContract.routeState.note.includes('inherited from Default policy')) {
+      throw new Error(`Route policy exposes process-wide limiter/ban storage settings as route-specific controls: ${JSON.stringify(policyEditorContract)}`);
+    }
+    if (!policyEditorContract.policyBody ||
+        JSON.stringify(policyEditorContract.policyBody.body_content_types) !== JSON.stringify(['application/json','text/plain']) ||
+        policyEditorContract.policyBody.rate_limit.cleanup_interval !== policyEditorContract.defaultPolicy.rate_limit.cleanup_interval ||
+        policyEditorContract.policyBody.rate_limit.idle_ttl !== policyEditorContract.defaultPolicy.rate_limit.idle_ttl ||
+        policyEditorContract.policyBody.rate_limit.max_buckets !== policyEditorContract.defaultPolicy.rate_limit.max_buckets ||
+        policyEditorContract.policyBody.auto_ban.max_tracked_clients !== policyEditorContract.defaultPolicy.auto_ban.max_tracked_clients) {
+      throw new Error(`Route policy submission does not preserve the process-wide backend contract: ${JSON.stringify(policyEditorContract)}`);
+    }
+    if (policyEditorContract.unmatchedLabel !== 'Unmatched route') {
+      throw new Error(`Recent traffic exposes the internal unmatched-route sentinel: ${JSON.stringify(policyEditorContract)}`);
+    }
+    if (!policyEditorContract.purgePrompt.includes('entire route cache') || policyEditorContract.purgeMutations !== 0) {
+      throw new Error(`Cache purge is not confirmation-protected: ${JSON.stringify(policyEditorContract)}`);
+    }
+  }
+
   let editorStateContract = null;
   if (fixtureRoot) {
     editorStateContract = await cdp.evaluate(`(() => {
@@ -3438,7 +3556,7 @@ try {
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
     authentication_ui_contract:authenticationUIContract, request_explorer_contract:requestExplorerContract, cumulative_rate_precision_contract:cumulativeRatePrecisionContract, percentage_truthfulness_contract:percentageTruthfulnessContract, latency_truthfulness_contract:latencyTruthfulnessContract, telemetry_availability_contract:telemetryAvailabilityContract,
     client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract, telemetry_trend_many_gap_contract:telemetryTrendManyGapContract, telemetry_trend_long_gap_compression_contract:telemetryTrendLongGapCompressionContract, telemetry_trend_outlier_contract:telemetryTrendOutlierContract, telemetry_trend_zero_baseline_contract:telemetryTrendZeroBaselineContract, telemetry_trend_legend_semantics_contract:telemetryTrendLegendSemanticsContract, telemetry_trend_partial_availability_legend_contract:telemetryTrendPartialAvailabilityLegendContract, telemetry_trend_series_availability_marker_contract:telemetryTrendSeriesAvailabilityMarkerContract, telemetry_trend_series_marker_motion_contract:telemetryTrendSeriesMarkerMotionContract, telemetry_trend_responsive_gap_label_contract:telemetryTrendResponsiveGapLabelContract, telemetry_trend_series_isolation_contract:telemetryTrendSeriesIsolationContract, telemetry_trend_latest_availability_contract:telemetryTrendLatestAvailabilityContract, telemetry_trend_empty_contract:telemetryTrendEmptyContract,
-    undefined_metric_rendering_contract:undefinedMetricRenderingContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
+    undefined_metric_rendering_contract:undefinedMetricRenderingContract, policy_editor_contract:policyEditorContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
   }, null, 2));
 } catch (error) {
   console.error(error.stack || error.message);

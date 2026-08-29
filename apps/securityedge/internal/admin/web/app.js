@@ -477,7 +477,8 @@ function renderRecentTraffic() {
   $('recent-traffic-request').textContent = active ? `${request.method || '—'} ${request.path || '—'}` : '—';
   $('recent-traffic-host').textContent = active ? (request.host || 'Host unavailable') : 'No request metadata';
   $('recent-traffic-client').textContent = active ? (request.client_ip || 'Unknown') : '—';
-  $('recent-traffic-route').textContent = active ? `${request.route || '__unmatched__'} route` : '— route';
+  const recentRoute = request.route === '__unmatched__' || !request.route ? 'Unmatched' : request.route;
+  $('recent-traffic-route').textContent = active ? `${recentRoute} route` : '— route';
   $('recent-traffic-action').innerHTML = active ? `<span class="badge ${actionClass(request.action)}">${esc(request.action || '—')}</span>` : '—';
   $('recent-traffic-reason').textContent = active ? (request.reason || 'Policy allowed') : '—';
   $('recent-traffic-status').textContent = active ? String(request.status || '—') : '—';
@@ -1931,6 +1932,7 @@ function renderPolicies() {
   if (state.policyDirty) return;
   setChecked(form,'enabled',policy.enabled); setField(form,'mode',policy.mode); setField(form,'anomaly_threshold',policy.anomaly_threshold);
   setField(form,'max_inspection_body_bytes',policy.max_inspection_body_bytes); setChecked(form,'inspect_request_body',policy.inspect_request_body);
+  setField(form,'body_content_types',(policy.body_content_types||[]).join(', '));
   setChecked(form,'reject_encoded_request_bodies',policy.reject_encoded_request_bodies);
   setChecked(form,'reject_unsupported_body_types',policy.reject_unsupported_body_types); setChecked(form,'block_on_inspection_limit',policy.block_on_inspection_limit);
   setField(form,'max_path_bytes',policy.max_path_bytes); setField(form,'max_query_bytes',policy.max_query_bytes);
@@ -1939,9 +1941,17 @@ function renderPolicies() {
   setField(form,'disabled_rules',(policy.disabled_rules||[]).join(', ')); setField(form,'ip_allowlist',(policy.ip_allowlist||[]).join(', ')); setField(form,'ip_denylist',(policy.ip_denylist||[]).join(', '));
   setChecked(form,'rate_enabled',policy.rate_limit?.enabled); setField(form,'requests_per_second',policy.rate_limit?.requests_per_second);
   setField(form,'burst',policy.rate_limit?.burst); setField(form,'global_requests_per_second',policy.rate_limit?.global_requests_per_second);
-  setField(form,'global_burst',policy.rate_limit?.global_burst); setField(form,'max_buckets',policy.rate_limit?.max_buckets);
+  const defaultPolicy = state.policies.default_policy || policy;
+  setField(form,'global_burst',policy.rate_limit?.global_burst);
+  setField(form,'cleanup_interval',defaultPolicy.rate_limit?.cleanup_interval); setField(form,'idle_ttl',defaultPolicy.rate_limit?.idle_ttl);
+  setField(form,'max_buckets',defaultPolicy.rate_limit?.max_buckets);
   setChecked(form,'auto_ban_enabled',policy.auto_ban?.enabled); setField(form,'violation_threshold',policy.auto_ban?.violation_threshold);
-  setField(form,'ban_window',policy.auto_ban?.window); setField(form,'ban_duration',policy.auto_ban?.ban_duration); setField(form,'max_tracked_clients',policy.auto_ban?.max_tracked_clients);
+  setField(form,'ban_window',policy.auto_ban?.window); setField(form,'ban_duration',policy.auto_ban?.ban_duration); setField(form,'max_tracked_clients',defaultPolicy.auto_ban?.max_tracked_clients);
+  form.querySelectorAll('[data-policy-process-wide] input').forEach(input => { input.disabled = !isDefault; });
+  const processWideNote = form.querySelector('[data-policy-process-wide-note]');
+  if (processWideNote) processWideNote.textContent = isDefault
+    ? 'Limiter cleanup, idle-bucket lifetime, bucket capacity, and ban-tracking capacity are process-wide. Route overrides inherit these values.'
+    : 'Process-wide lifecycle and capacity values are inherited from Default policy. Edit Default policy to change them.';
 }
 
 async function savePolicy(event) {
@@ -1951,6 +1961,7 @@ async function savePolicy(event) {
   const policy = structuredClone(base);
   policy.enabled = form.enabled.checked; policy.mode = form.mode.value; policy.anomaly_threshold = Number(form.anomaly_threshold.value);
   policy.max_inspection_body_bytes = Number(form.max_inspection_body_bytes.value); policy.inspect_request_body = form.inspect_request_body.checked;
+  policy.body_content_types = csv(form.body_content_types.value).map(value => value.toLowerCase());
   policy.reject_encoded_request_bodies = form.reject_encoded_request_bodies.checked;
   policy.reject_unsupported_body_types = form.reject_unsupported_body_types.checked; policy.block_on_inspection_limit = form.block_on_inspection_limit.checked;
   policy.max_path_bytes = Number(form.max_path_bytes.value); policy.max_query_bytes = Number(form.max_query_bytes.value);
@@ -1959,9 +1970,21 @@ async function savePolicy(event) {
   policy.disabled_rules = csv(form.disabled_rules.value).map(x => x.toUpperCase()); policy.ip_allowlist = csv(form.ip_allowlist.value); policy.ip_denylist = csv(form.ip_denylist.value);
   policy.rate_limit.enabled = form.rate_enabled.checked; policy.rate_limit.requests_per_second = Number(form.requests_per_second.value);
   policy.rate_limit.burst = Number(form.burst.value); policy.rate_limit.global_requests_per_second = Number(form.global_requests_per_second.value);
-  policy.rate_limit.global_burst = Number(form.global_burst.value); policy.rate_limit.max_buckets = Number(form.max_buckets.value);
+  policy.rate_limit.global_burst = Number(form.global_burst.value);
   policy.auto_ban.enabled = form.auto_ban_enabled.checked; policy.auto_ban.violation_threshold = Number(form.violation_threshold.value);
-  policy.auto_ban.window = form.ban_window.value.trim(); policy.auto_ban.ban_duration = form.ban_duration.value.trim(); policy.auto_ban.max_tracked_clients = Number(form.max_tracked_clients.value);
+  policy.auto_ban.window = form.ban_window.value.trim(); policy.auto_ban.ban_duration = form.ban_duration.value.trim();
+  const defaultPolicy = state.policies.default_policy;
+  if (state.selectedPolicy === 'default') {
+    policy.rate_limit.cleanup_interval = form.cleanup_interval.value.trim();
+    policy.rate_limit.idle_ttl = form.idle_ttl.value.trim();
+    policy.rate_limit.max_buckets = Number(form.max_buckets.value);
+    policy.auto_ban.max_tracked_clients = Number(form.max_tracked_clients.value);
+  } else {
+    policy.rate_limit.cleanup_interval = defaultPolicy.rate_limit.cleanup_interval;
+    policy.rate_limit.idle_ttl = defaultPolicy.rate_limit.idle_ttl;
+    policy.rate_limit.max_buckets = defaultPolicy.rate_limit.max_buckets;
+    policy.auto_ban.max_tracked_clients = defaultPolicy.auto_ban.max_tracked_clients;
+  }
   try {
     const path = state.selectedPolicy === 'default' ? '/api/v1/policies/default' : `/api/v1/policies/${encodeURIComponent(state.selectedPolicy)}`;
     await api(path, {method:'PUT', body:JSON.stringify(policy)});
@@ -2057,7 +2080,24 @@ $('reset-edge-log-filters').onclick = () => { $('edge-log-filters').reset(); ren
 $('edge-log-page-size').onchange = () => loadEdgeLogs(true);
 $('older-edge-logs').onclick = () => { if (!state.edgeLogHasMore) return; state.edgeLogPage += 1; loadEdgeLogs(false); };
 $('newer-edge-logs').onclick = () => { if (state.edgeLogPage === 0) return; state.edgeLogPage -= 1; loadEdgeLogs(false); };
-$('purge-form').onsubmit = async event => { event.preventDefault(); const route=$('purge-route').value; const query=new URLSearchParams(); if($('purge-host').value.trim())query.set('host',$('purge-host').value.trim()); if($('purge-path').value.trim())query.set('path_prefix',$('purge-path').value.trim()); try { const suffix=query.toString()?`?${query}`:''; const data=await api(`/api/v1/edgeproxy/routes/${encodeURIComponent(route)}/cache/purge${suffix}`,{method:'POST'}); $('purge-result').textContent=`Purged ${data.purged} entries from ${route}.`; toast('Cache purged'); await refreshAll(); } catch(error) { $('purge-result').textContent=error.message; } };
+$('purge-form').onsubmit = async event => {
+  event.preventDefault();
+  const route = $('purge-route').value;
+  const host = $('purge-host').value.trim();
+  const pathPrefix = $('purge-path').value.trim();
+  const scope = [host && `host ${host}`, pathPrefix && `path ${pathPrefix}`].filter(Boolean).join(' and ') || 'the entire route cache';
+  if (!confirm(`Purge ${scope} for route ${route}? Cached responses in this scope will be removed.`)) return;
+  const query = new URLSearchParams();
+  if (host) query.set('host', host);
+  if (pathPrefix) query.set('path_prefix', pathPrefix);
+  try {
+    const suffix = query.toString() ? `?${query}` : '';
+    const data = await api(`/api/v1/edgeproxy/routes/${encodeURIComponent(route)}/cache/purge${suffix}`, {method:'POST'});
+    $('purge-result').textContent = `Purged ${data.purged} entries from ${route}.`;
+    toast('Cache purged');
+    await refreshAll();
+  } catch(error) { $('purge-result').textContent = error.message; }
+};
 $('check-connectivity').onclick = async () => {
   const button = $('check-connectivity');
   button.disabled = true;

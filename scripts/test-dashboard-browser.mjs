@@ -3302,6 +3302,16 @@ try {
           connectivityHistoryMaximum:document.querySelector('#system-security-admin-form [name="connectivity.history_capacity"]').max
         };
 
+        form.inspect_request_body.checked = false;
+        form.inspect_request_body.dispatchEvent(new Event('change', {bubbles:true}));
+        const bodyDisabled = ['max_inspection_body_bytes','body_content_types','reject_unsupported_body_types','block_on_inspection_limit'].map(name => form.elements[name].disabled);
+        form.max_inspection_body_bytes.value = '0';
+        form.body_content_types.value = '';
+        form.inspect_request_body.checked = true;
+        form.inspect_request_body.dispatchEvent(new Event('change', {bubbles:true}));
+        const bodyEnabled = ['max_inspection_body_bytes','body_content_types','reject_unsupported_body_types','block_on_inspection_limit'].map(name => !form.elements[name].disabled);
+        const bodyDefaults = [form.max_inspection_body_bytes.value, form.body_content_types.value];
+
         form.rate_enabled.checked = false;
         form.rate_enabled.dispatchEvent(new Event('change', {bubbles:true}));
         const rateDisabled = ['requests_per_second','burst','global_requests_per_second','global_burst','cleanup_interval','idle_ttl','max_buckets'].map(name => form.elements[name].disabled);
@@ -3402,7 +3412,7 @@ try {
         await document.getElementById('purge-form').onsubmit({preventDefault(){}});
         const purgeMutations = window.__fixtureRequests.slice(purgeStart).filter(request => request.key.includes('/cache/purge')).length;
 
-        return {defaultState, rateDisabled, rateEnabled, rateDefaults, banDisabled, banEnabled, banDefaults, routeState, policyBody:policyMutation?.body || null, defaultPolicy, restartState, restartAppliedState, unmatchedLabel, purgePrompt, purgeMutations};
+        return {defaultState, bodyDisabled, bodyEnabled, bodyDefaults, rateDisabled, rateEnabled, rateDefaults, banDisabled, banEnabled, banDefaults, routeState, policyBody:policyMutation?.body || null, defaultPolicy, restartState, restartAppliedState, unmatchedLabel, purgePrompt, purgeMutations};
       } finally {
         window.confirm = originalConfirm;
         state.policies = originalPolicies;
@@ -3432,6 +3442,10 @@ try {
     if (policyEditorContract.routeState.processDisabled.some(disabled => !disabled) ||
         !policyEditorContract.routeState.note.includes('inherited from Default policy')) {
       throw new Error(`Route policy exposes process-wide limiter/ban storage settings as route-specific controls: ${JSON.stringify(policyEditorContract)}`);
+    }
+    if (policyEditorContract.bodyDisabled.some(value => !value) || policyEditorContract.bodyEnabled.some(value => !value) ||
+        policyEditorContract.bodyDefaults[0] !== '1048576' || !policyEditorContract.bodyDefaults[1].includes('application/json')) {
+      throw new Error(`Request-body inspection controls do not disable safely or restore valid defaults: ${JSON.stringify(policyEditorContract)}`);
     }
     if (policyEditorContract.rateDisabled.some(value => !value) || policyEditorContract.rateEnabled.some(value => !value) ||
         policyEditorContract.rateDefaults[0] !== '10' || policyEditorContract.rateDefaults[1] !== '20' ||
@@ -3581,6 +3595,127 @@ try {
         !editorStateContract.emptyRoutes.saveDisabled || !editorStateContract.emptyRoutes.purgeDisabled ||
         editorStateContract.emptyRoutes.message !== 'No routes are configured.') {
       throw new Error(`Route-dependent cache controls are not safely disabled without Routes: ${JSON.stringify(editorStateContract)}`);
+    }
+  }
+
+  let featureControlContract = null;
+  if (fixtureRoot) {
+    featureControlContract = await cdp.evaluate(`(() => {
+      const originalCacheDirty = state.cacheEditorDirty;
+      const originalSystemDirty = {...state.systemDirty};
+      const routeName = ${JSON.stringify(expectedRoute)};
+      try {
+        loadCacheEditor(routeName);
+        const cacheEnabled = document.getElementById('cache-editor-enabled');
+        const cacheTTL = document.getElementById('cache-editor-ttl');
+        const cacheStatuses = document.getElementById('cache-editor-statuses');
+        cacheEnabled.checked = false;
+        syncCacheEditorFeatureControls(false);
+        const cacheDisabled = {
+          ttlDisabled:cacheTTL.disabled,
+          statusDisabled:cacheStatuses.disabled,
+          ttlRequired:cacheTTL.required
+        };
+        cacheTTL.value = '';
+        cacheStatuses.value = '';
+        document.getElementById('cache-editor-entries').value = '0';
+        cacheEnabled.checked = true;
+        syncCacheEditorFeatureControls(true);
+        const cacheEnabledState = {
+          ttlDisabled:cacheTTL.disabled,
+          statusDisabled:cacheStatuses.disabled,
+          ttlRequired:cacheTTL.required,
+          ttl:cacheTTL.value,
+          statuses:cacheStatuses.value,
+          entries:document.getElementById('cache-editor-entries').value
+        };
+
+        const securityServer = document.getElementById('system-security-server-form');
+        const mode = securityServer.elements.mode;
+        const securityTLS = securityServer.elements.namedItem('tls.enabled');
+        const securityCert = securityServer.elements.namedItem('tls.cert_file');
+        const securityKey = securityServer.elements.namedItem('tls.key_file');
+        mode.value = 'gateway'; securityTLS.checked = false; syncSystemFeatureControls(securityServer, false);
+        const securityTLSOff = {certDisabled:securityCert.disabled,keyDisabled:securityKey.disabled,certRequired:securityCert.required};
+        securityTLS.checked = true; syncSystemFeatureControls(securityServer, true);
+        const securityTLSOn = {certDisabled:securityCert.disabled,keyDisabled:securityKey.disabled,certRequired:securityCert.required,keyRequired:securityKey.required};
+        mode.value = 'embedded'; syncSystemFeatureControls(securityServer, true);
+        const embedded = {tlsChecked:securityTLS.checked,tlsDisabled:securityTLS.disabled,listenDisabled:securityServer.elements.listen_addr.disabled,upstreamDisabled:securityServer.elements.upstream_proxy_url.disabled};
+
+        const securityAdmin = document.getElementById('system-security-admin-form');
+        const adminEnabled = securityAdmin.elements.enabled;
+        const connectivityEnabled = securityAdmin.elements.namedItem('connectivity.enabled');
+        const checkInterval = securityAdmin.elements.namedItem('connectivity.check_interval');
+        const dnsEnabled = securityAdmin.elements.namedItem('connectivity.dns.enabled');
+        const dnsServer = securityAdmin.elements.namedItem('connectivity.dns.server');
+        const dnsNames = securityAdmin.elements.namedItem('connectivity.dns.names');
+        const historyEnabled = securityAdmin.elements.namedItem('telemetry_history.enabled');
+        const historyCapacity = securityAdmin.elements.namedItem('telemetry_history.capacity');
+        adminEnabled.checked = false; syncSystemFeatureControls(securityAdmin, false);
+        const adminOff = {listenDisabled:securityAdmin.elements.listen_addr.disabled,connectivityDisabled:connectivityEnabled.disabled,historyDisabled:historyEnabled.disabled};
+        adminEnabled.checked = true; connectivityEnabled.checked = false; historyEnabled.checked = false; syncSystemFeatureControls(securityAdmin, true);
+        const adminOnFeaturesOff = {listenDisabled:securityAdmin.elements.listen_addr.disabled,checkDisabled:checkInterval.disabled,dnsToggleDisabled:dnsEnabled.disabled,historyCapacityDisabled:historyCapacity.disabled};
+        checkInterval.value = ''; connectivityEnabled.checked = true; syncSystemFeatureControls(securityAdmin, true);
+        const connectivityOn = {checkDisabled:checkInterval.disabled,checkInterval:checkInterval.value,dnsToggleDisabled:dnsEnabled.disabled};
+        dnsServer.value = ''; dnsNames.value = ''; dnsEnabled.checked = true; syncSystemFeatureControls(securityAdmin, true);
+        const dnsOn = {serverDisabled:dnsServer.disabled,namesDisabled:dnsNames.disabled,serverRequired:dnsServer.required,namesRequired:dnsNames.required,server:dnsServer.value};
+        historyCapacity.value = '0'; historyEnabled.checked = true; syncSystemFeatureControls(securityAdmin, true);
+        const historyOn = {capacityDisabled:historyCapacity.disabled,capacity:historyCapacity.value};
+
+        const edgeAdmin = document.getElementById('system-edge-admin-form');
+        const edgeAdminEnabled = edgeAdmin.elements.enabled;
+        const edgeLogEnabled = edgeAdmin.elements.namedItem('log_store.enabled');
+        const edgeLogCapacity = edgeAdmin.elements.namedItem('log_store.capacity');
+        edgeAdminEnabled.checked = true; edgeLogEnabled.checked = false; syncSystemFeatureControls(edgeAdmin, true);
+        const edgeLogOff = {capacityDisabled:edgeLogCapacity.disabled};
+        edgeLogCapacity.value = '0'; edgeLogEnabled.checked = true; syncSystemFeatureControls(edgeAdmin, true);
+        const edgeLogOn = {capacityDisabled:edgeLogCapacity.disabled,capacity:edgeLogCapacity.value};
+
+        let invalidStatus = '';
+        try { statusCodes('200, nope', 'Fixture statuses', false); } catch (error) { invalidStatus = error.message; }
+        let oversizedOrigin = '';
+        try { validateOriginCandidate({upstreams:[]}, {name:'é'.repeat(129),url:'http://127.0.0.1:9000',weight:1,priority:1,insecure_skip_verify:false}); }
+        catch (error) { oversizedOrigin = error.message; }
+        return {
+          cacheDisabled,cacheEnabledState,securityTLSOff,securityTLSOn,embedded,adminOff,adminOnFeaturesOff,connectivityOn,dnsOn,historyOn,edgeLogOff,edgeLogOn,
+          validStatuses:statusCodes('200, 404, 200', 'Fixture statuses', false),invalidStatus,oversizedOrigin,
+          routeHeaderMin:document.getElementById('route-max-response-header').min,
+          utf8Length:utf8Bytes('é'.repeat(129))
+        };
+      } finally {
+        state.cacheEditorDirty = originalCacheDirty;
+        state.systemDirty = originalSystemDirty;
+        loadCacheEditor(routeName);
+        renderSystemForms();
+      }
+    })()`);
+    if (!featureControlContract.cacheDisabled.ttlDisabled || !featureControlContract.cacheDisabled.statusDisabled || featureControlContract.cacheDisabled.ttlRequired) {
+      throw new Error(`Disabled cache editor still exposes active dependent controls: ${JSON.stringify(featureControlContract)}`);
+    }
+    if (featureControlContract.cacheEnabledState.ttlDisabled || featureControlContract.cacheEnabledState.statusDisabled || !featureControlContract.cacheEnabledState.ttlRequired ||
+        featureControlContract.cacheEnabledState.ttl !== '30s' || !featureControlContract.cacheEnabledState.statuses.includes('200') || featureControlContract.cacheEnabledState.entries !== '1000') {
+      throw new Error(`Cache editor does not restore safe defaults when re-enabled: ${JSON.stringify(featureControlContract)}`);
+    }
+    if (!featureControlContract.securityTLSOff.certDisabled || featureControlContract.securityTLSOff.certRequired || featureControlContract.securityTLSOn.certDisabled ||
+        !featureControlContract.securityTLSOn.certRequired || !featureControlContract.securityTLSOn.keyRequired || !featureControlContract.embedded.tlsDisabled ||
+        featureControlContract.embedded.tlsChecked || !featureControlContract.embedded.listenDisabled || !featureControlContract.embedded.upstreamDisabled) {
+      throw new Error(`SecurityEdge gateway/TLS structured controls do not match backend feature dependencies: ${JSON.stringify(featureControlContract)}`);
+    }
+    if (!featureControlContract.adminOff.listenDisabled || !featureControlContract.adminOff.connectivityDisabled || !featureControlContract.adminOff.historyDisabled ||
+        featureControlContract.adminOnFeaturesOff.listenDisabled || !featureControlContract.adminOnFeaturesOff.checkDisabled || !featureControlContract.adminOnFeaturesOff.dnsToggleDisabled ||
+        !featureControlContract.adminOnFeaturesOff.historyCapacityDisabled || featureControlContract.connectivityOn.checkDisabled ||
+        featureControlContract.connectivityOn.checkInterval !== '5s' || featureControlContract.connectivityOn.dnsToggleDisabled ||
+        featureControlContract.dnsOn.serverDisabled || featureControlContract.dnsOn.namesDisabled || !featureControlContract.dnsOn.serverRequired ||
+        !featureControlContract.dnsOn.namesRequired || featureControlContract.dnsOn.server !== '127.0.0.1:53' ||
+        featureControlContract.historyOn.capacityDisabled || featureControlContract.historyOn.capacity !== '720') {
+      throw new Error(`SecurityEdge Admin structured controls do not follow enabled connectivity/DNS/history contracts: ${JSON.stringify(featureControlContract)}`);
+    }
+    if (!featureControlContract.edgeLogOff.capacityDisabled || featureControlContract.edgeLogOn.capacityDisabled || featureControlContract.edgeLogOn.capacity !== '5000') {
+      throw new Error(`EdgeProxy Admin log-store controls do not follow the enabled contract: ${JSON.stringify(featureControlContract)}`);
+    }
+    if (JSON.stringify(featureControlContract.validStatuses) !== JSON.stringify([200,404]) || !featureControlContract.invalidStatus.includes('100 to 599') ||
+        !featureControlContract.oversizedOrigin.includes('256 UTF-8 bytes') || featureControlContract.utf8Length !== 258 || featureControlContract.routeHeaderMin !== '1') {
+      throw new Error(`Client-side validation is not aligned with backend status/name/header limits: ${JSON.stringify(featureControlContract)}`);
     }
   }
 
@@ -3795,7 +3930,7 @@ try {
   console.log(JSON.stringify({
     ok:true, mode, browser, url:fixtureRoot ? 'fixture://dashboard' : url,
     title:contract.title, route:routeEditor.name, algorithm:routeEditor.algorithm,
-    cache_route_options:cacheOptions, system_forms_populated:true, system_form_submission:systemFormSubmission, restart_editor_contract:restartEditorContract, live_mutations_skipped:!fixtureRoot,
+    cache_route_options:cacheOptions, system_forms_populated:true, system_form_submission:systemFormSubmission, restart_editor_contract:restartEditorContract, feature_control_contract:featureControlContract, live_mutations_skipped:!fixtureRoot,
     refresh_coalescing:refreshCoalescing, mobile_nav_layouts:mobileNavLayouts, responsive_layouts:responsiveLayouts, mobile_dialog_layouts:mobileDialogLayouts,
     route_editor_layout:routeEditorLayout, origin_dialog_layout:originDialogLayout, telemetry_detail_layout:telemetryDetailLayout, dialog_scroll_lock_contract:dialogScrollLockContract,
     raw_config_layout:rawConfigLayout, system_header_layout:systemHeaderLayout,

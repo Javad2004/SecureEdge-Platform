@@ -76,6 +76,24 @@ const msIf = (n, available) => available ? ms(n) : '—';
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 const csv = value => String(value || '').split(',').map(x => x.trim()).filter(Boolean);
 const csvNumbers = value => csv(value).map(item => Number(item));
+const utf8Bytes = value => new TextEncoder().encode(String(value ?? '')).length;
+function statusCodes(value, label, allowEmpty = true) {
+  const raw = csv(value);
+  if (!raw.length) {
+    if (allowEmpty) return [];
+    throw new Error(`${label} must contain at least one HTTP status code.`);
+  }
+  const seen = new Set();
+  const result = [];
+  raw.forEach(item => {
+    const code = Number(item);
+    if (!Number.isInteger(code) || code < 100 || code > 599) {
+      throw new Error(`${label} must contain only integer HTTP status codes from 100 to 599.`);
+    }
+    if (!seen.has(code)) { seen.add(code); result.push(code); }
+  });
+  return result;
+}
 const bytesToMiB = value => Number(value || 0) / 1048576;
 const mibToBytes = value => Math.round(Number(value || 0) * 1048576);
 const requestTimeoutMS = 15000;
@@ -119,9 +137,135 @@ function syncRouteFeatureControls(restoreDefaults = false) {
   }
 }
 
+function syncCacheEditorFeatureControls(restoreDefaults = false) {
+  const enabled = $('cache-editor-enabled')?.checked === true;
+  const dependent = [
+    'cache-editor-ttl','cache-editor-stale','cache-editor-entries','cache-editor-max-mib','cache-editor-object-mib',
+    'cache-editor-statuses','cache-editor-vary','cache-editor-respect-origin','cache-editor-authorized',
+    'cache-editor-cookie','cache-editor-set-cookie'
+  ];
+  setInputsDisabled(dependent, !enabled);
+  ['cache-editor-ttl','cache-editor-stale'].forEach(id => { if ($(id)) $(id).required = enabled; });
+  if (enabled && restoreDefaults) {
+    setInputDefault('cache-editor-ttl', '30s');
+    setInputDefault('cache-editor-stale', '2m');
+    setInputDefault('cache-editor-entries', '1000', value => Number(value) <= 0);
+    setInputDefault('cache-editor-max-mib', '64', value => Number(value) <= 0);
+    setInputDefault('cache-editor-object-mib', '4', value => Number(value) <= 0);
+    setInputDefault('cache-editor-statuses', '200, 203, 204, 300, 301, 404, 410');
+  }
+}
+
+function namedField(form, name) { return form?.elements?.namedItem(name) || null; }
+function setNamedFieldsDisabled(form, names, disabled) {
+  names.forEach(name => { const field = namedField(form, name); if (field) field.disabled = disabled; });
+}
+function setNamedRequired(form, name, required) { const field = namedField(form, name); if (field) field.required = required; }
+function setNamedDefault(form, name, value, invalid = current => current === '') {
+  const field = namedField(form, name);
+  if (!field) return;
+  const current = String(field.value ?? '').trim();
+  if (invalid(current)) field.value = value;
+}
+
+function syncSystemFeatureControls(form, restoreDefaults = false) {
+  if (!form) return;
+  const key = form.dataset.systemForm;
+  if (key === 'security-server') {
+    const gateway = namedField(form, 'mode')?.value === 'gateway';
+    setNamedFieldsDisabled(form, ['listen_addr','upstream_proxy_url'], !gateway);
+    setNamedRequired(form, 'listen_addr', gateway);
+    setNamedRequired(form, 'upstream_proxy_url', gateway);
+    const tlsToggle = namedField(form, 'tls.enabled');
+    if (tlsToggle) {
+      if (!gateway && restoreDefaults) tlsToggle.checked = false;
+      tlsToggle.disabled = !gateway;
+    }
+    const tlsEnabled = gateway && tlsToggle?.checked === true;
+    setNamedFieldsDisabled(form, ['tls.cert_file','tls.key_file'], !tlsEnabled);
+    setNamedRequired(form, 'tls.cert_file', tlsEnabled);
+    setNamedRequired(form, 'tls.key_file', tlsEnabled);
+    return;
+  }
+  if (key === 'edge-server') {
+    const tlsEnabled = namedField(form, 'tls.enabled')?.checked === true;
+    setNamedFieldsDisabled(form, ['tls.cert_file','tls.key_file'], !tlsEnabled);
+    setNamedRequired(form, 'tls.cert_file', tlsEnabled);
+    setNamedRequired(form, 'tls.key_file', tlsEnabled);
+    return;
+  }
+  if (key === 'security-admin') {
+    const enabled = namedField(form, 'enabled')?.checked === true;
+    const general = [
+      'listen_addr','auth_token','poll_timeout','max_request_body_bytes','auth_failures_per_minute','auth_lockout_duration',
+      'log_store.capacity','log_store.default_page_size','log_store.max_page_size','log_store.file_path','log_store.max_file_bytes','log_store.max_backups',
+      'connectivity.enabled','telemetry_history.enabled'
+    ];
+    setNamedFieldsDisabled(form, general, !enabled);
+    ['listen_addr','poll_timeout','auth_lockout_duration'].forEach(name => setNamedRequired(form, name, enabled));
+    if (enabled && restoreDefaults) {
+      setNamedDefault(form, 'listen_addr', '127.0.0.1:9191');
+      setNamedDefault(form, 'poll_timeout', '5s');
+      setNamedDefault(form, 'max_request_body_bytes', '1048576', value => Number(value) <= 0);
+      setNamedDefault(form, 'auth_failures_per_minute', '10', value => Number(value) <= 0);
+      setNamedDefault(form, 'auth_lockout_duration', '5m');
+      setNamedDefault(form, 'log_store.capacity', '10000', value => Number(value) <= 0);
+      setNamedDefault(form, 'log_store.default_page_size', '100', value => Number(value) <= 0);
+      setNamedDefault(form, 'log_store.max_page_size', '500', value => Number(value) <= 0);
+      setNamedDefault(form, 'log_store.max_file_bytes', '20971520', value => Number(value) <= 0);
+      setNamedDefault(form, 'log_store.max_backups', '3', value => Number(value) < 0);
+    }
+    const connectivity = enabled && namedField(form, 'connectivity.enabled')?.checked === true;
+    const connectivityFields = ['connectivity.check_interval','connectivity.timeout','connectivity.stale_after','connectivity.history_capacity','connectivity.dns.enabled'];
+    setNamedFieldsDisabled(form, connectivityFields, !connectivity);
+    if (connectivity && restoreDefaults) {
+      setNamedDefault(form, 'connectivity.check_interval', '5s');
+      setNamedDefault(form, 'connectivity.timeout', '3s');
+      setNamedDefault(form, 'connectivity.stale_after', '15s');
+      setNamedDefault(form, 'connectivity.history_capacity', '50', value => Number(value) <= 0);
+    }
+    const dnsEnabled = connectivity && namedField(form, 'connectivity.dns.enabled')?.checked === true;
+    const dnsFields = ['connectivity.dns.critical','connectivity.dns.server','connectivity.dns.names','connectivity.dns.expected_addresses'];
+    setNamedFieldsDisabled(form, dnsFields, !dnsEnabled);
+    setNamedRequired(form, 'connectivity.dns.server', dnsEnabled);
+    setNamedRequired(form, 'connectivity.dns.names', dnsEnabled);
+    if (dnsEnabled && restoreDefaults) setNamedDefault(form, 'connectivity.dns.server', '127.0.0.1:53');
+
+    const historyEnabled = enabled && namedField(form, 'telemetry_history.enabled')?.checked === true;
+    setNamedFieldsDisabled(form, ['telemetry_history.capacity','telemetry_history.sample_interval','telemetry_history.file_path'], !historyEnabled);
+    if (historyEnabled && restoreDefaults) {
+      setNamedDefault(form, 'telemetry_history.capacity', '720', value => Number(value) < 2);
+      setNamedDefault(form, 'telemetry_history.sample_interval', '5s');
+    }
+    return;
+  }
+  if (key === 'edge-admin') {
+    const enabled = namedField(form, 'enabled')?.checked === true;
+    setNamedFieldsDisabled(form, ['listen_addr','auth_token','log_store.enabled'], !enabled);
+    setNamedRequired(form, 'listen_addr', enabled);
+    if (enabled && restoreDefaults) setNamedDefault(form, 'listen_addr', '127.0.0.1:9090');
+    const logEnabled = enabled && namedField(form, 'log_store.enabled')?.checked === true;
+    const logFields = ['log_store.capacity','log_store.default_page_size','log_store.max_page_size'];
+    setNamedFieldsDisabled(form, logFields, !logEnabled);
+    if (logEnabled && restoreDefaults) {
+      setNamedDefault(form, 'log_store.capacity', '5000', value => Number(value) <= 0);
+      setNamedDefault(form, 'log_store.default_page_size', '100', value => Number(value) <= 0);
+      setNamedDefault(form, 'log_store.max_page_size', '500', value => Number(value) <= 0);
+    }
+  }
+}
+
 function syncPolicyFeatureControls(form, restoreDefaults = false) {
   if (!form) return;
   const isDefault = state.selectedPolicy === 'default';
+  const bodyInspection = form.inspect_request_body.checked;
+  ['max_inspection_body_bytes','body_content_types','reject_unsupported_body_types','block_on_inspection_limit'].forEach(name => {
+    form.elements[name].disabled = !bodyInspection;
+  });
+  if (bodyInspection && restoreDefaults) {
+    if (!(Number(form.max_inspection_body_bytes.value) > 0)) form.max_inspection_body_bytes.value = 1048576;
+    if (!form.body_content_types.value.trim()) form.body_content_types.value = 'application/json, application/x-www-form-urlencoded, multipart/form-data, text/plain, text/xml, application/xml';
+  }
   const rateEnabled = form.rate_enabled.checked;
   ['requests_per_second','burst','global_requests_per_second','global_burst'].forEach(name => {
     form.elements[name].disabled = !rateEnabled;
@@ -156,7 +300,7 @@ function validateOriginCandidate(route, candidate, originalName = '') {
   const name = String(candidate.name || '').trim();
   const rawURL = String(candidate.url || '').trim();
   if (!name) throw new Error('Origin name is required.');
-  if (name.length > 256) throw new Error('Origin name cannot exceed 256 characters.');
+  if (utf8Bytes(name) > 256) throw new Error('Origin name cannot exceed 256 UTF-8 bytes.');
   if (!rawURL) throw new Error('Origin URL is required.');
   let parsed;
   try { parsed = new URL(rawURL); } catch { throw new Error('Origin URL must be an absolute HTTP or HTTPS URL.'); }
@@ -1706,7 +1850,9 @@ function systemFormPayload(form, source) {
 
 function renderSystemForms() {
   Object.entries(systemFormDefinitions).forEach(([key, definition]) => {
-    populateSystemForm(document.querySelector(`[data-system-form="${key}"]`), definition.source());
+    const form = document.querySelector(`[data-system-form="${key}"]`);
+    populateSystemForm(form, definition.source());
+    syncSystemFeatureControls(form, false);
   });
 }
 
@@ -1939,12 +2085,20 @@ async function saveRoute(event) {
   try {
     const original = $('route-original-name').value;
     const base = structuredClone(original ? findConfigRoute(original) : defaultRouteTemplate());
-    base.name = $('route-name').value.trim(); base.hosts = csv($('route-hosts').value); base.path_prefix = $('route-path').value.trim();
+    base.name = $('route-name').value.trim();
+    if (!base.name) throw new Error('Route name is required.');
+    if (utf8Bytes(base.name) > 256) throw new Error('Route name cannot exceed 256 UTF-8 bytes.');
+    if (base.name.toLowerCase() === '__unmatched__') throw new Error('Route name __unmatched__ is reserved for internal telemetry.');
+    base.hosts = csv($('route-hosts').value); base.path_prefix = $('route-path').value.trim();
     base.strip_prefix = $('route-strip-prefix').checked; base.preserve_host = $('route-preserve-host').checked;
     base.load_balancing = {algorithm:$('route-algorithm').value, latency_sensitivity:Number($('route-sensitivity').value), ewma_alpha:Number($('route-alpha').value)};
     base.proxy = {request_timeout:$('route-request-timeout').value.trim(), dial_timeout:$('route-dial-timeout').value.trim(), response_header_timeout:$('route-response-header-timeout').value.trim(), idle_conn_timeout:$('route-idle-timeout').value.trim(), retry_count:Number($('route-retry-count').value), retry_backoff:$('route-retry-backoff').value.trim(), max_idle_conns:Number($('route-max-idle').value), max_idle_conns_per_host:Number($('route-max-idle-host').value), max_response_header_bytes:Number($('route-max-response-header').value)};
-    base.cache = {enabled:$('route-cache-enabled').checked, default_ttl:$('route-cache-ttl').value.trim(), stale_if_error:$('route-cache-stale').value.trim(), max_entries:Number($('route-cache-entries').value), max_bytes:mibToBytes($('route-cache-mib').value), max_object_bytes:mibToBytes($('route-cache-object-mib').value), respect_origin_headers:$('route-cache-respect-origin').checked, cache_authorized_requests:$('route-cache-authorized').checked, cache_cookie_requests:$('route-cache-cookie').checked, cache_set_cookie_responses:$('route-cache-set-cookie').checked, vary_request_headers:csv($('route-cache-vary').value), cacheable_status_codes:csvNumbers($('route-cache-statuses').value)};
-    base.health_check = {enabled:$('route-health-enabled').checked, path:$('route-health-path').value.trim(), interval:$('route-health-interval').value.trim(), timeout:$('route-health-timeout').value.trim(), healthy_statuses:csvNumbers($('route-health-statuses').value)};
+    const previousCache = base.cache || {};
+    const cacheEnabled = $('route-cache-enabled').checked;
+    base.cache = {enabled:cacheEnabled, default_ttl:$('route-cache-ttl').value.trim(), stale_if_error:$('route-cache-stale').value.trim(), max_entries:Number($('route-cache-entries').value), max_bytes:mibToBytes($('route-cache-mib').value), max_object_bytes:mibToBytes($('route-cache-object-mib').value), respect_origin_headers:$('route-cache-respect-origin').checked, cache_authorized_requests:$('route-cache-authorized').checked, cache_cookie_requests:$('route-cache-cookie').checked, cache_set_cookie_responses:$('route-cache-set-cookie').checked, vary_request_headers:csv($('route-cache-vary').value), cacheable_status_codes:cacheEnabled ? statusCodes($('route-cache-statuses').value, 'Cacheable status codes', false) : (previousCache.cacheable_status_codes || [])};
+    const previousHealth = base.health_check || {};
+    const healthEnabled = $('route-health-enabled').checked;
+    base.health_check = {enabled:healthEnabled, path:$('route-health-path').value.trim(), interval:$('route-health-interval').value.trim(), timeout:$('route-health-timeout').value.trim(), healthy_statuses:healthEnabled ? statusCodes($('route-health-statuses').value, 'Healthy status codes', false) : (previousHealth.healthy_statuses || [])};
     if (!original) {
       const initialOrigin = validateOriginCandidate(base, {
         name:$('route-origin-name').value.trim() || 'origin-1', url:$('route-origin-url').value.trim(),
@@ -1999,6 +2153,7 @@ function loadCacheEditor(routeName) {
   $('cache-editor-entries').value = cache.max_entries ?? 1000; $('cache-editor-max-mib').value = bytesToMiB(cache.max_bytes || 67108864); $('cache-editor-object-mib').value = bytesToMiB(cache.max_object_bytes || 4194304);
   $('cache-editor-statuses').value = (cache.cacheable_status_codes || []).join(', '); $('cache-editor-vary').value = (cache.vary_request_headers || []).join(', ');
   $('cache-editor-respect-origin').checked = Boolean(cache.respect_origin_headers); $('cache-editor-authorized').checked = Boolean(cache.cache_authorized_requests); $('cache-editor-cookie').checked = Boolean(cache.cache_cookie_requests); $('cache-editor-set-cookie').checked = Boolean(cache.cache_set_cookie_responses);
+  syncCacheEditorFeatureControls(false);
   state.cacheEditorDirty = false;
   $('cache-config-result').textContent = '';
 }
@@ -2006,15 +2161,18 @@ function loadCacheEditor(routeName) {
 async function saveCacheEditor() {
   const route = $('cache-route-select').value;
   if (!route) return toast('Select a route first.');
-  const candidate = {
-    enabled:$('cache-editor-enabled').checked,
-    default_ttl:$('cache-editor-ttl').value.trim(), stale_if_error:$('cache-editor-stale').value.trim(),
-    max_entries:Number($('cache-editor-entries').value), max_bytes:mibToBytes($('cache-editor-max-mib').value), max_object_bytes:mibToBytes($('cache-editor-object-mib').value),
-    respect_origin_headers:$('cache-editor-respect-origin').checked, cache_authorized_requests:$('cache-editor-authorized').checked,
-    cache_cookie_requests:$('cache-editor-cookie').checked, cache_set_cookie_responses:$('cache-editor-set-cookie').checked,
-    vary_request_headers:csv($('cache-editor-vary').value), cacheable_status_codes:csvNumbers($('cache-editor-statuses').value)
-  };
+  if (!$('cache-config-form').reportValidity()) return;
   try {
+    const enabled = $('cache-editor-enabled').checked;
+    const current = findConfigRoute(route)?.cache || {};
+    const candidate = {
+      enabled,
+      default_ttl:$('cache-editor-ttl').value.trim(), stale_if_error:$('cache-editor-stale').value.trim(),
+      max_entries:Number($('cache-editor-entries').value), max_bytes:mibToBytes($('cache-editor-max-mib').value), max_object_bytes:mibToBytes($('cache-editor-object-mib').value),
+      respect_origin_headers:$('cache-editor-respect-origin').checked, cache_authorized_requests:$('cache-editor-authorized').checked,
+      cache_cookie_requests:$('cache-editor-cookie').checked, cache_set_cookie_responses:$('cache-editor-set-cookie').checked,
+      vary_request_headers:csv($('cache-editor-vary').value), cacheable_status_codes:enabled ? statusCodes($('cache-editor-statuses').value, 'Cacheable status codes', false) : (current.cacheable_status_codes || [])
+    };
     await api(`/api/v1/edgeproxy/routes/${encodeURIComponent(route)}/cache`, {method:'PUT', body:JSON.stringify(candidate)});
     state.cacheEditorDirty = false;
     $('cache-config-result').textContent = 'Cache policy validated, persisted atomically, and hot-applied.';
@@ -2309,8 +2467,14 @@ document.querySelectorAll('[data-system-form]').forEach(form => {
   const key = form.dataset.systemForm;
   const markDirty = () => { state.systemDirty[key] = true; delete state.pendingSystemRestarts[key]; };
   form.addEventListener('input', markDirty);
-  form.addEventListener('change', markDirty);
+  form.addEventListener('change', event => {
+    markDirty();
+    if (['mode','tls.enabled','enabled','connectivity.enabled','connectivity.dns.enabled','telemetry_history.enabled','log_store.enabled'].includes(event.target.name)) {
+      syncSystemFeatureControls(form, true);
+    }
+  });
   form.addEventListener('submit', saveSystemForm);
+  syncSystemFeatureControls(form, false);
 });
 $('refresh-control').onclick = async () => {
   const result = await loadControlData();
@@ -2323,10 +2487,12 @@ $('add-route').onclick = () => openRouteDialog();
 $('cache-config-form').addEventListener('input', event => { if (event.target !== $('cache-route-select')) state.cacheEditorDirty = true; });
 $('cache-config-form').addEventListener('change', event => { if (event.target !== $('cache-route-select')) state.cacheEditorDirty = true; });
 $('cache-route-select').onchange = event => { state.cacheEditorDirty = false; loadCacheEditor(event.currentTarget.value); };
+$('cache-editor-enabled').addEventListener('change', () => syncCacheEditorFeatureControls(true));
 $('save-cache-config').onclick = saveCacheEditor;
 $('route-form').onsubmit = saveRoute; $('origin-form').onsubmit = saveOrigin;
 $('route-cache-enabled').addEventListener('change', () => syncRouteFeatureControls(true));
 $('route-health-enabled').addEventListener('change', () => syncRouteFeatureControls(true));
+$('policy-form').inspect_request_body.addEventListener('change', () => syncPolicyFeatureControls($('policy-form'), true));
 $('policy-form').rate_enabled.addEventListener('change', () => syncPolicyFeatureControls($('policy-form'), true));
 $('policy-form').auto_ban_enabled.addEventListener('change', () => syncPolicyFeatureControls($('policy-form'), true));
 document.querySelectorAll('[data-close-dialog]').forEach(button => button.onclick = () => $(button.dataset.closeDialog).close());

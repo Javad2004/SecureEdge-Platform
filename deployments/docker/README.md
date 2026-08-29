@@ -106,7 +106,7 @@ The deployment:
 - keeps EdgeProxy and Origin unpublished from the host;
 - uses an explicit private subnet and a fixed SecurityEdge address for least-privilege forwarded-header trust;
 - binds the dashboard host port to loopback;
-- uses health checks and dependency ordering.
+- uses process-liveness `/healthz` container checks and dependency ordering; `/readyz` remains available separately for operational readiness diagnostics.
 
 ## Configuration files
 

@@ -627,6 +627,10 @@ td {
   border-top:1px solid var(--border);
   padding-top:16px
 }
+.route-name-help {
+  margin:10px 0 0;
+  font-size:11px
+}
 .result-text {
   min-height:18px;
   color:var(--accent)!important

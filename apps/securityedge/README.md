@@ -705,7 +705,7 @@ EdgeProxy route profile    /integration/edgeproxy-compose-behind-waf.json
 
 The `/app/config` and `/app/logs` paths are writable volumes owned by the non-root application user. This allows dashboard policy changes to be atomically persisted and allows rotated NDJSON logs to survive container recreation. Real credentials should be injected through `SECURITYEDGE_ADMIN_TOKEN` and `EDGEPROXY_ADMIN_TOKEN`.
 
-The image is designed to participate in a container network with services named `edgeproxy` and `origin`; running it alone will not provide a reachable upstream. The checked-in Compose profile keeps ingress HTTP for a self-contained local demonstration. For an Internet-facing container deployment, either enable SecurityEdge native TLS and mount certificate/key material read-only at the configured paths, or terminate TLS at a trusted load balancer/CDN and configure `trusted_proxy_cidrs` to match that boundary.
+The image is designed to participate in a container network with services named `edgeproxy` and `origin`; running it alone will not provide a reachable upstream. Docker health uses the process-liveness `/healthz` endpoint, while `/readyz` remains the separate operational readiness signal and may report dependency outages without making the SecurityEdge process itself unhealthy. The checked-in Compose profile keeps ingress HTTP for a self-contained local demonstration. For an Internet-facing container deployment, either enable SecurityEdge native TLS and mount certificate/key material read-only at the configured paths, or terminate TLS at a trusted load balancer/CDN and configure `trusted_proxy_cidrs` to match that boundary.
 
 ### Run the complete platform
 

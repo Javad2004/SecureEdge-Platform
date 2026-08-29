@@ -138,7 +138,8 @@ function resetPageSize(select, maximum, configuredDefault) {
 }
 
 function renderEdgeLogFilterOptions() {
-  replaceOptions($('edge-log-route'), (state.edgeConfig?.routes || []).map(route => ({value:route.name,label:route.name})), 'All routes');
+  const routes = [{value:'__unmatched__',label:'Unmatched'}].concat((state.edgeConfig?.routes || []).map(route => ({value:route.name,label:route.name})));
+  replaceOptions($('edge-log-route'), routes, 'All routes');
   renderPageSizeOptions($('edge-log-page-size'), edgeLogMaxPageSize(), state.edgeConfig?.admin?.log_store?.default_page_size || 50);
 }
 
@@ -1734,7 +1735,7 @@ function openRouteDialog(name = '') {
   if (!route && name) return toast('Route no longer exists.');
   $('route-dialog-title').textContent = name ? `Edit ${route.name}` : 'Add route';
   $('route-original-name').value = name ? route.name : '';
-  $('route-name').value = route.name || ''; $('route-name').readOnly = Boolean(name);
+  $('route-name').value = route.name || ''; $('route-name').readOnly = Boolean(name); $('route-name-help').classList.toggle('hidden', !name);
   $('route-hosts').value = (route.hosts || []).join(', '); $('route-path').value = route.path_prefix || '/';
   $('route-strip-prefix').checked = Boolean(route.strip_prefix); $('route-preserve-host').checked = Boolean(route.preserve_host);
   $('route-algorithm').value = route.load_balancing?.algorithm || 'round_robin';
@@ -1758,7 +1759,7 @@ function openOriginDialog(routeName, originName = '') {
   if (!route) return toast('Route no longer exists.');
   $('origin-dialog-title').textContent = origin ? `Edit ${origin.name}` : `Add origin to ${route.name}`;
   $('origin-route-name').value = route.name; $('origin-original-name').value = origin?.name || '';
-  $('origin-name').value = origin?.name || `origin-${(route.upstreams?.length || 0)+1}`; $('origin-name').readOnly = Boolean(origin);
+  $('origin-name').value = origin?.name || `origin-${(route.upstreams?.length || 0)+1}`; $('origin-name').readOnly = false;
   $('origin-url').value = origin?.url || ''; $('origin-weight').value = origin?.weight || 1; $('origin-priority').value = origin?.priority || ((route.upstreams?.length || 0)+1);
   $('origin-insecure').checked = Boolean(origin?.insecure_skip_verify); $('origin-form-error').textContent = '';
   const deleteButton = $('delete-origin');

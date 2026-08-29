@@ -544,7 +544,7 @@ EdgeProxy data plane   http://127.0.0.1:8080
 EdgeProxy Admin API    http://127.0.0.1:9090
 ```
 
-The Origin is available only inside the Compose network. Both services use read-only root filesystems, drop Linux capabilities, and enable `no-new-privileges`.
+The Origin is available only inside the Compose network. Both services use read-only root filesystems, drop Linux capabilities, and enable `no-new-privileges`. Docker marks the EdgeProxy container healthy from the process-liveness `/healthz` endpoint; `/readyz` remains a separate operational signal and can become `503` when an Origin is unavailable without misclassifying the EdgeProxy process itself as dead.
 
 Stop the stack:
 

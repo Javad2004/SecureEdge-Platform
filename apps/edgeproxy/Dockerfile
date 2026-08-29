@@ -42,7 +42,7 @@ USER edgeproxy
 EXPOSE 8080 9090
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget -q -O /dev/null http://127.0.0.1:9090/readyz || exit 1
+  CMD wget -q -O /dev/null http://127.0.0.1:9090/healthz || exit 1
 
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/local/bin/edgeproxy"]

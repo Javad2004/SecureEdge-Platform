@@ -740,7 +740,9 @@ func TestDashboardEdgeProxyRequestExplorerContract(t *testing.T) {
 	for _, required := range []string{
 		`<h2>EdgeProxy request explorer</h2>`,
 		`id="edge-log-route" name="route"`,
+		`{value:'__unmatched__',label:'Unmatched'}`,
 		`name="method" aria-label="Filter EdgeProxy logs by method"`,
+		`<option>CONNECT</option><option>TRACE</option>`,
 		`name="status" aria-label="Filter EdgeProxy logs by status"`,
 		`name="cache" aria-label="Filter EdgeProxy logs by cache result"`,
 		`id="edge-log-page-size"`,
@@ -760,6 +762,35 @@ func TestDashboardEdgeProxyRequestExplorerContract(t *testing.T) {
 	}
 	if strings.Contains(string(app), `event=request_completed&limit=50`) {
 		t.Fatal("EdgeProxy request explorer still uses the legacy fixed 50-row query")
+	}
+}
+
+func TestDashboardRouteAndOriginIdentityEditingContract(t *testing.T) {
+	index, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(index) + "\n" + string(app)
+	for _, required := range []string{
+		`id="route-name" required maxlength="256"`,
+		`id="route-name-help" class="muted route-name-help hidden"`,
+		`Route names are immutable after creation. Create a new route to rename it.`,
+		`$('route-name').readOnly = Boolean(name)`,
+		`$('route-name-help').classList.toggle('hidden', !name)`,
+		`id="origin-name" required maxlength="256"`,
+		`$('origin-name').readOnly = false`,
+		`encodeURIComponent(original)`,
+	} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("dashboard route/origin identity editor contract is missing %q", required)
+		}
+	}
+	if strings.Contains(content, `$('origin-name').readOnly = Boolean(origin)`) {
+		t.Fatal("dashboard still prevents origin renaming even though the EdgeProxy origin update API supports it")
 	}
 }
 

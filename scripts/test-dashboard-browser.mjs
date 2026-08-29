@@ -582,6 +582,8 @@ try {
       const reasonValues = [...document.getElementById('security-reason-filter').options].map(option => option.value);
       const routeValues = [...document.getElementById('security-route-filter').options].map(option => option.value);
       const ruleValues = [...document.getElementById('security-rule-filter').options].map(option => option.value);
+      const edgeRouteValues = [...document.getElementById('edge-log-route').options].map(option => option.value);
+      const edgeMethodValues = [...document.querySelector('#edge-log-filters select[name="method"]').options].map(option => option.value);
       const initialPageSizes = {
         security:document.getElementById('security-log-page-size').value,
         edge:document.getElementById('edge-log-page-size').value,
@@ -655,7 +657,7 @@ try {
         requestID:document.querySelector('#edge-log-table tr td:nth-child(9)')?.textContent?.trim() || ''
       };
 
-      return {securityKinds, reasonValues, routeValues, ruleValues, initialPageSizes, expectedRoute:state.edgeConfig?.routes?.[0]?.name || '', securityFirstPage, securityFirstRead, securityOlderPage, securityOlderRead, securityNewerSequence, firstPage, filteredRead, olderPage, olderRead, newerPage};
+      return {securityKinds, reasonValues, routeValues, ruleValues, edgeRouteValues, edgeMethodValues, initialPageSizes, expectedRoute:state.edgeConfig?.routes?.[0]?.name || '', securityFirstPage, securityFirstRead, securityOlderPage, securityOlderRead, securityNewerSequence, firstPage, filteredRead, olderPage, olderRead, newerPage};
     })()`, true);
     const kinds = requestExplorerContract.securityKinds;
     if (kinds.q !== 'INPUT' || kinds.client_ip !== 'INPUT' || kinds.reason !== 'SELECT' || kinds.route !== 'SELECT' || kinds.rule_id !== 'SELECT') {
@@ -663,6 +665,10 @@ try {
     }
     if (!requestExplorerContract.reasonValues.includes('waf_threshold') || !requestExplorerContract.routeValues.includes(requestExplorerContract.expectedRoute) || !requestExplorerContract.ruleValues.includes('XSS-001')) {
       throw new Error(`Security Explorer dropdown options are incomplete: ${JSON.stringify(requestExplorerContract)}`);
+    }
+    if (!requestExplorerContract.edgeRouteValues.includes('__unmatched__') || !requestExplorerContract.edgeRouteValues.includes(requestExplorerContract.expectedRoute) ||
+        !requestExplorerContract.edgeMethodValues.includes('CONNECT') || !requestExplorerContract.edgeMethodValues.includes('TRACE')) {
+      throw new Error(`EdgeProxy request explorer dropdown options are incomplete: ${JSON.stringify(requestExplorerContract)}`);
     }
     if (requestExplorerContract.initialPageSizes.security !== requestExplorerContract.initialPageSizes.expectedSecurity ||
         requestExplorerContract.initialPageSizes.edge !== requestExplorerContract.initialPageSizes.expectedEdge) {
@@ -2715,6 +2721,9 @@ try {
   }
   const routeEditor = await cdp.evaluate(`({
     name: document.getElementById('route-name').value,
+    nameReadOnly:document.getElementById('route-name').readOnly,
+    nameMaxLength:document.getElementById('route-name').maxLength,
+    immutableHelpHidden:document.getElementById('route-name-help').classList.contains('hidden'),
     algorithm: document.getElementById('route-algorithm').value,
     ttl: document.getElementById('route-cache-ttl').value,
     health: document.getElementById('route-health-interval').value
@@ -2723,7 +2732,19 @@ try {
     throw new Error(`Route editor was not populated: ${JSON.stringify(routeEditor)}`);
   }
   if (expectedRoute && routeEditor.name !== expectedRoute) throw new Error(`Unexpected fixture Route: ${routeEditor.name}`);
+  if (!routeEditor.nameReadOnly || routeEditor.nameMaxLength !== 256 || routeEditor.immutableHelpHidden) {
+    throw new Error(`Existing Route identity controls do not reflect the immutable backend contract: ${JSON.stringify(routeEditor)}`);
+  }
   await cdp.evaluate(`document.getElementById('route-dialog').close()`);
+  const addRouteIdentity = await cdp.evaluate(`(() => {
+    openRouteDialog();
+    const result={readOnly:document.getElementById('route-name').readOnly,maxLength:document.getElementById('route-name').maxLength,helpHidden:document.getElementById('route-name-help').classList.contains('hidden')};
+    document.getElementById('route-dialog').close();
+    return result;
+  })()`);
+  if (addRouteIdentity.readOnly || addRouteIdentity.maxLength !== 256 || !addRouteIdentity.helpHidden) {
+    throw new Error(`New Route identity controls are incorrect: ${JSON.stringify(addRouteIdentity)}`);
+  }
 
   let originDialogLayout = null;
   let telemetryDetailLayout = null;
@@ -2743,6 +2764,8 @@ try {
         switchGap:tlsSwitch.top-fields.bottom,
         footerBottomGap:formRect.bottom-footerButton.bottom,
         footerPosition:getComputedStyle(footer).position,
+        originNameReadOnly:document.getElementById('origin-name').readOnly,
+        originNameMaxLength:document.getElementById('origin-name').maxLength,
         htmlOverflowY:getComputedStyle(document.documentElement).overflowY,
         bodyOverflowY:getComputedStyle(document.body).overflowY
       };
@@ -2754,10 +2777,39 @@ try {
         originDialogLayout.footerBottomGap > 30) {
       throw new Error(`Origin dialog footer bottom spacing is inconsistent: ${JSON.stringify(originDialogLayout)}`);
     }
+    if (originDialogLayout.originNameReadOnly || originDialogLayout.originNameMaxLength !== 256) {
+      throw new Error(`Origin identity editor does not match the EdgeProxy rename/length contract: ${JSON.stringify(originDialogLayout)}`);
+    }
     if (originDialogLayout.htmlOverflowY !== 'hidden' || originDialogLayout.bodyOverflowY !== 'hidden') {
       throw new Error(`Origin dialog does not isolate background scrolling: ${JSON.stringify(originDialogLayout)}`);
     }
     await cdp.evaluate(`document.getElementById('origin-dialog').close()`);
+
+    const originRenameContract = await cdp.evaluate(`(async () => {
+      const route = state.edgeConfig?.routes?.find(route => route.name === ${JSON.stringify(expectedRoute)}) || state.edgeConfig?.routes?.[0];
+      const origin = route?.upstreams?.[0];
+      if (!route || !origin) return {error:'fixture route has no origin'};
+      openOriginDialog(route.name, origin.name);
+      const renamed = origin.name + '-renamed';
+      document.getElementById('origin-name').value = renamed;
+      window.__fixtureRequests.length = 0;
+      document.getElementById('origin-form').requestSubmit();
+      for (let i=0; i<100; i++) {
+        const request = window.__fixtureRequests.find(request => request.method === 'PUT' && request.key.includes('/origins/'));
+        if (request && !document.getElementById('origin-dialog').open) break;
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      return {
+        original:origin.name, renamed,
+        request:window.__fixtureRequests.find(request => request.method === 'PUT' && request.key.includes('/origins/')) || null,
+        dialogOpen:document.getElementById('origin-dialog').open
+      };
+    })()`, true);
+    const expectedOriginRenamePath = `/api/v1/edgeproxy/routes/${encodeURIComponent(expectedRoute)}/origins/${encodeURIComponent(originRenameContract.original || '')}`;
+    if (originRenameContract.error || originRenameContract.dialogOpen || originRenameContract.request?.key !== expectedOriginRenamePath ||
+        originRenameContract.request?.body?.name !== originRenameContract.renamed) {
+      throw new Error(`Origin rename contract failed: ${JSON.stringify(originRenameContract)}`);
+    }
 
     const originDeleteContract = await cdp.evaluate(`(async () => {
       const originalEdgeConfig = structuredClone(state.edgeConfig);

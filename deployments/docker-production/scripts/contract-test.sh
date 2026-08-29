@@ -148,6 +148,17 @@ grep -Fqx '**/*.py[cod]' "$repo_root/.dockerignore"
 grep -Fq 'if (cd "$prod_dir" && docker compose --env-file .env -f "$compose" config -q); then' "$script_dir/doctor.sh"
 grep -Fq 'Docker Compose render: FAILED ($compose)' "$script_dir/doctor.sh"
 
+# Local/demo application images follow the same liveness/readiness split as
+# production: Docker health tracks whether the process is alive, not whether
+# every downstream dependency is currently ready.
+for dockerfile in "$repo_root/apps/edgeproxy/Dockerfile" "$repo_root/apps/securityedge/Dockerfile"; do
+  grep -q '/healthz' "$dockerfile"
+  if grep -q '/readyz' "$dockerfile"; then
+    echo "application container healthcheck must use process health, not dependency readiness: $dockerfile" >&2
+    exit 1
+  fi
+done
+
 # SecurityEdge's checked-in profiles reference repository-level integration
 # fixtures. Both Docker build stages run go test ./..., so those fixtures must
 # be copied before the test layer executes.

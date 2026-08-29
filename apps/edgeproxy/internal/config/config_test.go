@@ -703,3 +703,32 @@ func TestConfigRejectsCaseInsensitiveDuplicateRouteNames(t *testing.T) {
 		t.Fatalf("expected case-insensitive duplicate route error, got %v", err)
 	}
 }
+
+func TestValidateRejectsDuplicateUpstreamURLs(t *testing.T) {
+	cfg := Default()
+	route := validRouteForValidation()
+	route.Upstreams = []UpstreamConfig{
+		{Name: "primary", URL: "http://127.0.0.1:9000", Weight: 1, Priority: 1},
+		{Name: "secondary", URL: "http://127.0.0.1:9000", Weight: 1, Priority: 2},
+	}
+	cfg.Routes = []RouteConfig{route}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "duplicates URL") {
+		t.Fatalf("expected duplicate upstream URL to be rejected, got %v", err)
+	}
+}
+
+func TestValidateRejectsEmptyHealthyStatusesWhenEnabled(t *testing.T) {
+	cfg := Default()
+	route := validRouteForValidation()
+	route.HealthCheck = HealthCheckConfig{
+		Enabled:         true,
+		Path:            "/healthz",
+		Interval:        Duration{Duration: 5 * time.Second},
+		Timeout:         Duration{Duration: 2 * time.Second},
+		HealthyStatuses: nil,
+	}
+	cfg.Routes = []RouteConfig{route}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "healthy_statuses cannot be empty") {
+		t.Fatalf("expected enabled health check without healthy statuses to be rejected, got %v", err)
+	}
+}

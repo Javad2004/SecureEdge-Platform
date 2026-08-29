@@ -80,6 +80,99 @@ const bytesToMiB = value => Number(value || 0) / 1048576;
 const mibToBytes = value => Math.round(Number(value || 0) * 1048576);
 const requestTimeoutMS = 15000;
 
+function setInputDefault(id, value, invalid = current => current === '') {
+  const input = $(id);
+  if (!input) return;
+  const current = String(input.value ?? '').trim();
+  if (invalid(current)) input.value = value;
+}
+
+function setInputsDisabled(ids, disabled) {
+  ids.forEach(id => { const input = $(id); if (input) input.disabled = disabled; });
+}
+
+function syncRouteFeatureControls(restoreDefaults = false) {
+  const cacheEnabled = $('route-cache-enabled')?.checked === true;
+  const cacheInputs = [
+    'route-cache-ttl','route-cache-stale','route-cache-entries','route-cache-mib','route-cache-object-mib',
+    'route-cache-respect-origin','route-cache-authorized','route-cache-cookie','route-cache-set-cookie',
+    'route-cache-vary','route-cache-statuses'
+  ];
+  setInputsDisabled(cacheInputs, !cacheEnabled);
+  if (cacheEnabled && restoreDefaults) {
+    setInputDefault('route-cache-ttl', '30s');
+    setInputDefault('route-cache-stale', '2m');
+    setInputDefault('route-cache-entries', '1000', value => Number(value) <= 0);
+    setInputDefault('route-cache-mib', '64', value => Number(value) <= 0);
+    setInputDefault('route-cache-object-mib', '4', value => Number(value) <= 0);
+    setInputDefault('route-cache-statuses', '200, 203, 204, 300, 301, 404, 410');
+  }
+
+  const healthEnabled = $('route-health-enabled')?.checked === true;
+  const healthInputs = ['route-health-path','route-health-interval','route-health-timeout','route-health-statuses'];
+  setInputsDisabled(healthInputs, !healthEnabled);
+  if (healthEnabled && restoreDefaults) {
+    setInputDefault('route-health-path', '/healthz');
+    setInputDefault('route-health-interval', '5s');
+    setInputDefault('route-health-timeout', '2s');
+    setInputDefault('route-health-statuses', '200');
+  }
+}
+
+function syncPolicyFeatureControls(form, restoreDefaults = false) {
+  if (!form) return;
+  const isDefault = state.selectedPolicy === 'default';
+  const rateEnabled = form.rate_enabled.checked;
+  ['requests_per_second','burst','global_requests_per_second','global_burst'].forEach(name => {
+    form.elements[name].disabled = !rateEnabled;
+  });
+  ['cleanup_interval','idle_ttl','max_buckets'].forEach(name => {
+    form.elements[name].disabled = !isDefault || !rateEnabled;
+  });
+  if (rateEnabled && restoreDefaults) {
+    if (!(Number(form.requests_per_second.value) > 0)) form.requests_per_second.value = 10;
+    if (!(Number(form.burst.value) > 0)) form.burst.value = 20;
+    if (!(Number(form.global_requests_per_second.value) > 0)) form.global_requests_per_second.value = 100;
+    if (!(Number(form.global_burst.value) > 0)) form.global_burst.value = 200;
+    if (!form.cleanup_interval.value.trim()) form.cleanup_interval.value = '1m';
+    if (!form.idle_ttl.value.trim()) form.idle_ttl.value = '10m';
+    if (!(Number(form.max_buckets.value) >= 2)) form.max_buckets.value = 100000;
+  }
+
+  const autoBanEnabled = form.auto_ban_enabled.checked;
+  ['violation_threshold','ban_window','ban_duration'].forEach(name => {
+    form.elements[name].disabled = !autoBanEnabled;
+  });
+  form.max_tracked_clients.disabled = !isDefault || !autoBanEnabled;
+  if (autoBanEnabled && restoreDefaults) {
+    if (!(Number(form.violation_threshold.value) > 0)) form.violation_threshold.value = 20;
+    if (!form.ban_window.value.trim()) form.ban_window.value = '1m';
+    if (!form.ban_duration.value.trim()) form.ban_duration.value = '10m';
+    if (!(Number(form.max_tracked_clients.value) > 0)) form.max_tracked_clients.value = 100000;
+  }
+}
+
+function validateOriginCandidate(route, candidate, originalName = '') {
+  const name = String(candidate.name || '').trim();
+  const rawURL = String(candidate.url || '').trim();
+  if (!name) throw new Error('Origin name is required.');
+  if (name.length > 256) throw new Error('Origin name cannot exceed 256 characters.');
+  if (!rawURL) throw new Error('Origin URL is required.');
+  let parsed;
+  try { parsed = new URL(rawURL); } catch { throw new Error('Origin URL must be an absolute HTTP or HTTPS URL.'); }
+  if (!['http:','https:'].includes(parsed.protocol) || !parsed.hostname) throw new Error('Origin URL must use http or https and include a host.');
+  if (parsed.username || parsed.password) throw new Error('Origin URL must not contain credentials.');
+  if (parsed.hash) throw new Error('Origin URL must not contain a fragment.');
+  if (candidate.insecure_skip_verify && parsed.protocol !== 'https:') throw new Error('Skip TLS verification is only valid for HTTPS origins.');
+  const siblings = route?.upstreams || [];
+  for (const origin of siblings) {
+    if (originalName && String(origin.name).toLowerCase() === String(originalName).toLowerCase()) continue;
+    if (String(origin.name).toLowerCase() === name.toLowerCase()) throw new Error(`Origin name ${name} already exists on this route.`);
+    if (String(origin.url || '').trim() === rawURL) throw new Error(`Origin URL ${rawURL} is already configured on this route.`);
+  }
+  return {...candidate, name, url:rawURL};
+}
+
 
 const securityReasonOptions = [
   ['body_too_large','Body too large'], ['header_value_too_large','Header value too large'],
@@ -1809,6 +1902,7 @@ function openRouteDialog(name = '') {
   $('route-health-enabled').checked = Boolean(route.health_check?.enabled); $('route-health-path').value = route.health_check?.path || '/healthz'; $('route-health-interval').value = route.health_check?.interval || '5s'; $('route-health-timeout').value = route.health_check?.timeout || '2s'; $('route-health-statuses').value = (route.health_check?.healthy_statuses || [200]).join(', ');
   $('initial-origin-fields').classList.toggle('hidden', Boolean(name));
   $('route-origin-name').value = 'origin-1'; $('route-origin-url').value = ''; $('route-origin-weight').value = 1; $('route-origin-priority').value = 1; $('route-origin-insecure').checked = false;
+  syncRouteFeatureControls(false);
   $('route-form-error').textContent = ''; $('route-dialog').showModal();
 }
 
@@ -1852,8 +1946,11 @@ async function saveRoute(event) {
     base.cache = {enabled:$('route-cache-enabled').checked, default_ttl:$('route-cache-ttl').value.trim(), stale_if_error:$('route-cache-stale').value.trim(), max_entries:Number($('route-cache-entries').value), max_bytes:mibToBytes($('route-cache-mib').value), max_object_bytes:mibToBytes($('route-cache-object-mib').value), respect_origin_headers:$('route-cache-respect-origin').checked, cache_authorized_requests:$('route-cache-authorized').checked, cache_cookie_requests:$('route-cache-cookie').checked, cache_set_cookie_responses:$('route-cache-set-cookie').checked, vary_request_headers:csv($('route-cache-vary').value), cacheable_status_codes:csvNumbers($('route-cache-statuses').value)};
     base.health_check = {enabled:$('route-health-enabled').checked, path:$('route-health-path').value.trim(), interval:$('route-health-interval').value.trim(), timeout:$('route-health-timeout').value.trim(), healthy_statuses:csvNumbers($('route-health-statuses').value)};
     if (!original) {
-      const originURL = $('route-origin-url').value.trim(); if (!originURL) throw new Error('Initial origin URL is required.');
-      base.upstreams = [{name:$('route-origin-name').value.trim() || 'origin-1', url:originURL, weight:Number($('route-origin-weight').value), priority:Number($('route-origin-priority').value), insecure_skip_verify:$('route-origin-insecure').checked}];
+      const initialOrigin = validateOriginCandidate(base, {
+        name:$('route-origin-name').value.trim() || 'origin-1', url:$('route-origin-url').value.trim(),
+        weight:Number($('route-origin-weight').value), priority:Number($('route-origin-priority').value), insecure_skip_verify:$('route-origin-insecure').checked
+      });
+      base.upstreams = [initialOrigin];
     }
     const path = original ? `/api/v1/edgeproxy/routes/${encodeURIComponent(original)}` : '/api/v1/edgeproxy/routes';
     await api(path, {method:original ? 'PUT':'POST', body:JSON.stringify(base)});
@@ -1865,7 +1962,9 @@ async function saveOrigin(event) {
   event.preventDefault(); $('origin-form-error').textContent = '';
   try {
     const route = $('origin-route-name').value, original = $('origin-original-name').value;
-    const origin = {name:$('origin-name').value.trim(), url:$('origin-url').value.trim(), weight:Number($('origin-weight').value), priority:Number($('origin-priority').value), insecure_skip_verify:$('origin-insecure').checked};
+    const routeConfig = findConfigRoute(route);
+    if (!routeConfig) throw new Error('Route no longer exists.');
+    const origin = validateOriginCandidate(routeConfig, {name:$('origin-name').value.trim(), url:$('origin-url').value.trim(), weight:Number($('origin-weight').value), priority:Number($('origin-priority').value), insecure_skip_verify:$('origin-insecure').checked}, original);
     const base = `/api/v1/edgeproxy/routes/${encodeURIComponent(route)}/origins`;
     await api(original ? `${base}/${encodeURIComponent(original)}` : base, {method:original ? 'PUT':'POST', body:JSON.stringify(origin)});
     $('origin-dialog').close(); await refreshAll(); toast(original ? 'Origin updated' : 'Origin added');
@@ -2031,6 +2130,7 @@ function renderPolicies() {
   if (processWideNote) processWideNote.textContent = isDefault
     ? 'Limiter cleanup, idle-bucket lifetime, bucket capacity, and ban-tracking capacity are process-wide. Route overrides inherit these values.'
     : 'Process-wide lifecycle and capacity values are inherited from Default policy. Edit Default policy to change them.';
+  syncPolicyFeatureControls(form, false);
 }
 
 async function savePolicy(event) {
@@ -2225,6 +2325,10 @@ $('cache-config-form').addEventListener('change', event => { if (event.target !=
 $('cache-route-select').onchange = event => { state.cacheEditorDirty = false; loadCacheEditor(event.currentTarget.value); };
 $('save-cache-config').onclick = saveCacheEditor;
 $('route-form').onsubmit = saveRoute; $('origin-form').onsubmit = saveOrigin;
+$('route-cache-enabled').addEventListener('change', () => syncRouteFeatureControls(true));
+$('route-health-enabled').addEventListener('change', () => syncRouteFeatureControls(true));
+$('policy-form').rate_enabled.addEventListener('change', () => syncPolicyFeatureControls($('policy-form'), true));
+$('policy-form').auto_ban_enabled.addEventListener('change', () => syncPolicyFeatureControls($('policy-form'), true));
 document.querySelectorAll('[data-close-dialog]').forEach(button => button.onclick = () => $(button.dataset.closeDialog).close());
 $('edge-config-editor').addEventListener('input', () => { state.edgeEditorDirty = true; state.pendingRawRestarts.edge = null; });
 $('security-config-editor').addEventListener('input', () => { state.securityEditorDirty = true; state.pendingRawRestarts.security = null; });

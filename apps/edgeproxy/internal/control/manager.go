@@ -578,7 +578,10 @@ func FindRoute(cfg *config.Config, name string) (int, bool) {
 func FindOrigin(route *config.RouteConfig, name string) (int, bool) {
 	name = strings.TrimSpace(name)
 	for i := range route.Upstreams {
-		if strings.EqualFold(route.Upstreams[i].Name, name) || strings.EqualFold(route.Upstreams[i].URL, name) {
+		// Origin names are the stable control-plane identity. URLs are mutable
+		// configuration and may contain characters that are awkward or ambiguous
+		// in path parameters, so they must never act as an alternate identifier.
+		if strings.EqualFold(route.Upstreams[i].Name, name) {
 			return i, true
 		}
 	}

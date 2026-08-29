@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
@@ -540,5 +541,33 @@ func TestRestoreSecurityFallbackLeavesPreviousPathUntouchedAfterConfigPathSwitch
 	}
 	if string(after) != string(before) {
 		t.Fatal("config-path rollback rewrote the untouched healthy configuration")
+	}
+}
+
+func TestEdgeProxyWatchReadyRequiresAppliedRevision(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "hot applied", raw: `{"revision":4,"applied_revision":4,"restart_scheduled":false}`, want: true},
+		{name: "restart pending", raw: `{"revision":5,"applied_revision":4,"restart_scheduled":true}`, want: false},
+		{name: "candidate persisted but not applied", raw: `{"revision":5,"applied_revision":4,"restart_scheduled":false}`, want: false},
+		{name: "failed replacement rolled back", raw: `{"revision":5,"applied_revision":4,"restart_scheduled":false,"last_source":"restart_rollback"}`, want: true},
+		{name: "applied ahead", raw: `{"revision":5,"applied_revision":6,"restart_scheduled":false}`, want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := edgeProxyWatchReady(json.RawMessage(tc.raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("ready=%v, want %v", got, tc.want)
+			}
+		})
+	}
+	if _, err := edgeProxyWatchReady(json.RawMessage(`not-json`)); err == nil {
+		t.Fatal("expected invalid watch payload to fail closed")
 	}
 }

@@ -232,7 +232,7 @@ EdgeProxy provides:
 - response-stream failures recorded in metrics and structured logs even when the final HTTP status has already been sent;
 - graceful shutdown.
 
-Configuration validation also places explicit ceilings on work-amplifying and memory-backed settings: at most 2,048 Routes, 256 hosts and 256 Origins per Route, 10 retries, 1,000,000 transport idle-connection slots, 4,096 trusted-proxy CIDRs, and 128 entries in each cache-header, cache-status, or health-status collection. Validation work itself stops at these ceilings, so a rejected oversized profile cannot amplify CPU or diagnostic-memory use before it is discarded.
+Configuration validation also places explicit ceilings on work-amplifying and memory-backed settings: at most 2,048 Routes, 256 hosts and 256 Origins per Route, 10 retries, 1,000,000 transport idle-connection slots, 4,096 trusted-proxy CIDRs, and 128 entries in each cache-header, cache-status, or health-status collection. Origin names and parsed Origin URLs must both be unique within a Route so per-Origin health and metrics cannot collapse onto one endpoint identity. When active health checks are enabled, `healthy_statuses` must contain at least one valid HTTP status; an enabled checker with no possible healthy result is rejected at configuration time. Validation work itself stops at these ceilings, so a rejected oversized profile cannot amplify CPU or diagnostic-memory use before it is discarded.
 
 ## Native HTTPS/TLS data plane
 

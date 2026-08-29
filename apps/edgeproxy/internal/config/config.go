@@ -535,6 +535,7 @@ func (c *Config) Validate() error {
 			}
 		}
 		seenUpstreamNames := map[string]struct{}{}
+		seenUpstreamURLs := map[string]string{}
 		upstreamLimit := validationLimit(len(r.Upstreams), maxUpstreamsPerRoute)
 		for j := 0; j < upstreamLimit; j++ {
 			r.Upstreams[j].Name = strings.TrimSpace(r.Upstreams[j].Name)
@@ -577,6 +578,16 @@ func (c *Config) Validate() error {
 			}
 			if parsed.Fragment != "" {
 				errs = append(errs, fmt.Errorf("route %q upstream[%d] must not contain a URL fragment", r.Name, j))
+			}
+			// Per-origin metrics are keyed by the parsed upstream URL. Allowing two
+			// configured origins to resolve to the same key would collapse their
+			// telemetry and make scheduler/health statistics ambiguous. Origin names
+			// are the control-plane identity, but URLs must still be unique per route.
+			urlKey := parsed.String()
+			if owner, exists := seenUpstreamURLs[urlKey]; exists {
+				errs = append(errs, fmt.Errorf("route %q upstream %q duplicates URL %q already used by upstream %q", r.Name, r.Upstreams[j].Name, up.URL, owner))
+			} else {
+				seenUpstreamURLs[urlKey] = r.Upstreams[j].Name
 			}
 			if portErr := validateURLPort(fmt.Sprintf("route %q upstream[%d]", r.Name, j), parsed); portErr != nil {
 				errs = append(errs, portErr)
@@ -683,7 +694,9 @@ func (c *Config) Validate() error {
 			} else if r.HealthCheck.Timeout.Duration > r.HealthCheck.Interval.Duration {
 				errs = append(errs, fmt.Errorf("route %q health_check.timeout cannot exceed interval", r.Name))
 			}
-			if len(r.HealthCheck.HealthyStatuses) > maxHealthStatuses {
+			if len(r.HealthCheck.HealthyStatuses) == 0 {
+				errs = append(errs, fmt.Errorf("route %q health_check.healthy_statuses cannot be empty when health checks are enabled", r.Name))
+			} else if len(r.HealthCheck.HealthyStatuses) > maxHealthStatuses {
 				errs = append(errs, fmt.Errorf("route %q health_check.healthy_statuses cannot contain more than %d entries", r.Name, maxHealthStatuses))
 			}
 			healthStatusLimit := validationLimit(len(r.HealthCheck.HealthyStatuses), maxHealthStatuses)

@@ -551,6 +551,13 @@ func TestDashboardPolicyEditorMatchesBackendContract(t *testing.T) {
 		`name="connectivity.history_capacity" type="number" min="1" max="10000"`,
 		`Purge ${scope} for route ${route}? Cached responses in this scope will be removed.`,
 		`const recentRoute = request.route === '__unmatched__' || !request.route ? 'Unmatched' : request.route;`,
+		`function syncRouteFeatureControls(restoreDefaults = false)`,
+		`function syncPolicyFeatureControls(form, restoreDefaults = false)`,
+		`function validateOriginCandidate(route, candidate, originalName = '')`,
+		`Origin URL must be an absolute HTTP or HTTPS URL.`,
+		`Origin URL must not contain credentials.`,
+		`Origin URL must not contain a fragment.`,
+		`Origin URL ${rawURL} is already configured on this route.`,
 	} {
 		if !strings.Contains(content, required) {
 			t.Fatalf("dashboard policy/backend contract is missing %q", required)

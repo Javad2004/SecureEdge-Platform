@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -296,6 +297,7 @@ func superviseSecurityGeneration(ctx context.Context, gen *securityGeneration, e
 	edgePath := gen.runtime.EdgeConfigPath()
 	securityDigest, _ := securityedge.FileDigest(securityPath)
 	edgeDigest, _ := securityedge.FileDigest(edgePath)
+	edgeRouteReloadPending := false
 	var envDigest [32]byte
 	if envPath != "" {
 		envDigest, _ = securityedge.FileDigest(envPath)
@@ -312,6 +314,20 @@ func superviseSecurityGeneration(ctx context.Context, gen *securityGeneration, e
 			logger.Error("listener failed", "error", err)
 			return false, securityPath, err
 		case <-ticker.C:
+			if edgeRouteReloadPending {
+				ready, err := edgeProxyRouteTableReady(ctx, gen.runtime)
+				if err != nil {
+					gen.runtime.RecordWatchChange(edgePath, false, false, err)
+				} else if ready {
+					if err := gen.runtime.ReloadEdgeRoutes(); err != nil {
+						gen.runtime.RecordWatchChange(edgePath, false, false, err)
+					} else {
+						edgeRouteReloadPending = false
+						gen.runtime.RecordWatchChange(edgePath, true, false, nil)
+						logger.Info("shared EdgeProxy route table activated after EdgeProxy restart", "path", edgePath)
+					}
+				}
+			}
 			if envPath != "" {
 				if digest, err := securityedge.FileDigest(envPath); err != nil {
 					gen.runtime.RecordWatchChange(envPath, false, false, err)
@@ -378,12 +394,20 @@ func superviseSecurityGeneration(ctx context.Context, gen *securityGeneration, e
 			if currentEdgePath != edgePath {
 				edgePath = currentEdgePath
 				edgeDigest, _ = securityedge.FileDigest(edgePath)
+				edgeRouteReloadPending = false
 			}
 			if digest, err := securityedge.FileDigest(edgePath); err != nil {
 				gen.runtime.RecordWatchChange(edgePath, false, false, err)
 			} else if digest != edgeDigest {
 				edgeDigest = digest
-				if err := gen.runtime.ReloadEdgeRoutes(); err != nil {
+				ready, readyErr := edgeProxyRouteTableReady(ctx, gen.runtime)
+				if readyErr != nil {
+					edgeRouteReloadPending = true
+					gen.runtime.RecordWatchChange(edgePath, false, false, readyErr)
+				} else if !ready {
+					edgeRouteReloadPending = true
+					logger.Info("deferred shared EdgeProxy route-table reload until replacement generation is active", "path", edgePath)
+				} else if err := gen.runtime.ReloadEdgeRoutes(); err != nil {
 					gen.runtime.RecordWatchChange(edgePath, false, false, err)
 				} else {
 					// This is the critical separation: an EdgeProxy route-table edit
@@ -394,6 +418,40 @@ func superviseSecurityGeneration(ctx context.Context, gen *securityGeneration, e
 			}
 		}
 	}
+}
+
+func edgeProxyRouteTableReady(ctx context.Context, runtime *securityedge.Runtime) (bool, error) {
+	raw, status, err := runtime.EdgeJSON(ctx, http.MethodGet, "/api/v1/config/watch", nil, nil)
+	if err != nil {
+		return false, fmt.Errorf("read EdgeProxy config watch status: %w", err)
+	}
+	if status >= http.StatusBadRequest {
+		return false, fmt.Errorf("read EdgeProxy config watch status: HTTP %d", status)
+	}
+	return edgeProxyWatchReady(raw)
+}
+
+func edgeProxyWatchReady(raw json.RawMessage) (bool, error) {
+	var watch struct {
+		Revision         uint64 `json:"revision"`
+		AppliedRevision  uint64 `json:"applied_revision"`
+		RestartScheduled bool   `json:"restart_scheduled"`
+		LastSource       string `json:"last_source"`
+	}
+	if err := json.Unmarshal(raw, &watch); err != nil {
+		return false, fmt.Errorf("decode EdgeProxy config watch status: %w", err)
+	}
+	if watch.RestartScheduled {
+		return false, nil
+	}
+	// A failed replacement generation restores the last-known-good file but
+	// deliberately leaves applied_revision behind the rejected candidate's
+	// revision. In that rollback state the restored file is authoritative and
+	// safe for SecurityEdge to consume even though the counters no longer match.
+	if watch.LastSource == "restart_rollback" {
+		return true, nil
+	}
+	return watch.AppliedRevision >= watch.Revision, nil
 }
 
 func watchedConfigPath(defaultPath, envPath, currentPath string, allowed bool) string {

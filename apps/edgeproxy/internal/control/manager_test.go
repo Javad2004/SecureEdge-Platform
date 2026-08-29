@@ -647,3 +647,13 @@ func TestEnvironmentRestartRollbackRestoresLastHealthyDotenv(t *testing.T) {
 		t.Fatal("environment rollback snapshot remained pending after recovery")
 	}
 }
+
+func TestFindOriginUsesNameOnly(t *testing.T) {
+	route := config.RouteConfig{Upstreams: []config.UpstreamConfig{{Name: "primary", URL: "http://127.0.0.1:9000"}}}
+	if index, ok := FindOrigin(&route, "PRIMARY"); !ok || index != 0 {
+		t.Fatalf("case-insensitive origin name lookup failed: index=%d ok=%v", index, ok)
+	}
+	if _, ok := FindOrigin(&route, "http://127.0.0.1:9000"); ok {
+		t.Fatal("origin URL must not be accepted as a control-plane identifier")
+	}
+}

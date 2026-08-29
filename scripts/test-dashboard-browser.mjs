@@ -3191,6 +3191,79 @@ try {
   const cacheOptions = await cdp.evaluate(`document.getElementById('cache-route-select').options.length`);
   if (cacheOptions < 1) throw new Error('Per-route cache editor has no Route options.');
 
+  let routeFeatureContract = null;
+  if (fixtureRoot) {
+    routeFeatureContract = await cdp.evaluate(`(async () => {
+      const routeName = ${JSON.stringify(expectedRoute)};
+      openRouteDialog(routeName);
+      const cacheIds = ['route-cache-ttl','route-cache-stale','route-cache-entries','route-cache-mib','route-cache-object-mib','route-cache-respect-origin','route-cache-authorized','route-cache-cookie','route-cache-set-cookie','route-cache-vary','route-cache-statuses'];
+      const healthIds = ['route-health-path','route-health-interval','route-health-timeout','route-health-statuses'];
+      const cacheToggle = document.getElementById('route-cache-enabled');
+      const healthToggle = document.getElementById('route-health-enabled');
+      cacheToggle.checked = false;
+      cacheToggle.dispatchEvent(new Event('change', {bubbles:true}));
+      const cacheDisabled = cacheIds.map(id => document.getElementById(id).disabled);
+      document.getElementById('route-cache-ttl').value = '';
+      document.getElementById('route-cache-entries').value = '0';
+      document.getElementById('route-cache-mib').value = '0';
+      document.getElementById('route-cache-object-mib').value = '0';
+      document.getElementById('route-cache-statuses').value = '';
+      cacheToggle.checked = true;
+      cacheToggle.dispatchEvent(new Event('change', {bubbles:true}));
+      const cacheEnabled = cacheIds.map(id => !document.getElementById(id).disabled);
+      const cacheDefaults = {
+        ttl:document.getElementById('route-cache-ttl').value,
+        entries:document.getElementById('route-cache-entries').value,
+        mib:document.getElementById('route-cache-mib').value,
+        objectMiB:document.getElementById('route-cache-object-mib').value,
+        statuses:document.getElementById('route-cache-statuses').value
+      };
+
+      healthToggle.checked = false;
+      healthToggle.dispatchEvent(new Event('change', {bubbles:true}));
+      const healthDisabled = healthIds.map(id => document.getElementById(id).disabled);
+      healthIds.forEach(id => { document.getElementById(id).value = ''; });
+      healthToggle.checked = true;
+      healthToggle.dispatchEvent(new Event('change', {bubbles:true}));
+      const healthEnabled = healthIds.map(id => !document.getElementById(id).disabled);
+      const healthDefaults = healthIds.map(id => document.getElementById(id).value);
+      document.getElementById('route-dialog').close();
+
+      const route = findConfigRoute(routeName);
+      const existingOrigin = route.upstreams[0];
+      openOriginDialog(routeName);
+      document.getElementById('origin-name').value = 'duplicate-url-check';
+      document.getElementById('origin-url').value = existingOrigin.url;
+      const mutationStart = window.__fixtureRequests.length;
+      await saveOrigin({preventDefault(){}});
+      const duplicateURL = {
+        error:document.getElementById('origin-form-error').textContent.trim(),
+        mutations:window.__fixtureRequests.slice(mutationStart).filter(request => request.method === 'POST' && request.key.includes('/origins')).length
+      };
+      document.getElementById('origin-url').value = 'http://user:pass@example.test:9000';
+      await saveOrigin({preventDefault(){}});
+      const credentialError = document.getElementById('origin-form-error').textContent.trim();
+      document.getElementById('origin-dialog').close();
+
+      return {cacheDisabled, cacheEnabled, cacheDefaults, healthDisabled, healthEnabled, healthDefaults, duplicateURL, credentialError};
+    })()`, true);
+    if (routeFeatureContract.cacheDisabled.some(value => !value) || routeFeatureContract.cacheEnabled.some(value => !value) ||
+        routeFeatureContract.cacheDefaults.ttl !== '30s' || Number(routeFeatureContract.cacheDefaults.entries) <= 0 ||
+        Number(routeFeatureContract.cacheDefaults.mib) <= 0 || Number(routeFeatureContract.cacheDefaults.objectMiB) <= 0 ||
+        !routeFeatureContract.cacheDefaults.statuses.includes('200')) {
+      throw new Error(`Route cache feature controls do not disable safely or restore valid defaults: ${JSON.stringify(routeFeatureContract)}`);
+    }
+    if (routeFeatureContract.healthDisabled.some(value => !value) || routeFeatureContract.healthEnabled.some(value => !value) ||
+        routeFeatureContract.healthDefaults[0] !== '/healthz' || routeFeatureContract.healthDefaults[1] !== '5s' ||
+        routeFeatureContract.healthDefaults[2] !== '2s' || routeFeatureContract.healthDefaults[3] !== '200') {
+      throw new Error(`Route health-check controls do not disable safely or restore valid defaults: ${JSON.stringify(routeFeatureContract)}`);
+    }
+    if (!routeFeatureContract.duplicateURL.error.includes('already configured') || routeFeatureContract.duplicateURL.mutations !== 0 ||
+        !routeFeatureContract.credentialError.includes('must not contain credentials')) {
+      throw new Error(`Origin editor did not enforce URL identity/safety before mutation: ${JSON.stringify(routeFeatureContract)}`);
+    }
+  }
+
   let policyEditorContract = null;
   if (fixtureRoot) {
     policyEditorContract = await cdp.evaluate(`(async () => {
@@ -3228,6 +3301,27 @@ try {
           adminBodyMaximum:document.querySelector('#system-security-admin-form [name="max_request_body_bytes"]').max,
           connectivityHistoryMaximum:document.querySelector('#system-security-admin-form [name="connectivity.history_capacity"]').max
         };
+
+        form.rate_enabled.checked = false;
+        form.rate_enabled.dispatchEvent(new Event('change', {bubbles:true}));
+        const rateDisabled = ['requests_per_second','burst','global_requests_per_second','global_burst','cleanup_interval','idle_ttl','max_buckets'].map(name => form.elements[name].disabled);
+        ['requests_per_second','burst','global_requests_per_second','global_burst','cleanup_interval','idle_ttl','max_buckets'].forEach(name => { form.elements[name].value = ''; });
+        form.rate_enabled.checked = true;
+        form.rate_enabled.dispatchEvent(new Event('change', {bubbles:true}));
+        const rateEnabled = ['requests_per_second','burst','global_requests_per_second','global_burst','cleanup_interval','idle_ttl','max_buckets'].map(name => !form.elements[name].disabled);
+        const rateDefaults = ['requests_per_second','burst','global_requests_per_second','global_burst','cleanup_interval','idle_ttl','max_buckets'].map(name => form.elements[name].value);
+
+        form.auto_ban_enabled.checked = false;
+        form.auto_ban_enabled.dispatchEvent(new Event('change', {bubbles:true}));
+        const banDisabled = ['violation_threshold','ban_window','ban_duration','max_tracked_clients'].map(name => form.elements[name].disabled);
+        ['violation_threshold','ban_window','ban_duration','max_tracked_clients'].forEach(name => { form.elements[name].value = ''; });
+        form.auto_ban_enabled.checked = true;
+        form.auto_ban_enabled.dispatchEvent(new Event('change', {bubbles:true}));
+        const banEnabled = ['violation_threshold','ban_window','ban_duration','max_tracked_clients'].map(name => !form.elements[name].disabled);
+        const banDefaults = ['violation_threshold','ban_window','ban_duration','max_tracked_clients'].map(name => form.elements[name].value);
+
+        state.policyDirty = false;
+        renderPolicies();
 
         state.selectedPolicy = routeName;
         state.policyDirty = false;
@@ -3308,7 +3402,7 @@ try {
         await document.getElementById('purge-form').onsubmit({preventDefault(){}});
         const purgeMutations = window.__fixtureRequests.slice(purgeStart).filter(request => request.key.includes('/cache/purge')).length;
 
-        return {defaultState, routeState, policyBody:policyMutation?.body || null, defaultPolicy, restartState, restartAppliedState, unmatchedLabel, purgePrompt, purgeMutations};
+        return {defaultState, rateDisabled, rateEnabled, rateDefaults, banDisabled, banEnabled, banDefaults, routeState, policyBody:policyMutation?.body || null, defaultPolicy, restartState, restartAppliedState, unmatchedLabel, purgePrompt, purgeMutations};
       } finally {
         window.confirm = originalConfirm;
         state.policies = originalPolicies;
@@ -3338,6 +3432,18 @@ try {
     if (policyEditorContract.routeState.processDisabled.some(disabled => !disabled) ||
         !policyEditorContract.routeState.note.includes('inherited from Default policy')) {
       throw new Error(`Route policy exposes process-wide limiter/ban storage settings as route-specific controls: ${JSON.stringify(policyEditorContract)}`);
+    }
+    if (policyEditorContract.rateDisabled.some(value => !value) || policyEditorContract.rateEnabled.some(value => !value) ||
+        policyEditorContract.rateDefaults[0] !== '10' || policyEditorContract.rateDefaults[1] !== '20' ||
+        policyEditorContract.rateDefaults[2] !== '100' || policyEditorContract.rateDefaults[3] !== '200' ||
+        policyEditorContract.rateDefaults[4] !== '1m' || policyEditorContract.rateDefaults[5] !== '10m' ||
+        policyEditorContract.rateDefaults[6] !== '100000') {
+      throw new Error(`Rate-limit feature controls do not disable safely or restore valid defaults: ${JSON.stringify(policyEditorContract)}`);
+    }
+    if (policyEditorContract.banDisabled.some(value => !value) || policyEditorContract.banEnabled.some(value => !value) ||
+        policyEditorContract.banDefaults[0] !== '20' || policyEditorContract.banDefaults[1] !== '1m' ||
+        policyEditorContract.banDefaults[2] !== '10m' || policyEditorContract.banDefaults[3] !== '100000') {
+      throw new Error(`Auto-ban feature controls do not disable safely or restore valid defaults: ${JSON.stringify(policyEditorContract)}`);
     }
     if (!policyEditorContract.policyBody ||
         JSON.stringify(policyEditorContract.policyBody.body_content_types) !== JSON.stringify(['application/json','text/plain']) ||

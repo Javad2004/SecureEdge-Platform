@@ -754,6 +754,22 @@ func TestEdgeProxyRouteTableMutationsSynchronizeImmediately(t *testing.T) {
 		t.Fatalf("route reload count after config reload=%d, want 2", got)
 	}
 
+	// A restart-required EdgeProxy mutation persists the candidate before its
+	// replacement generation becomes active. SecurityEdge must not consume that
+	// route table early; the file watcher will activate it only after EdgeProxy's
+	// applied revision catches up.
+	runtime.mu.Lock()
+	runtime.edgeRaw = json.RawMessage(`{"restart_required":true,"revision":3}`)
+	runtime.edgeStatus = http.StatusAccepted
+	runtime.mu.Unlock()
+	rr = do(http.MethodPost, "/api/v1/edgeproxy/config/reload")
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("restart-required config reload status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if got := runtime.edgeRouteReloadCount(); got != 2 {
+		t.Fatalf("route table reloaded before replacement EdgeProxy generation became active: count=%d, want 2", got)
+	}
+
 	runtime.mu.Lock()
 	runtime.edgeRaw = json.RawMessage(`{"error":{"message":"rejected"}}`)
 	runtime.edgeStatus = http.StatusBadRequest

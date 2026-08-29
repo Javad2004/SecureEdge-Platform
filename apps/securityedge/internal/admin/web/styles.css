@@ -552,6 +552,12 @@ td {
   background:rgba(13,21,40,.62);
   color:var(--muted)
 }
+.dialog-card input:disabled,.dialog-card select:disabled,.policy-form input:disabled,.policy-form select:disabled {
+  cursor:not-allowed;
+  opacity:.62;
+  background:rgba(13,21,40,.62);
+  color:var(--muted)
+}
 .policy-inherited-note {
   margin:0!important;
   padding:10px 12px;

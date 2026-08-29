@@ -311,7 +311,7 @@ func (s *Server) forwardRawBody(w http.ResponseWriter, r *http.Request, method, 
 		writeError(w, http.StatusBadGateway, "edgeproxy_unavailable", err.Error())
 		return
 	}
-	if status < http.StatusBadRequest {
+	if status < http.StatusBadRequest && !edgeMutationRequiresRestart(raw) {
 		if err := s.reloadEdgeRouteTable(); err != nil {
 			writeError(w, http.StatusConflict, "route_table_reload_failed", "EdgeProxy accepted the change but SecurityEdge could not reload the shared route table: "+err.Error())
 			return
@@ -326,13 +326,20 @@ func (s *Server) forwardAndReloadEdgeRoutes(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadGateway, "edgeproxy_unavailable", err.Error())
 		return
 	}
-	if status < http.StatusBadRequest {
+	if status < http.StatusBadRequest && !edgeMutationRequiresRestart(raw) {
 		if err := s.reloadEdgeRouteTable(); err != nil {
 			writeError(w, http.StatusConflict, "route_table_reload_failed", "EdgeProxy accepted the change but SecurityEdge could not reload the shared route table: "+err.Error())
 			return
 		}
 	}
 	writeRaw(w, status, raw)
+}
+
+func edgeMutationRequiresRestart(raw json.RawMessage) bool {
+	var result struct {
+		RestartRequired bool `json:"restart_required"`
+	}
+	return json.Unmarshal(raw, &result) == nil && result.RestartRequired
 }
 
 func (s *Server) reloadEdgeRouteTable() error {

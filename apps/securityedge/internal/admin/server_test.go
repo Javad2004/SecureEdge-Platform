@@ -123,6 +123,16 @@ func (f *fakeRuntime) lastEdgeRequest() (string, string) {
 	return f.lastMethod, f.lastPath
 }
 
+func (f *fakeRuntime) lastEdgeQuery() url.Values {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(url.Values, len(f.lastQuery))
+	for key, values := range f.lastQuery {
+		out[key] = append([]string(nil), values...)
+	}
+	return out
+}
+
 func newAdminTestServer(t *testing.T, failures int) *httptest.Server {
 	ts, _ := newAdminTestServerWithTraffic(t, failures)
 	return ts
@@ -656,6 +666,30 @@ func TestEdgeProxyAdvancedControlPlaneForwarding(t *testing.T) {
 		if lastMethod != tt.method || lastPath != tt.forwardedPath {
 			t.Fatalf("%s %s forwarded as %s %s", tt.method, tt.requestPath, lastMethod, lastPath)
 		}
+	}
+
+	logQuery := url.Values{
+		"event":           {"request_completed"},
+		"client_ip":       {"203.0.113.42"},
+		"route":           {"demo-app"},
+		"status":          {"5xx"},
+		"cache":           {"MISS"},
+		"limit":           {"50"},
+		"before_sequence": {"123"},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/edgeproxy/logs?"+logQuery.Encode(), nil)
+	req.Header.Set("Authorization", "Bearer secret-token")
+	rr := httptest.NewRecorder()
+	server.HTTPServer().Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET EdgeProxy logs status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	lastMethod, lastPath := runtime.lastEdgeRequest()
+	if lastMethod != http.MethodGet || lastPath != "/api/v1/logs" {
+		t.Fatalf("EdgeProxy logs forwarded as %s %s", lastMethod, lastPath)
+	}
+	if got := runtime.lastEdgeQuery().Encode(); got != logQuery.Encode() {
+		t.Fatalf("EdgeProxy log query=%q, want %q", got, logQuery.Encode())
 	}
 }
 

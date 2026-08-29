@@ -47,3 +47,17 @@ func TestTimeAndStatusClassFilters(t *testing.T) {
 		t.Fatalf("unexpected result: %#v", result.Entries)
 	}
 }
+
+func TestQueryFiltersExactClientIP(t *testing.T) {
+	store := New(10)
+	store.Append(Entry{Event: "request_completed", ClientIP: "203.0.113.10", Status: 200})
+	store.Append(Entry{Event: "request_completed", ClientIP: "203.0.113.11", Status: 200})
+
+	result := store.Query(Filter{ClientIP: "203.0.113.10", Event: "request_completed", Limit: 10})
+	if len(result.Entries) != 1 || result.Entries[0].ClientIP != "203.0.113.10" {
+		t.Fatalf("unexpected client IP filter result: %#v", result.Entries)
+	}
+	if result.AppliedFilters["client_ip"] != "203.0.113.10" {
+		t.Fatalf("client IP filter missing from applied filters: %#v", result.AppliedFilters)
+	}
+}

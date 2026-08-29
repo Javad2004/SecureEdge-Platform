@@ -133,9 +133,9 @@
       <section id="view-security" class="view">
         <article class="panel">
           <div class="panel-head"><div><h2>Security event explorer</h2><p>Search WAF, rate-limit, overload, temporary-ban, and administrative audit events.</p></div><div class="top-actions"><button id="export-ndjson" class="ghost">Export NDJSON</button><button id="export-csv" class="ghost">Export CSV</button><button id="clear-security" class="danger ghost">Clear all logs</button></div></div>
-          <form id="security-filters" class="filters" aria-label="Security event filters"><input name="q" placeholder="Search" aria-label="Search security events"><select name="action" aria-label="Filter by action"><option value="">All actions</option><option>BLOCK</option><option>LOG</option><option>RATE_LIMIT</option><option>OVERLOAD</option><option>BANNED</option><option>ADMIN</option></select><input name="reason" placeholder="Reason" aria-label="Filter by reason"><input name="client_ip" placeholder="Client IP" aria-label="Filter by client IP"><input name="route" placeholder="Route" aria-label="Filter by route"><input name="rule_id" placeholder="Rule ID" aria-label="Filter by rule ID"><button type="submit">Apply</button></form>
+          <form id="security-filters" class="filters" aria-label="Security event filters"><input name="q" placeholder="Search" aria-label="Search security events"><select name="action" aria-label="Filter by action"><option value="">All actions</option><option>BLOCK</option><option>LOG</option><option>RATE_LIMIT</option><option>OVERLOAD</option><option>BANNED</option><option>ADMIN</option></select><select id="security-reason-filter" name="reason" aria-label="Filter by reason"><option value="">All reasons</option></select><input name="client_ip" placeholder="Client IP" aria-label="Filter by client IP"><select id="security-route-filter" name="route" aria-label="Filter by route"><option value="">All routes</option></select><select id="security-rule-filter" name="rule_id" aria-label="Filter by rule ID"><option value="">All rules</option></select><select id="security-log-page-size" aria-label="Security event page size"></select><button type="submit">Apply</button><button id="reset-security-filters" type="button" class="ghost">Reset</button></form>
           <div class="table-wrap"><table><thead><tr><th>Sequence</th><th>Timestamp</th><th>Action</th><th>Reason</th><th>Route</th><th>Client IP</th><th>Request</th><th>Rules</th><th>Score</th></tr></thead><tbody id="security-table"></tbody></table></div>
-          <div class="pager"><button id="older-security" disabled>Load older</button><span id="security-count"></span></div>
+          <div class="pager"><div class="pager-actions"><button id="newer-security" class="ghost" disabled>Newer</button><button id="older-security" disabled>Older</button></div><span id="security-count"></span></div>
         </article>
       </section>
 
@@ -170,7 +170,21 @@
           </form><p id="cache-config-result" class="result-text"></p>
         </article>
         <article class="panel"><div class="panel-head"><div><h2>Cache purge</h2><p>Purge one route, an optional host, or a canonical path prefix through the route-scoped Control Plane endpoint.</p></div></div><form id="purge-form" class="filters" aria-label="Cache purge controls"><select id="purge-route" required aria-label="Route to purge"></select><input id="purge-host" placeholder="Optional host" aria-label="Optional host filter"><input id="purge-path" placeholder="Optional path prefix" aria-label="Optional path-prefix filter"><button type="submit" class="danger">Purge cache</button></form><p id="purge-result" class="result-text"></p></article>
-        <article class="panel"><div class="panel-head"><div><h2>EdgeProxy access logs</h2><p>Recent request-completed events reported by the EdgeProxy access-log API.</p></div></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Status</th><th>Cache</th><th>Route</th><th>Request</th><th>Duration</th><th>Upstream</th></tr></thead><tbody id="edge-log-table"></tbody></table></div></article>
+        <article class="panel edge-log-panel">
+          <div class="panel-head"><div><h2>EdgeProxy request explorer</h2><p>Browse completed requests with server-side filters and cursor pagination. Client identity is the trusted IP resolved by EdgeProxy.</p></div></div>
+          <form id="edge-log-filters" class="filters edge-log-filters" aria-label="EdgeProxy access-log filters">
+            <input name="q" placeholder="Search" aria-label="Search EdgeProxy access logs">
+            <input name="client_ip" placeholder="Client IP" aria-label="Filter EdgeProxy logs by client IP">
+            <select id="edge-log-route" name="route" aria-label="Filter EdgeProxy logs by route"><option value="">All routes</option></select>
+            <select name="method" aria-label="Filter EdgeProxy logs by method"><option value="">All methods</option><option>GET</option><option>HEAD</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option><option>OPTIONS</option></select>
+            <select name="status" aria-label="Filter EdgeProxy logs by status"><option value="">All statuses</option><option value="2xx">2xx</option><option value="3xx">3xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option></select>
+            <select name="cache" aria-label="Filter EdgeProxy logs by cache result"><option value="">All cache results</option><option>HIT</option><option>MISS</option><option>STALE</option><option>BYPASS</option></select>
+            <select id="edge-log-page-size" aria-label="EdgeProxy access-log page size"></select>
+            <button type="submit">Apply</button><button id="reset-edge-log-filters" type="button" class="ghost">Reset</button>
+          </form>
+          <div class="table-wrap"><table><thead><tr><th>Time</th><th>Client IP</th><th>Status</th><th>Cache</th><th>Route</th><th>Request</th><th>Duration</th><th>Upstream</th><th>Request ID</th></tr></thead><tbody id="edge-log-table"></tbody></table></div>
+          <div class="pager edge-log-pager"><div class="pager-actions"><button id="newer-edge-logs" class="ghost" disabled>Newer</button><button id="older-edge-logs" disabled>Older</button></div><span id="edge-log-count"></span></div>
+        </article>
       </section>
 
       <section id="view-routes" class="view">

@@ -248,6 +248,7 @@ func (s *Server) parseLogFilter(r *http.Request) (accesslog.Filter, error) {
 
 	filter := accesslog.Filter{
 		Route:       strings.TrimSpace(query.Get("route")),
+		ClientIP:    strings.TrimSpace(query.Get("client_ip")),
 		Upstream:    strings.TrimSpace(query.Get("upstream")),
 		RequestID:   strings.TrimSpace(query.Get("request_id")),
 		Method:      strings.TrimSpace(query.Get("method")),
@@ -258,7 +259,7 @@ func (s *Server) parseLogFilter(r *http.Request) (accesslog.Filter, error) {
 		Limit:       limit,
 	}
 	for name, value := range map[string]string{
-		"route": filter.Route, "upstream": filter.Upstream, "request_id": filter.RequestID,
+		"route": filter.Route, "client_ip": filter.ClientIP, "upstream": filter.Upstream, "request_id": filter.RequestID,
 		"method": filter.Method, "event": filter.Event, "level": filter.Level, "cache": filter.CacheStatus,
 	} {
 		if len(value) > maxLogFilterValueBytes {

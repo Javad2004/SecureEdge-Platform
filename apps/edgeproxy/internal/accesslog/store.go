@@ -51,6 +51,7 @@ type Entry struct {
 // Filter selects entries from the bounded log store.
 type Filter struct {
 	Route          string
+	ClientIP       string
 	Upstream       string
 	RequestID      string
 	Method         string
@@ -272,6 +273,9 @@ func matches(entry Entry, filter Filter, searchLower, statusClassLower string) b
 	if filter.Route != "" && !strings.EqualFold(entry.Route, filter.Route) {
 		return false
 	}
+	if filter.ClientIP != "" && !strings.EqualFold(entry.ClientIP, filter.ClientIP) {
+		return false
+	}
 	if filter.Upstream != "" && entry.Upstream != filter.Upstream {
 		return false
 	}
@@ -325,6 +329,9 @@ func appliedFilters(filter Filter) map[string]any {
 	out := map[string]any{"limit": filter.Limit}
 	if filter.Route != "" {
 		out["route"] = filter.Route
+	}
+	if filter.ClientIP != "" {
+		out["client_ip"] = filter.ClientIP
 	}
 	if filter.Upstream != "" {
 		out["upstream"] = filter.Upstream

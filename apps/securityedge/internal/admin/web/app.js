@@ -10,8 +10,12 @@ const state = {
   policies: null,
   rules: [],
   bans: [],
-  securityCursor: 0,
+  securityCursors: [0],
+  securityPage: 0,
   securityHasMore: false,
+  edgeLogCursors: [0],
+  edgeLogPage: 0,
+  edgeLogHasMore: false,
   selectedPolicy: 'default',
   trend: [],
   edgeConfig: null,
@@ -72,6 +76,87 @@ const csvNumbers = value => csv(value).map(item => Number(item));
 const bytesToMiB = value => Number(value || 0) / 1048576;
 const mibToBytes = value => Math.round(Number(value || 0) * 1048576);
 const requestTimeoutMS = 15000;
+
+
+const securityReasonOptions = [
+  ['body_too_large','Body too large'], ['header_value_too_large','Header value too large'],
+  ['body_read_failed','Body read failed'], ['global_concurrency','Global concurrency limit'],
+  ['client_concurrency','Client concurrency limit'], ['temporary_auto_ban','Temporary auto-ban'],
+  ['ip_denied','IP denied'], ['method_not_allowed','Method not allowed'],
+  ['global_rate_limit','Global rate limit'], ['client_rate_limit','Client rate limit'],
+  ['rate_limit_capacity','Rate-limit state capacity'], ['inspection_failed','Inspection failed'],
+  ['inspection_limit_exceeded','Inspection limit exceeded'], ['waf_threshold','WAF threshold'],
+  ['waf_detection','WAF detection'], ['path_too_large','Path too large'],
+  ['query_too_large','Query too large'], ['too_many_headers','Too many headers'],
+  ['encoded_body_rejected','Encoded body rejected'], ['unsupported_body_type','Unsupported body type'],
+  ['invalid_host','Invalid host'], ['client_canceled','Client canceled']
+];
+
+function replaceOptions(select, options, allLabel, selected = select?.value || '') {
+  if (!select) return;
+  const normalized = [...new Map(options.filter(option => option?.value).map(option => [String(option.value), {value:String(option.value), label:String(option.label ?? option.value)}])).values()];
+  select.innerHTML = `<option value="">${esc(allLabel)}</option>` + normalized.map(option => `<option value="${esc(option.value)}">${esc(option.label)}</option>`).join('');
+  if (selected && normalized.some(option => option.value === selected)) select.value = selected;
+}
+
+function renderSecurityFilterOptions() {
+  replaceOptions($('security-reason-filter'), securityReasonOptions.map(([value,label]) => ({value,label})), 'All reasons');
+  const routes = [{value:'__unmatched__',label:'Unmatched'}].concat((state.edgeConfig?.routes || []).map(route => ({value:route.name,label:route.name})));
+  replaceOptions($('security-route-filter'), routes, 'All routes');
+  replaceOptions($('security-rule-filter'), (state.rules || []).map(rule => ({value:rule.id,label:`${rule.id} · ${rule.name}`})), 'All rules');
+  renderPageSizeOptions($('security-log-page-size'), securityLogMaxPageSize(), state.securityConfig?.admin?.log_store?.default_page_size || 100);
+}
+
+function securityLogMaxPageSize() {
+  const configured = Number(state.securityConfig?.admin?.log_store?.max_page_size);
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 100;
+}
+
+function edgeLogMaxPageSize() {
+  const configured = Number(state.edgeConfig?.admin?.log_store?.max_page_size);
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 100;
+}
+
+function renderPageSizeOptions(select, maximum, configuredDefault) {
+  if (!select) return;
+  const selected = Math.max(1, Number(select.value || 50));
+  const max = Math.max(1, Math.floor(Number(maximum) || 100));
+  const preferredDefault = Math.max(1, Math.min(max, Math.floor(Number(configuredDefault) || 50)));
+  const values = [...new Set([25,50,100,200,500,preferredDefault,max].filter(value => value > 0 && value <= max))].sort((a,b) => a-b);
+  if (!values.length) values.push(max);
+  select.innerHTML = values.map(value => `<option value="${value}">${value} per page</option>`).join('');
+  const next = values.includes(selected) ? selected : (values.includes(50) ? 50 : values.find(value => value >= selected) || values.at(-1));
+  select.value = String(next);
+}
+
+function resetPageSize(select, maximum, configuredDefault) {
+  renderPageSizeOptions(select, maximum, configuredDefault);
+  const values = [...select.options].map(option => Number(option.value));
+  const preferred = Math.max(1, Math.min(maximum, Number(configuredDefault) || 50));
+  select.value = String(values.includes(preferred) ? preferred : (values.includes(50) ? 50 : values[0]));
+}
+
+function renderEdgeLogFilterOptions() {
+  replaceOptions($('edge-log-route'), (state.edgeConfig?.routes || []).map(route => ({value:route.name,label:route.name})), 'All routes');
+  renderPageSizeOptions($('edge-log-page-size'), edgeLogMaxPageSize(), state.edgeConfig?.admin?.log_store?.default_page_size || 50);
+}
+
+function securityFilterQuery() {
+  const query = new URLSearchParams();
+  for (const [key, value] of new FormData($('security-filters'))) if (value) query.set(key, value);
+  return query;
+}
+
+function edgeLogFilterQuery() {
+  const query = new URLSearchParams();
+  for (const [key, value] of new FormData($('edge-log-filters'))) if (value) query.set(key, value);
+  query.set('event', 'request_completed');
+  const pageSize = Math.min(edgeLogMaxPageSize(), Math.max(1, Number($('edge-log-page-size').value || 50)));
+  query.set('limit', String(pageSize));
+  const cursor = state.edgeLogCursors[state.edgeLogPage] || 0;
+  if (cursor) query.set('before_sequence', String(cursor));
+  return query;
+}
 
 async function fetchWithTimeout(path, options = {}, timeout = requestTimeoutMS) {
   const controller = new AbortController();
@@ -268,6 +353,8 @@ function renderAll() {
   renderSystem();
   renderRules();
   renderBans();
+  renderSecurityFilterOptions();
+  renderEdgeLogFilterOptions();
 }
 
 function rejectedCount(total) {
@@ -1270,21 +1357,32 @@ function renderSecurityRows(element, entries, full = true, limit = 100) {
   }).join('');
 }
 
-async function loadSecurity(reset) {
+async function loadSecurity(reset = false) {
+  if (reset) {
+    state.securityCursors = [0];
+    state.securityPage = 0;
+  }
   try {
-    if (reset) state.securityCursor = 0;
-    const form = new FormData($('security-filters'));
-    const query = new URLSearchParams();
-    for (const [key, value] of form) if (value) query.set(key, value);
-    query.set('limit', '100');
-    if (state.securityCursor) query.set('before_sequence', state.securityCursor);
+    const query = securityFilterQuery();
+    const pageSize = Math.min(securityLogMaxPageSize(), Math.max(1, Number($('security-log-page-size').value || 100)));
+    query.set('limit', String(pageSize));
+    const cursor = state.securityCursors[state.securityPage] || 0;
+    if (cursor) query.set('before_sequence', String(cursor));
     const data = await api(`/api/v1/logs?${query}`);
-    renderSecurityRows($('security-table'), data.entries || [], true, 100);
-    state.securityCursor = data.next_before_sequence || 0;
+    renderSecurityRows($('security-table'), data.entries || [], true, pageSize);
     state.securityHasMore = Boolean(data.has_more);
+    const nextCursor = Number(data.next_before_sequence || 0);
+    if (state.securityHasMore && nextCursor) state.securityCursors[state.securityPage + 1] = nextCursor;
+    else state.securityCursors.length = state.securityPage + 1;
+    $('newer-security').disabled = state.securityPage === 0;
     $('older-security').disabled = !state.securityHasMore;
-    $('security-count').textContent = `${data.returned || 0} shown · ${data.retained || 0} retained · ${data.dropped || 0} overwritten`;
-  } catch (error) { toast(error.message); }
+    $('security-count').textContent = `Page ${state.securityPage + 1} · ${data.returned || 0} shown · ${data.retained || 0} retained in store · ${data.dropped || 0} overwritten`;
+  } catch (error) {
+    $('security-table').innerHTML = `<tr><td colspan="9" class="muted">${esc(error.message)}</td></tr>`;
+    $('security-count').textContent = 'Security events unavailable';
+    $('newer-security').disabled = state.securityPage === 0;
+    $('older-security').disabled = true;
+  }
 }
 
 function metricRows(items) {
@@ -1345,12 +1443,35 @@ function renderTraffic() {
   ]);
 }
 
-async function loadEdgeLogs() {
+async function loadEdgeLogs(reset = false) {
+  if (reset) {
+    state.edgeLogCursors = [0];
+    state.edgeLogPage = 0;
+  }
   try {
-    const data = await api('/api/v1/edgeproxy/logs?event=request_completed&limit=50');
+    const data = await api(`/api/v1/edgeproxy/logs?${edgeLogFilterQuery()}`);
     const rows = data.entries || [];
-    $('edge-log-table').innerHTML = rows.length ? rows.map(entry => `<tr><td>${esc(new Date(entry.timestamp).toLocaleTimeString())}</td><td><span class="badge ${entry.status >= 500 ? 'error' : entry.status >= 400 ? 'warn' : 'allow'}">${entry.status}</span></td><td><span class="badge ${String(entry.cache_status).toLowerCase()}">${esc(entry.cache_status || '—')}</span></td><td>${esc(entry.route)}</td><td><strong>${esc(entry.method)}</strong> ${esc(entry.path)}</td><td>${ms(entry.duration_ms)}</td><td>${esc(entry.upstream || '—')}</td></tr>`).join('') : '<tr><td colspan="7" class="muted">No EdgeProxy logs.</td></tr>';
-  } catch (error) { $('edge-log-table').innerHTML = `<tr><td colspan="7" class="muted">${esc(error.message)}</td></tr>`; }
+    state.edgeLogHasMore = Boolean(data.has_more);
+    const nextCursor = Number(data.next_before_sequence || 0);
+    if (state.edgeLogHasMore && nextCursor) state.edgeLogCursors[state.edgeLogPage + 1] = nextCursor;
+    else state.edgeLogCursors.length = state.edgeLogPage + 1;
+    $('newer-edge-logs').disabled = state.edgeLogPage === 0;
+    $('older-edge-logs').disabled = !state.edgeLogHasMore;
+    $('edge-log-count').textContent = `Page ${state.edgeLogPage + 1} · ${data.returned || 0} shown · ${data.retained || 0} retained in store · ${data.dropped || 0} overwritten`;
+    $('edge-log-table').innerHTML = rows.length ? rows.map(entry => {
+      const status = Number(entry.status || 0);
+      const statusLabel = status || '—';
+      const statusClass = status >= 500 ? 'error' : status >= 400 ? 'warn' : status >= 200 && status < 400 ? 'allow' : 'warn';
+      const cacheClass = String(entry.cache_status || '').toLowerCase();
+      const requestID = entry.request_id || '—';
+      return `<tr><td>${esc(new Date(entry.timestamp).toLocaleTimeString())}</td><td class="mono-cell">${esc(entry.client_ip || '—')}</td><td><span class="badge ${statusClass}">${esc(statusLabel)}</span></td><td><span class="badge ${cacheClass}">${esc(entry.cache_status || '—')}</span></td><td>${esc(entry.route || '—')}</td><td><strong>${esc(entry.method || '—')}</strong> ${esc(entry.path || '—')}</td><td>${ms(entry.duration_ms)}</td><td>${esc(entry.upstream || '—')}</td><td class="mono-cell request-id-cell" title="${esc(requestID)}">${esc(requestID)}</td></tr>`;
+    }).join('') : '<tr><td colspan="9" class="muted">No EdgeProxy request logs match the current filters.</td></tr>';
+  } catch (error) {
+    $('edge-log-table').innerHTML = `<tr><td colspan="9" class="muted">${esc(error.message)}</td></tr>`;
+    $('edge-log-count').textContent = 'EdgeProxy access logs unavailable';
+    $('newer-edge-logs').disabled = state.edgeLogPage === 0;
+    $('older-edge-logs').disabled = true;
+  }
 }
 
 async function loadControlData() {
@@ -1876,14 +1997,17 @@ if (window.ResizeObserver) {
 }
 document.querySelectorAll('[data-go]').forEach(button => button.onclick = () => setView(button.dataset.go));
 $('security-filters').onsubmit = event => { event.preventDefault(); loadSecurity(true); };
-$('older-security').onclick = () => loadSecurity(false);
+$('reset-security-filters').onclick = () => { $('security-filters').reset(); resetPageSize($('security-log-page-size'), securityLogMaxPageSize(), state.securityConfig?.admin?.log_store?.default_page_size || 100); loadSecurity(true); };
+$('security-log-page-size').onchange = () => loadSecurity(true);
+$('older-security').onclick = () => { if (!state.securityHasMore) return; state.securityPage += 1; loadSecurity(false); };
+$('newer-security').onclick = () => { if (state.securityPage === 0) return; state.securityPage -= 1; loadSecurity(false); };
 $('clear-security').onclick = async () => {
   if (!confirm('Clear all retained SecurityEdge events, the active NDJSON log, and rotated backups?')) return;
   try { await api('/api/v1/logs',{method:'DELETE'}); await loadSecurity(true); toast('Security events and persistent log files cleared'); }
   catch (error) { toast(error.message); }
 };
-$('export-ndjson').onclick = () => download('/api/v1/logs/export?format=ndjson','security-events.ndjson').catch(error=>toast(error.message));
-$('export-csv').onclick = () => download('/api/v1/logs/export?format=csv','security-events.csv').catch(error=>toast(error.message));
+$('export-ndjson').onclick = () => { const query=securityFilterQuery(); query.set('format','ndjson'); download(`/api/v1/logs/export?${query}`,'security-events.ndjson').catch(error=>toast(error.message)); };
+$('export-csv').onclick = () => { const query=securityFilterQuery(); query.set('format','csv'); download(`/api/v1/logs/export?${query}`,'security-events.csv').catch(error=>toast(error.message)); };
 $('export-prometheus').onclick = () => download('/api/v1/metrics/prometheus','securityedge.prom').catch(error=>toast(error.message));
 $('clear-bans').onclick = async () => {
   if (!confirm('Clear all active temporary bans?')) return;
@@ -1900,6 +2024,11 @@ $('delete-override').onclick = async () => {
     await loadPolicies(); toast('Route override deleted');
   } catch (error) { toast(error.message); }
 };
+$('edge-log-filters').onsubmit = event => { event.preventDefault(); loadEdgeLogs(true); };
+$('reset-edge-log-filters').onclick = () => { $('edge-log-filters').reset(); renderEdgeLogFilterOptions(); resetPageSize($('edge-log-page-size'), edgeLogMaxPageSize(), state.edgeConfig?.admin?.log_store?.default_page_size || 50); loadEdgeLogs(true); };
+$('edge-log-page-size').onchange = () => loadEdgeLogs(true);
+$('older-edge-logs').onclick = () => { if (!state.edgeLogHasMore) return; state.edgeLogPage += 1; loadEdgeLogs(false); };
+$('newer-edge-logs').onclick = () => { if (state.edgeLogPage === 0) return; state.edgeLogPage -= 1; loadEdgeLogs(false); };
 $('purge-form').onsubmit = async event => { event.preventDefault(); const route=$('purge-route').value; const query=new URLSearchParams(); if($('purge-host').value.trim())query.set('host',$('purge-host').value.trim()); if($('purge-path').value.trim())query.set('path_prefix',$('purge-path').value.trim()); try { const suffix=query.toString()?`?${query}`:''; const data=await api(`/api/v1/edgeproxy/routes/${encodeURIComponent(route)}/cache/purge${suffix}`,{method:'POST'}); $('purge-result').textContent=`Purged ${data.purged} entries from ${route}.`; toast('Cache purged'); await refreshAll(); } catch(error) { $('purge-result').textContent=error.message; } };
 $('check-connectivity').onclick = async () => {
   const button = $('check-connectivity');

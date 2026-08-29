@@ -27,8 +27,8 @@ func testAdminServer(store *accesslog.Store) *Server {
 
 func TestLogsEndpointRequiresTokenAndSupportsFilters(t *testing.T) {
 	store := accesslog.New(100)
-	store.Append(accesslog.Entry{Event: "upstream_attempt", Route: "demo", Upstream: "http://origin-a", UpstreamStatus: 200})
-	store.Append(accesslog.Entry{Event: "upstream_attempt", Route: "demo", Upstream: "http://origin-b", UpstreamStatus: 503})
+	store.Append(accesslog.Entry{Event: "upstream_attempt", Route: "demo", ClientIP: "203.0.113.10", Upstream: "http://origin-a", UpstreamStatus: 200})
+	store.Append(accesslog.Entry{Event: "upstream_attempt", Route: "demo", ClientIP: "203.0.113.11", Upstream: "http://origin-b", UpstreamStatus: 503})
 	server := testAdminServer(store)
 
 	unauthorized := httptest.NewRecorder()
@@ -37,7 +37,7 @@ func TestLogsEndpointRequiresTokenAndSupportsFilters(t *testing.T) {
 		t.Fatalf("expected 401, got %d", unauthorized.Code)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/logs?event=upstream_attempt&status=5xx&limit=10", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/logs?event=upstream_attempt&status=5xx&client_ip=203.0.113.11&limit=10", nil)
 	req.Header.Set("Authorization", "Bearer test-token")
 	rr := httptest.NewRecorder()
 	server.HTTPServer().Handler.ServeHTTP(rr, req)

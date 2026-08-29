@@ -157,7 +157,7 @@ function fixturePayload(root) {
     '/api/v1/session':{},
     '/api/v1/dashboard/overview':overview,
     '/api/v1/policies':policies,
-    '/api/v1/rules':{rules:[]},
+    '/api/v1/rules':{rules:[{id:'XSS-001',name:'Script tag XSS',category:'xss',source:'built-in',score:5,description:'Fixture XSS rule'}]},
     '/api/v1/bans':{bans:[]},
     '/api/v1/edgeproxy/config':edge,
     '/api/v1/edgeproxy/config/watch':watch,
@@ -260,6 +260,7 @@ try {
     const mockScript = `(() => {
       const payloads = ${JSON.stringify(fixture.responses)};
       window.__fixtureRequests = [];
+      window.__fixtureReadRequests = [];
       window.__fixtureFetchCounts = {};
       window.__fixtureIntervals = [];
       const fixtureSetInterval = window.setInterval.bind(window);
@@ -285,8 +286,20 @@ try {
           try { requestBody = init.body ? JSON.parse(init.body) : null; } catch {}
           window.__fixtureRequests.push({method, key, body:requestBody});
           body = {applied:true, restart_required:false, watch:{revision:2, applied_revision:2}};
-        } else if (key === '/api/v1/edgeproxy/logs' || key === '/api/v1/logs') body = {entries:[],returned:0,retained:0,dropped:0,has_more:false};
-        else body = payloads[key];
+        } else {
+          window.__fixtureReadRequests.push({method, key, query:parsed.searchParams.toString()});
+          if (key === '/api/v1/edgeproxy/logs') {
+            const before = parsed.searchParams.get('before_sequence');
+            body = before === '90'
+              ? {entries:[{sequence:80,timestamp:new Date().toISOString(),event:'request_completed',request_id:'req-older-80',client_ip:'198.51.100.80',method:'GET',path:'/older',route:'demo-app',status:200,cache_status:'HIT',duration_ms:2.4,upstream:'origin-1'}],returned:1,retained:2,dropped:3,has_more:false,next_before_sequence:0}
+              : {entries:[{sequence:100,timestamp:new Date().toISOString(),event:'request_completed',request_id:'req-current-100',client_ip:'203.0.113.42',method:'GET',path:'/api/time',route:'demo-app',status:200,cache_status:'BYPASS',duration_ms:1.2,upstream:'origin-1'}],returned:1,retained:2,dropped:3,has_more:true,next_before_sequence:90};
+          } else if (key === '/api/v1/logs') {
+            const before = parsed.searchParams.get('before_sequence');
+            body = before === '190'
+              ? {entries:[{sequence:180,timestamp:new Date().toISOString(),event:'waf_blocked',action:'BLOCK',reason:'waf_threshold',route:'demo-app',client_ip:'198.51.100.81',method:'GET',path:'/older-security',rule_ids:['XSS-001'],score:5}],returned:1,retained:2,dropped:4,has_more:false,next_before_sequence:0}
+              : {entries:[{sequence:200,timestamp:new Date().toISOString(),event:'waf_blocked',action:'BLOCK',reason:'waf_threshold',route:'demo-app',client_ip:'203.0.113.43',method:'GET',path:'/current-security',rule_ids:['XSS-001'],score:5}],returned:1,retained:2,dropped:4,has_more:true,next_before_sequence:190};
+          } else body = payloads[key];
+        }
         window.__fixtureActiveFetches--;
         if (body === undefined) return new Response(JSON.stringify({error:{message:'fixture endpoint not found: ' + key}}), {status:404,headers:{'Content-Type':'application/json'}});
         return new Response(JSON.stringify(body), {status:200,headers:{'Content-Type':'application/json'}});
@@ -556,6 +569,120 @@ try {
       throw new Error(`Authenticated Dashboard did not fully clear stale authentication UI state: ${JSON.stringify(authenticatedUI)}`);
     }
     authenticationUIContract.authenticated = authenticatedUI;
+  }
+
+  let requestExplorerContract = null;
+  if (fixtureRoot) {
+    requestExplorerContract = await cdp.evaluate(`(async () => {
+      const securityForm = document.getElementById('security-filters');
+      const securityKinds = Object.fromEntries(['q','client_ip','reason','route','rule_id'].map(name => {
+        const node = securityForm.elements.namedItem(name);
+        return [name, node?.tagName || ''];
+      }));
+      const reasonValues = [...document.getElementById('security-reason-filter').options].map(option => option.value);
+      const routeValues = [...document.getElementById('security-route-filter').options].map(option => option.value);
+      const ruleValues = [...document.getElementById('security-rule-filter').options].map(option => option.value);
+
+      setView('security');
+      document.getElementById('security-log-page-size').value = '25';
+      window.__fixtureReadRequests.length = 0;
+      await loadSecurity(true);
+      const securityFirstPage = {
+        sequence:document.querySelector('#security-table tr td:first-child')?.textContent?.trim() || '',
+        count:document.getElementById('security-count').textContent.trim(),
+        newerDisabled:document.getElementById('newer-security').disabled,
+        olderDisabled:document.getElementById('older-security').disabled
+      };
+      const securityFirstRead = window.__fixtureReadRequests.filter(request => request.key === '/api/v1/logs').at(-1) || null;
+      document.getElementById('older-security').click();
+      for (let i=0; i<50 && document.querySelector('#security-table tr td:first-child')?.textContent?.trim() !== '180'; i++) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      const securityOlderPage = {
+        sequence:document.querySelector('#security-table tr td:first-child')?.textContent?.trim() || '',
+        newerDisabled:document.getElementById('newer-security').disabled,
+        olderDisabled:document.getElementById('older-security').disabled
+      };
+      const securityOlderRead = window.__fixtureReadRequests.filter(request => request.key === '/api/v1/logs').at(-1) || null;
+      document.getElementById('newer-security').click();
+      for (let i=0; i<50 && document.querySelector('#security-table tr td:first-child')?.textContent?.trim() !== '200'; i++) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      const securityNewerSequence = document.querySelector('#security-table tr td:first-child')?.textContent?.trim() || '';
+
+      setView('traffic');
+      await loadEdgeLogs(true);
+      const firstPage = {
+        client:document.querySelector('#edge-log-table tr td:nth-child(2)')?.textContent?.trim() || '',
+        requestID:document.querySelector('#edge-log-table tr td:nth-child(9)')?.textContent?.trim() || '',
+        count:document.getElementById('edge-log-count').textContent.trim(),
+        newerDisabled:document.getElementById('newer-edge-logs').disabled,
+        olderDisabled:document.getElementById('older-edge-logs').disabled
+      };
+
+      const edgeForm = document.getElementById('edge-log-filters');
+      edgeForm.elements.namedItem('client_ip').value = '203.0.113.42';
+      document.getElementById('edge-log-page-size').value = '25';
+      window.__fixtureReadRequests.length = 0;
+      await loadEdgeLogs(true);
+      const filteredRead = window.__fixtureReadRequests.filter(request => request.key === '/api/v1/edgeproxy/logs').at(-1) || null;
+
+      document.getElementById('older-edge-logs').click();
+      for (let i=0; i<50 && document.querySelector('#edge-log-table tr td:nth-child(9)')?.textContent?.trim() !== 'req-older-80'; i++) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      const olderPage = {
+        client:document.querySelector('#edge-log-table tr td:nth-child(2)')?.textContent?.trim() || '',
+        requestID:document.querySelector('#edge-log-table tr td:nth-child(9)')?.textContent?.trim() || '',
+        count:document.getElementById('edge-log-count').textContent.trim(),
+        newerDisabled:document.getElementById('newer-edge-logs').disabled,
+        olderDisabled:document.getElementById('older-edge-logs').disabled
+      };
+      const olderRead = window.__fixtureReadRequests.filter(request => request.key === '/api/v1/edgeproxy/logs').at(-1) || null;
+
+      document.getElementById('newer-edge-logs').click();
+      for (let i=0; i<50 && document.querySelector('#edge-log-table tr td:nth-child(9)')?.textContent?.trim() !== 'req-current-100'; i++) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      const newerPage = {
+        client:document.querySelector('#edge-log-table tr td:nth-child(2)')?.textContent?.trim() || '',
+        requestID:document.querySelector('#edge-log-table tr td:nth-child(9)')?.textContent?.trim() || ''
+      };
+
+      return {securityKinds, reasonValues, routeValues, ruleValues, expectedRoute:state.edgeConfig?.routes?.[0]?.name || '', securityFirstPage, securityFirstRead, securityOlderPage, securityOlderRead, securityNewerSequence, firstPage, filteredRead, olderPage, olderRead, newerPage};
+    })()`, true);
+    const kinds = requestExplorerContract.securityKinds;
+    if (kinds.q !== 'INPUT' || kinds.client_ip !== 'INPUT' || kinds.reason !== 'SELECT' || kinds.route !== 'SELECT' || kinds.rule_id !== 'SELECT') {
+      throw new Error(`Security Explorer filter control types are incorrect: ${JSON.stringify(requestExplorerContract)}`);
+    }
+    if (!requestExplorerContract.reasonValues.includes('waf_threshold') || !requestExplorerContract.routeValues.includes(requestExplorerContract.expectedRoute) || !requestExplorerContract.ruleValues.includes('XSS-001')) {
+      throw new Error(`Security Explorer dropdown options are incomplete: ${JSON.stringify(requestExplorerContract)}`);
+    }
+    const securityFirstQuery = new URLSearchParams(requestExplorerContract.securityFirstRead?.query || '');
+    const securityOlderQuery = new URLSearchParams(requestExplorerContract.securityOlderRead?.query || '');
+    if (requestExplorerContract.securityFirstPage.sequence !== '200' || !requestExplorerContract.securityFirstPage.newerDisabled || requestExplorerContract.securityFirstPage.olderDisabled ||
+        securityFirstQuery.get('limit') !== '25' || securityOlderQuery.get('before_sequence') !== '190' ||
+        requestExplorerContract.securityOlderPage.sequence !== '180' || requestExplorerContract.securityOlderPage.newerDisabled || !requestExplorerContract.securityOlderPage.olderDisabled ||
+        requestExplorerContract.securityNewerSequence !== '200') {
+      throw new Error(`Security Event Explorer pagination failed: ${JSON.stringify(requestExplorerContract)}`);
+    }
+    if (requestExplorerContract.firstPage.client !== '203.0.113.42' || requestExplorerContract.firstPage.requestID !== 'req-current-100' ||
+        !requestExplorerContract.firstPage.newerDisabled || requestExplorerContract.firstPage.olderDisabled) {
+      throw new Error(`EdgeProxy request explorer first page is incorrect: ${JSON.stringify(requestExplorerContract)}`);
+    }
+    const filteredQuery = new URLSearchParams(requestExplorerContract.filteredRead?.query || '');
+    if (filteredQuery.get('event') !== 'request_completed' || filteredQuery.get('client_ip') !== '203.0.113.42' || filteredQuery.get('limit') !== '25') {
+      throw new Error(`EdgeProxy request explorer did not submit server-side filters/page size: ${JSON.stringify(requestExplorerContract)}`);
+    }
+    const olderQuery = new URLSearchParams(requestExplorerContract.olderRead?.query || '');
+    if (olderQuery.get('before_sequence') !== '90' || requestExplorerContract.olderPage.client !== '198.51.100.80' ||
+        requestExplorerContract.olderPage.requestID !== 'req-older-80' || requestExplorerContract.olderPage.newerDisabled || !requestExplorerContract.olderPage.olderDisabled) {
+      throw new Error(`EdgeProxy request explorer cursor navigation failed: ${JSON.stringify(requestExplorerContract)}`);
+    }
+    if (requestExplorerContract.newerPage.client !== '203.0.113.42' || requestExplorerContract.newerPage.requestID !== 'req-current-100') {
+      throw new Error(`EdgeProxy request explorer newer navigation failed: ${JSON.stringify(requestExplorerContract)}`);
+    }
+    await cdp.evaluate(`setView('overview')`);
   }
 
   let cumulativeRatePrecisionContract = null;
@@ -3183,7 +3310,7 @@ try {
     semantic_color_contract:semanticColorContract, topbar_layouts:topbarLayouts, security_explorer_layouts:securityExplorerLayouts,
     connectivity_action_layout:connectivityActionLayout,
     connectivity_responsive_layouts:connectivityResponsiveLayouts, accessibility_contract:accessibilityContract,
-    authentication_ui_contract:authenticationUIContract, cumulative_rate_precision_contract:cumulativeRatePrecisionContract, percentage_truthfulness_contract:percentageTruthfulnessContract, latency_truthfulness_contract:latencyTruthfulnessContract, telemetry_availability_contract:telemetryAvailabilityContract,
+    authentication_ui_contract:authenticationUIContract, request_explorer_contract:requestExplorerContract, cumulative_rate_precision_contract:cumulativeRatePrecisionContract, percentage_truthfulness_contract:percentageTruthfulnessContract, latency_truthfulness_contract:latencyTruthfulnessContract, telemetry_availability_contract:telemetryAvailabilityContract,
     client_facing_error_contract:clientFacingErrorContract, client_canceled_request_contract:clientCanceledRequestContract, security_canceled_request_contract:securityCanceledRequestContract, recent_traffic_truncation_contract:recentTrafficTruncationContract, telemetry_trend_gap_contract:telemetryTrendGapContract, telemetry_trend_many_gap_contract:telemetryTrendManyGapContract, telemetry_trend_long_gap_compression_contract:telemetryTrendLongGapCompressionContract, telemetry_trend_outlier_contract:telemetryTrendOutlierContract, telemetry_trend_zero_baseline_contract:telemetryTrendZeroBaselineContract, telemetry_trend_legend_semantics_contract:telemetryTrendLegendSemanticsContract, telemetry_trend_partial_availability_legend_contract:telemetryTrendPartialAvailabilityLegendContract, telemetry_trend_series_availability_marker_contract:telemetryTrendSeriesAvailabilityMarkerContract, telemetry_trend_series_marker_motion_contract:telemetryTrendSeriesMarkerMotionContract, telemetry_trend_responsive_gap_label_contract:telemetryTrendResponsiveGapLabelContract, telemetry_trend_series_isolation_contract:telemetryTrendSeriesIsolationContract, telemetry_trend_latest_availability_contract:telemetryTrendLatestAvailabilityContract, telemetry_trend_empty_contract:telemetryTrendEmptyContract,
     undefined_metric_rendering_contract:undefinedMetricRenderingContract, editor_state_contract:editorStateContract, action_error_contract:actionErrorContract
   }, null, 2));

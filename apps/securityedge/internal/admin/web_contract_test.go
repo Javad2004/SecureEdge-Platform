@@ -550,7 +550,13 @@ func TestDashboardAccessibilityLabelsContract(t *testing.T) {
 		`id="security-filters" class="filters" aria-label="Security event filters"`,
 		`name="q" placeholder="Search" aria-label="Search security events"`,
 		`name="action" aria-label="Filter by action"`,
+		`id="security-reason-filter" name="reason" aria-label="Filter by reason"`,
 		`name="client_ip" placeholder="Client IP" aria-label="Filter by client IP"`,
+		`id="security-route-filter" name="route" aria-label="Filter by route"`,
+		`id="security-rule-filter" name="rule_id" aria-label="Filter by rule ID"`,
+		`id="security-log-page-size" aria-label="Security event page size"`,
+		`id="edge-log-filters" class="filters edge-log-filters" aria-label="EdgeProxy access-log filters"`,
+		`name="client_ip" placeholder="Client IP" aria-label="Filter EdgeProxy logs by client IP"`,
 		`id="purge-form" class="filters" aria-label="Cache purge controls"`,
 		`id="purge-route" required aria-label="Route to purge"`,
 		`id="trend-chart" height="240" role="img" aria-label="Recent EdgeProxy request-rate and SecurityEdge rejection-rate trend" aria-describedby="trend-chart-summary"`,
@@ -675,6 +681,81 @@ func TestDashboardTrendPresentationContract(t *testing.T) {
 	}
 	if !strings.Contains(string(app), `long gaps compressed on the time axis`) {
 		t.Fatal("trend chart does not disclose compressed long telemetry gaps")
+	}
+}
+
+func TestDashboardSecurityEventExplorerContract(t *testing.T) {
+	index, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(index) + "\n" + string(app)
+	for _, required := range []string{
+		`id="security-reason-filter" name="reason"`,
+		`id="security-route-filter" name="route"`,
+		`id="security-rule-filter" name="rule_id"`,
+		`id="security-log-page-size"`,
+		`id="newer-security"`,
+		`id="older-security"`,
+		`function securityFilterQuery()`,
+		`async function loadSecurity(reset = false)`,
+		`query.set('before_sequence', String(cursor));`,
+		`state.securityCursors`,
+		`state.securityPage`,
+	} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("Security Event Explorer contract is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		`name="reason" placeholder="Reason"`,
+		`name="route" placeholder="Route"`,
+		`name="rule_id" placeholder="Rule ID"`,
+		`query.set('limit', '100')`,
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("Security Event Explorer still contains legacy behavior %q", forbidden)
+		}
+	}
+}
+
+func TestDashboardEdgeProxyRequestExplorerContract(t *testing.T) {
+	index, err := webAssets.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := webAssets.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(index) + "\n" + string(app)
+	for _, required := range []string{
+		`<h2>EdgeProxy request explorer</h2>`,
+		`id="edge-log-route" name="route"`,
+		`name="method" aria-label="Filter EdgeProxy logs by method"`,
+		`name="status" aria-label="Filter EdgeProxy logs by status"`,
+		`name="cache" aria-label="Filter EdgeProxy logs by cache result"`,
+		`id="edge-log-page-size"`,
+		`id="newer-edge-logs"`,
+		`id="older-edge-logs"`,
+		`id="edge-log-count"`,
+		`function edgeLogFilterQuery()`,
+		`async function loadEdgeLogs(reset = false)`,
+		`query.set('event', 'request_completed');`,
+		`query.set('before_sequence', String(cursor));`,
+		`entry.client_ip`,
+		`entry.request_id`,
+	} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("EdgeProxy request explorer contract is missing %q", required)
+		}
+	}
+	if strings.Contains(string(app), `event=request_completed&limit=50`) {
+		t.Fatal("EdgeProxy request explorer still uses the legacy fixed 50-row query")
 	}
 }
 

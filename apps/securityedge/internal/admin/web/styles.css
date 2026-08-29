@@ -398,6 +398,24 @@ td {
   color:var(--muted);
   font-size:12px
 }
+.pager-actions {
+  display:flex;
+  gap:8px;
+  align-items:center
+}
+.edge-log-filters {
+  align-items:center
+}
+.mono-cell {
+  font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace;
+  font-size:11px
+}
+.request-id-cell {
+  max-width:220px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap
+}
 .bar-list {
   display:grid;
   gap:12px
@@ -1021,6 +1039,17 @@ canvas {
   }
   .filters button {
     min-height:40px
+  }
+  .pager {
+    align-items:flex-start;
+    gap:10px;
+    flex-direction:column
+  }
+  .pager-actions {
+    width:100%
+  }
+  .pager-actions button {
+    flex:1 1 0
   }
   #view-security > .panel > .panel-head .top-actions {
     display:grid;

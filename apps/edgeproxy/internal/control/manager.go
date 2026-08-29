@@ -258,18 +258,11 @@ func (m *Manager) Update(mutator func(*config.Config) error, source string) (App
 	}
 	runtimeCfg, err := config.Load(m.path)
 	if err != nil {
-		_ = config.Save(m.path, base)
-		return ApplyResult{}, err
+		return ApplyResult{}, errors.Join(err, m.rollbackPersistedUpdate(base))
 	}
 	result, err := m.apply(candidate, runtimeCfg, source)
 	if err != nil {
-		rollbackErr := config.Save(m.path, base)
-		if digest, digestErr := fileDigest(m.path); digestErr == nil {
-			m.mu.Lock()
-			m.lastDigest = digest
-			m.mu.Unlock()
-		}
-		return ApplyResult{}, errors.Join(err, rollbackErr)
+		return ApplyResult{}, errors.Join(err, m.rollbackPersistedUpdate(base))
 	}
 	digest, digestErr := fileDigest(m.path)
 	if digestErr == nil {
@@ -278,6 +271,20 @@ func (m *Manager) Update(mutator func(*config.Config) error, source string) (App
 		m.mu.Unlock()
 	}
 	return result, nil
+}
+
+func (m *Manager) rollbackPersistedUpdate(previous config.Config) error {
+	if err := config.Save(m.path, previous); err != nil {
+		return fmt.Errorf("restore previous persisted configuration: %w", err)
+	}
+	digest, err := fileDigest(m.path)
+	if err != nil {
+		return fmt.Errorf("digest restored persisted configuration: %w", err)
+	}
+	m.mu.Lock()
+	m.lastDigest = digest
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *Manager) apply(persisted, next config.Config, source string) (ApplyResult, error) {

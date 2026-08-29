@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -566,6 +567,65 @@ func TestManagerRejectsEnvironmentManagedUpdateWithoutPersisting(t *testing.T) {
 	}
 	if persisted.Admin.AuthToken != cfg.Admin.AuthToken {
 		t.Fatalf("rejected managed token update was persisted: got %q", persisted.Admin.AuthToken)
+	}
+}
+
+func TestManagerRollbackRealignsWatcherDigestAfterRuntimeValidationFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "edgeproxy.json")
+	cfg := testConfig(t)
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(raw, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	manager, err := New(path, "", logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := proxy.NewHandler(cfg, logger, metrics.New(), accesslog.New(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer handler.Close()
+	manager.Attach(handler, cfg)
+
+	t.Setenv("EDGEPROXY_TLS_ENABLED", "not-a-boolean")
+	if _, err := manager.Update(func(next *config.Config) error {
+		next.Routes[0].LoadBalancing.Algorithm = "least_connections"
+		return nil
+	}, "invalid_runtime_environment_test"); err == nil || !strings.Contains(err.Error(), "EDGEPROXY_TLS_ENABLED") {
+		t.Fatalf("expected runtime environment validation failure, got %v", err)
+	}
+
+	persisted, err := config.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := persisted.Routes[0].LoadBalancing.Algorithm; got != cfg.Routes[0].LoadBalancing.Algorithm {
+		t.Fatalf("failed update remained persisted: algorithm=%q", got)
+	}
+	digest, err := fileDigest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.RLock()
+	trackedDigest := manager.lastDigest
+	manager.mu.RUnlock()
+	if trackedDigest != digest {
+		t.Fatalf("watcher digest remained stale after rollback: tracked=%x disk=%x", trackedDigest, digest)
+	}
+
+	before := manager.WatchStatus()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.Start(ctx)
+	time.Sleep(750 * time.Millisecond)
+	after := manager.WatchStatus()
+	if after.LastSource != before.LastSource || after.LastError != before.LastError || after.Revision != before.Revision {
+		t.Fatalf("watcher reprocessed its own rollback: before=%#v after=%#v", before, after)
 	}
 }
 

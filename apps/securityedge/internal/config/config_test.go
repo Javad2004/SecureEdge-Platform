@@ -71,6 +71,28 @@ func TestDefaultConfigurationValid(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsMissingEdgeProxyAdminURL(t *testing.T) {
+	cfg := Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.EdgeProxy.AdminURL = "   "
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "edgeproxy.admin_url is required") {
+		t.Fatalf("expected missing EdgeProxy Admin URL to be rejected, got %v", err)
+	}
+}
+
+func TestValidateAllowsMemoryOnlyAdminEventStore(t *testing.T) {
+	cfg := Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Admin.LogStore.FilePath = ""
+	cfg.Admin.LogStore.MaxFileBytes = 0
+	cfg.Admin.LogStore.MaxBackups = 0
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected memory-only Admin event store to validate without file rotation settings: %v", err)
+	}
+}
+
 func TestValidateRejectsTLSInEmbeddedMode(t *testing.T) {
 	cfg := Default()
 	cfg.Server.Mode = "embedded"

@@ -661,7 +661,9 @@ func (c *Config) Validate() error {
 	if c.EdgeProxy.ConfigPath == "" {
 		errs = append(errs, errors.New("edgeproxy.config_path is required"))
 	}
-	if c.EdgeProxy.AdminURL != "" {
+	if c.EdgeProxy.AdminURL == "" {
+		errs = append(errs, errors.New("edgeproxy.admin_url is required"))
+	} else {
 		u, err := url.Parse(c.EdgeProxy.AdminURL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 			errs = append(errs, errors.New("edgeproxy.admin_url must be an absolute http(s) URL without credentials, queries, or fragments"))

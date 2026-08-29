@@ -2954,9 +2954,12 @@ try {
       htmlOverflowY:getComputedStyle(document.documentElement).overflowY,
       bodyOverflowY:getComputedStyle(document.body).overflowY
     }))()`);
-    await cdp.send('Input.dispatchMouseEvent', {type:'mouseWheel',x:1000,y:650,deltaX:0,deltaY:400});
-    await sleep(150);
-    const restoredPageY = await cdp.evaluate(`window.scrollY`);
+    let restoredPageY = 0;
+    for (let attempt = 0; attempt < 3 && restoredPageY <= 0; attempt++) {
+      await cdp.send('Input.dispatchMouseEvent', {type:'mouseWheel',x:1000,y:650,deltaX:0,deltaY:400});
+      await sleep(150);
+      restoredPageY = await cdp.evaluate(`window.scrollY`);
+    }
     dialogScrollLockContract = {before:scrollLockBefore,backdropWheel,dialogScroll,closedState,restoredPageY};
     if (closedState.htmlOverflowY === 'hidden' || closedState.bodyOverflowY === 'hidden' ||
         Math.abs(openBodyWidth - closedState.bodyWidth) > 1 || restoredPageY <= 0) {
@@ -3651,10 +3654,17 @@ try {
         const dnsNames = securityAdmin.elements.namedItem('connectivity.dns.names');
         const historyEnabled = securityAdmin.elements.namedItem('telemetry_history.enabled');
         const historyCapacity = securityAdmin.elements.namedItem('telemetry_history.capacity');
+        const securityLogPath = securityAdmin.elements.namedItem('log_store.file_path');
+        const securityLogMaxBytes = securityAdmin.elements.namedItem('log_store.max_file_bytes');
+        const securityLogMaxBackups = securityAdmin.elements.namedItem('log_store.max_backups');
         adminEnabled.checked = false; syncSystemFeatureControls(securityAdmin, false);
         const adminOff = {listenDisabled:securityAdmin.elements.listen_addr.disabled,connectivityDisabled:connectivityEnabled.disabled,historyDisabled:historyEnabled.disabled};
         adminEnabled.checked = true; connectivityEnabled.checked = false; historyEnabled.checked = false; syncSystemFeatureControls(securityAdmin, true);
         const adminOnFeaturesOff = {listenDisabled:securityAdmin.elements.listen_addr.disabled,checkDisabled:checkInterval.disabled,dnsToggleDisabled:dnsEnabled.disabled,historyCapacityDisabled:historyCapacity.disabled};
+        securityLogPath.value = ''; securityLogMaxBytes.value = '0'; securityLogMaxBackups.value = '0'; syncSystemFeatureControls(securityAdmin, false);
+        const securityLogPersistenceOff = {maxBytesDisabled:securityLogMaxBytes.disabled,maxBackupsDisabled:securityLogMaxBackups.disabled,maxBytes:securityLogMaxBytes.value,maxBackups:securityLogMaxBackups.value,formValid:securityAdmin.checkValidity()};
+        securityLogPath.value = 'logs/securityedge.ndjson'; securityLogMaxBytes.value = '0'; securityLogMaxBackups.value = ''; syncSystemFeatureControls(securityAdmin, true);
+        const securityLogPersistenceOn = {maxBytesDisabled:securityLogMaxBytes.disabled,maxBackupsDisabled:securityLogMaxBackups.disabled,maxBytes:securityLogMaxBytes.value,maxBackups:securityLogMaxBackups.value,formValid:securityAdmin.checkValidity()};
         checkInterval.value = ''; connectivityEnabled.checked = true; syncSystemFeatureControls(securityAdmin, true);
         const connectivityOn = {checkDisabled:checkInterval.disabled,checkInterval:checkInterval.value,dnsToggleDisabled:dnsEnabled.disabled};
         dnsServer.value = ''; dnsNames.value = ''; dnsEnabled.checked = true; syncSystemFeatureControls(securityAdmin, true);
@@ -3695,7 +3705,7 @@ try {
         let invalidDuration = '';
         try { goDurationMilliseconds('5 seconds', 'Fixture duration'); } catch (error) { invalidDuration = error.message; }
         return {
-          cacheDisabled,cacheEnabledState,securityTLSOff,securityTLSOn,embedded,adminOff,adminOnFeaturesOff,connectivityOn,dnsOn,historyOn,edgeLogOff,edgeLogOn,
+          cacheDisabled,cacheEnabledState,securityTLSOff,securityTLSOn,embedded,adminOff,adminOnFeaturesOff,securityLogPersistenceOff,securityLogPersistenceOn,connectivityOn,dnsOn,historyOn,edgeLogOff,edgeLogOn,
           validStatuses:statusCodes('200, 404, 200', 'Fixture statuses', false),invalidStatus,oversizedOrigin,oversizedRoute,duplicateRoute,relationshipErrors,invalidDuration,
           parsedDuration:goDurationMilliseconds('1h30m500ms', 'Fixture duration'),
           routeHeaderMin:document.getElementById('route-max-response-header').min,
@@ -3728,6 +3738,11 @@ try {
         !featureControlContract.dnsOn.namesRequired || featureControlContract.dnsOn.server !== '127.0.0.1:53' ||
         featureControlContract.historyOn.capacityDisabled || featureControlContract.historyOn.capacity !== '720') {
       throw new Error(`SecurityEdge Admin structured controls do not follow enabled connectivity/DNS/history contracts: ${JSON.stringify(featureControlContract)}`);
+    }
+    if (!featureControlContract.securityLogPersistenceOff.maxBytesDisabled || !featureControlContract.securityLogPersistenceOff.maxBackupsDisabled || !featureControlContract.securityLogPersistenceOff.formValid ||
+        featureControlContract.securityLogPersistenceOn.maxBytesDisabled || featureControlContract.securityLogPersistenceOn.maxBackupsDisabled ||
+        featureControlContract.securityLogPersistenceOn.maxBytes !== '20971520' || featureControlContract.securityLogPersistenceOn.maxBackups !== '3' || !featureControlContract.securityLogPersistenceOn.formValid) {
+      throw new Error(`SecurityEdge persistent event-log controls do not follow the configured file-path contract: ${JSON.stringify(featureControlContract)}`);
     }
     if (!featureControlContract.edgeLogOff.capacityDisabled || featureControlContract.edgeLogOn.capacityDisabled || featureControlContract.edgeLogOn.capacity !== '5000') {
       throw new Error(`EdgeProxy Admin log-store controls do not follow the enabled contract: ${JSON.stringify(featureControlContract)}`);

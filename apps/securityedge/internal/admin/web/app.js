@@ -288,8 +288,13 @@ function syncSystemFeatureControls(form, restoreDefaults = false) {
       setNamedDefault(form, 'log_store.capacity', '10000', value => Number(value) <= 0);
       setNamedDefault(form, 'log_store.default_page_size', '100', value => Number(value) <= 0);
       setNamedDefault(form, 'log_store.max_page_size', '500', value => Number(value) <= 0);
+    }
+    const persistentLog = enabled && String(namedField(form, 'log_store.file_path')?.value || '').trim() !== '';
+    const persistentLogFields = ['log_store.max_file_bytes','log_store.max_backups'];
+    setNamedFieldsDisabled(form, persistentLogFields, !persistentLog);
+    if (persistentLog && restoreDefaults) {
       setNamedDefault(form, 'log_store.max_file_bytes', '20971520', value => Number(value) <= 0);
-      setNamedDefault(form, 'log_store.max_backups', '3', value => Number(value) < 0);
+      setNamedDefault(form, 'log_store.max_backups', '3', value => value === '' || Number(value) < 0);
     }
     const connectivity = enabled && namedField(form, 'connectivity.enabled')?.checked === true;
     const connectivityFields = ['connectivity.check_interval','connectivity.timeout','connectivity.stale_after','connectivity.history_capacity','connectivity.dns.enabled'];
@@ -2555,10 +2560,13 @@ $('reload-config').onclick = async () => {
 document.querySelectorAll('[data-system-form]').forEach(form => {
   const key = form.dataset.systemForm;
   const markDirty = () => { state.systemDirty[key] = true; delete state.pendingSystemRestarts[key]; };
-  form.addEventListener('input', markDirty);
+  form.addEventListener('input', event => {
+    markDirty();
+    if (event.target.name === 'log_store.file_path') syncSystemFeatureControls(form, true);
+  });
   form.addEventListener('change', event => {
     markDirty();
-    if (['mode','tls.enabled','enabled','connectivity.enabled','connectivity.dns.enabled','telemetry_history.enabled','log_store.enabled'].includes(event.target.name)) {
+    if (['mode','tls.enabled','enabled','connectivity.enabled','connectivity.dns.enabled','telemetry_history.enabled','log_store.enabled','log_store.file_path'].includes(event.target.name)) {
       syncSystemFeatureControls(form, true);
     }
   });

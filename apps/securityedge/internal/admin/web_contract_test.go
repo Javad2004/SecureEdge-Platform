@@ -528,6 +528,7 @@ func TestDashboardPolicyEditorMatchesBackendContract(t *testing.T) {
 	content := string(index) + "\n" + string(app)
 	for _, required := range []string{
 		`name="body_content_types"`,
+		`Leave blank for memory-only events; file rotation controls activate when a path is configured.`,
 		`name="max_path_bytes" type="number" min="1" max="1048576"`,
 		`name="max_query_bytes" type="number" min="1" max="16777216"`,
 		`name="max_header_count" type="number" min="1" max="10000"`,
@@ -557,6 +558,11 @@ func TestDashboardPolicyEditorMatchesBackendContract(t *testing.T) {
 		`const bodyInspection = form.inspect_request_body.checked;`,
 		`$('policy-form').inspect_request_body.addEventListener('change'`,
 		`function syncSystemFeatureControls(form, restoreDefaults = false)`,
+		`const persistentLog = enabled && String(namedField(form, 'log_store.file_path')?.value || '').trim() !== '';`,
+		`const persistentLogFields = ['log_store.max_file_bytes','log_store.max_backups'];`,
+		`setNamedFieldsDisabled(form, persistentLogFields, !persistentLog);`,
+		`'log_store.file_path'`,
+		`if (event.target.name === 'log_store.file_path') syncSystemFeatureControls(form, true);`,
 		`function statusCodes(value, label, allowEmpty = true)`,
 		`function goDurationMilliseconds(value, label)`,
 		`function validateCacheRelationships(cache, label = 'Cache')`,

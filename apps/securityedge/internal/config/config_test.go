@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -339,6 +340,18 @@ func TestRoutePoliciesShareProcessWideLimiterResources(t *testing.T) {
 	}
 }
 
+func TestLoadFileRejectsInvalidUTF8(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invalid-utf8.json")
+	data := []byte(`{"admin":{"auth_token":"bad-token"}}`)
+	data = append(data[:len(data)-3], append([]byte{0xff}, data[len(data)-3:]...)...)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFile(path); err == nil || !strings.Contains(err.Error(), "config must be valid UTF-8") {
+		t.Fatalf("expected UTF-8 validation error, got %v", err)
+	}
+}
+
 func TestApplyEnvironmentOverridesDoesNotRequireFileMutation(t *testing.T) {
 	cfg := Default()
 	cfg.Admin.AuthToken = "file-admin"
@@ -372,6 +385,18 @@ func TestValidateRejectsBearerTokenWhitespaceOrControlCharacters(t *testing.T) {
 				if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tt.field+" cannot contain whitespace or control characters") {
 					t.Fatalf("expected unusable Bearer token %q for %s to be rejected, got %v", token, tt.field, err)
 				}
+			}
+		})
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+" invalid UTF-8", func(t *testing.T) {
+			cfg := Default()
+			cfg.Server.Mode = "embedded"
+			cfg.EdgeProxy.ConfigPath = "edge.json"
+			tt.mutate(&cfg, string([]byte{'b', 'a', 'd', 0xff, 't', 'o', 'k', 'e', 'n'}))
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tt.field+" must be valid UTF-8") {
+				t.Fatalf("expected invalid UTF-8 Bearer credential for %s to be rejected, got %v", tt.field, err)
 			}
 		})
 	}

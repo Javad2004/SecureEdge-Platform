@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -964,6 +965,9 @@ func reservedClientIPSourceHeader(value string) bool {
 const maxBearerCredentialBytes = 8 << 10
 
 func validateBearerCredential(field, value string) error {
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("%s must be valid UTF-8", field)
+	}
 	if value == "[REDACTED]" {
 		return fmt.Errorf("%s cannot use the reserved [REDACTED] secret marker", field)
 	}

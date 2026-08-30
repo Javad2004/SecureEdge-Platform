@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -95,6 +96,9 @@ func readBoundedConfigFile(path string) ([]byte, error) {
 	}
 	if int64(len(data)) > maxConfigFileBytes {
 		return nil, fmt.Errorf("config exceeds the %d-byte safety limit", maxConfigFileBytes)
+	}
+	if !utf8.Valid(data) {
+		return nil, errors.New("config must be valid UTF-8")
 	}
 	return data, nil
 }

@@ -273,6 +273,13 @@ func TestValidateRejectsBearerTokenWhitespaceOrControlCharacters(t *testing.T) {
 	}
 
 	cfg := Default()
+	cfg.Admin.AuthToken = string([]byte{'b', 'a', 'd', 0xff, 't', 'o', 'k', 'e', 'n'})
+	cfg.Routes = []RouteConfig{validRouteForValidation()}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "admin.auth_token must be valid UTF-8") {
+		t.Fatalf("expected invalid UTF-8 Bearer credential to be rejected, got %v", err)
+	}
+
+	cfg = Default()
 	cfg.Admin.AuthToken = "[REDACTED]"
 	cfg.Routes = []RouteConfig{validRouteForValidation()}
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "reserved [REDACTED] secret marker") {

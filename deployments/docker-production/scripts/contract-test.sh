@@ -105,6 +105,7 @@ grep -q 'already assigned to a host group' "$script_dir/doctor.sh"
 grep -q 'secret cannot use the reserved \[REDACTED\] secret marker' "$script_dir/doctor.sh"
 grep -q 'secret cannot contain embedded whitespace or control characters' "$script_dir/doctor.sh"
 grep -q 'secret cannot exceed 8192 UTF-8 bytes' "$script_dir/doctor.sh"
+grep -q 'secret must be valid UTF-8' "$script_dir/doctor.sh"
 grep -Fq 'protected_cat "$f" | python3 -c' "$script_dir/doctor.sh"
 if grep -Fq 'python3 - "$label" "$value"' "$script_dir/doctor.sh"; then
   echo "doctor.sh must not expose secret values through process arguments" >&2

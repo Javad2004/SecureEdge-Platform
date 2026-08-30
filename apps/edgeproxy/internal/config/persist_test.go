@@ -81,6 +81,39 @@ func TestLoadFileDoesNotRestoreInvalidBackup(t *testing.T) {
 	}
 }
 
+func TestLoadFileRejectsInvalidUTF8(t *testing.T) {
+	data := []byte(`{"admin":{"auth_token":"bad-token"}}`)
+	data = append(data[:len(data)-3], append([]byte{0xff}, data[len(data)-3:]...)...)
+
+	t.Run("active config", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "invalid-utf8.json")
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadFile(path); err == nil || !strings.Contains(err.Error(), "config must be valid UTF-8") {
+			t.Fatalf("expected UTF-8 validation error, got %v", err)
+		}
+	})
+
+	t.Run("recovery config", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "edgeproxy.json")
+		backup := path + ".bak"
+		if err := os.WriteFile(backup, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadFile(path); err == nil || !strings.Contains(err.Error(), "config must be valid UTF-8") {
+			t.Fatalf("expected UTF-8 recovery validation error, got %v", err)
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("invalid UTF-8 recovery data was restored: %v", err)
+		}
+		if _, err := os.Stat(backup); err != nil {
+			t.Fatalf("invalid UTF-8 recovery data should remain available for diagnosis: %v", err)
+		}
+	})
+}
+
 func TestLoadFileRejectsUnknownFieldsAndOversizedFiles(t *testing.T) {
 	dir := t.TempDir()
 	unknown := filepath.Join(dir, "unknown.json")

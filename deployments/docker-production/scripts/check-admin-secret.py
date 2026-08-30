@@ -55,6 +55,8 @@ def main() -> int:
         raise SystemExit(f"{args.label} secret cannot exceed 8192 UTF-8 bytes")
     if any(unicodedata.category(ch) == "Cc" or ch.isspace() for ch in token):
         raise SystemExit(f"{args.label} secret cannot contain embedded whitespace or control characters")
+    if any(ord(ch) < 0x21 or ord(ch) > 0x7E for ch in token):
+        raise SystemExit(f"{args.label} secret must contain only printable ASCII characters")
     return 0
 
 

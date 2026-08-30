@@ -146,14 +146,21 @@ function validateLogStoreRelationships(store, label) {
   if (maxPage > capacity) throw new Error(`${label} maximum page size cannot exceed memory capacity.`);
 }
 
+// Match Go strings.TrimSpace for credential boundaries. ECMAScript trim() also
+// removes characters such as U+FEFF that Go does not normalize, so using it for
+// secrets could make the Dashboard silently preserve or rewrite a value the
+// backend would reject.
+const goTrimSpace = value => String(value ?? '').replace(/^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/g, '');
+
 function validateBearerSecretField(form, name, label) {
   const field = namedField(form, name);
   if (!field) return;
-  const token = String(field.value ?? '').trim();
+  const token = goTrimSpace(field.value);
   if (!token) return;
   if (token === '[REDACTED]') throw new Error(`${label} cannot use the reserved [REDACTED] secret marker.`);
   if (utf8Bytes(token) > 8192) throw new Error(`${label} cannot exceed 8192 UTF-8 bytes.`);
   if (/[\p{White_Space}\p{Cc}]/u.test(token)) throw new Error(`${label} cannot contain whitespace or control characters.`);
+  if (/[^\x21-\x7e]/.test(token)) throw new Error(`${label} must contain only printable ASCII characters.`);
 }
 
 function validateSystemSecretFields(form) {
@@ -1933,8 +1940,9 @@ function systemFormPayload(form, source) {
   const payload = {};
   form.querySelectorAll('[name]').forEach(field => {
     let value;
-    if (field.dataset.secret === 'true' && !String(field.value ?? '').trim()) {
-      value = nestedValue(source, field.name) ?? '';
+    if (field.dataset.secret === 'true') {
+      const normalizedSecret = goTrimSpace(field.value);
+      value = normalizedSecret ? normalizedSecret : (nestedValue(source, field.name) ?? '');
     } else if (field.type === 'checkbox') {
       value = field.checked;
     } else if (field.dataset.kind === 'number' || field.type === 'number') {

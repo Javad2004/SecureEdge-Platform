@@ -402,6 +402,18 @@ func TestValidateRejectsBearerTokenWhitespaceOrControlCharacters(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		t.Run(tt.name+" non-ASCII", func(t *testing.T) {
+			cfg := Default()
+			cfg.Server.Mode = "embedded"
+			cfg.EdgeProxy.ConfigPath = "edge.json"
+			tt.mutate(&cfg, "café-token")
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tt.field+" must contain only printable ASCII characters") {
+				t.Fatalf("expected non-ASCII Bearer credential for %s to be rejected, got %v", tt.field, err)
+			}
+		})
+	}
+
+	for _, tt := range tests {
 		t.Run(tt.name+" reserved marker", func(t *testing.T) {
 			cfg := Default()
 			cfg.Server.Mode = "embedded"

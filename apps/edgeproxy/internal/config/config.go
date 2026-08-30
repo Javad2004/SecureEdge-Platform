@@ -979,6 +979,15 @@ func validateBearerCredential(field, value string) error {
 	}) >= 0 {
 		return fmt.Errorf("%s cannot contain whitespace or control characters", field)
 	}
+	// Browser Fetch/Headers and common HTTP clients do not preserve arbitrary
+	// UTF-8 bytes in Authorization values. Keep credentials within printable
+	// ASCII so a value that passes configuration validation can be represented
+	// byte-for-byte in Authorization: Bearer <token> at runtime.
+	for _, r := range value {
+		if r < 0x21 || r > 0x7e {
+			return fmt.Errorf("%s must contain only printable ASCII characters", field)
+		}
+	}
 	return nil
 }
 

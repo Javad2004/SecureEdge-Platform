@@ -109,6 +109,7 @@ grep -q 'secret cannot use the reserved \[REDACTED\] secret marker' "$secret_che
 grep -q 'secret cannot contain embedded whitespace or control characters' "$secret_checker"
 grep -q 'secret cannot exceed 8192 UTF-8 bytes' "$secret_checker"
 grep -q 'secret must be valid UTF-8' "$secret_checker"
+grep -q 'secret must contain only printable ASCII characters' "$secret_checker"
 grep -q 'Go strings.TrimSpace uses unicode.IsSpace' "$secret_checker"
 if grep -Eq 'check-admin-secret[.]py.*\$value|python3 - "\$label" "\$value"' "$script_dir/doctor.sh"; then
   echo "doctor.sh must not expose secret values through process arguments" >&2
@@ -130,6 +131,10 @@ printf '[REDACTED]' | python3 "$secret_checker" --label TEST >/dev/null 2>&1 && 
 }
 printf 'bad token' | python3 "$secret_checker" --label TEST >/dev/null 2>&1 && {
   echo 'production secret guardrail accepted embedded whitespace' >&2
+  exit 1
+}
+printf 'Ã©-token' | python3 "$secret_checker" --label TEST >/dev/null 2>&1 && {
+  echo 'production secret guardrail accepted a non-ASCII credential' >&2
   exit 1
 }
 python3 - <<'PYSECRET' | python3 "$secret_checker" --label TEST

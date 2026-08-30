@@ -280,6 +280,13 @@ func TestValidateRejectsBearerTokenWhitespaceOrControlCharacters(t *testing.T) {
 	}
 
 	cfg = Default()
+	cfg.Admin.AuthToken = "café-token"
+	cfg.Routes = []RouteConfig{validRouteForValidation()}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "admin.auth_token must contain only printable ASCII characters") {
+		t.Fatalf("expected non-ASCII Bearer credential to be rejected, got %v", err)
+	}
+
+	cfg = Default()
 	cfg.Admin.AuthToken = "[REDACTED]"
 	cfg.Routes = []RouteConfig{validRouteForValidation()}
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "reserved [REDACTED] secret marker") {

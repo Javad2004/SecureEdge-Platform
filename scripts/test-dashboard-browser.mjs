@@ -3701,7 +3701,9 @@ try {
         try { validateSystemSecretFields(securityAdmin); } catch (error) { secretErrors.securityOversized = error.message; }
         edgeDependencySecret.value = 'bad\ttoken';
         try { validateSystemSecretFields(edgeDependencyForm); } catch (error) { secretErrors.edgeWhitespace = error.message; }
-        edgeDependencySecret.value = 'é'.repeat(4097);
+        edgeDependencySecret.value = 'é-token';
+        try { validateSystemSecretFields(edgeDependencyForm); } catch (error) { secretErrors.edgeNonASCII = error.message; }
+        edgeDependencySecret.value = 'a'.repeat(8193);
         try { validateSystemSecretFields(edgeDependencyForm); } catch (error) { secretErrors.edgeOversized = error.message; }
         edgeAdminSecret.value = '[REDACTED]';
         try { validateSystemSecretFields(edgeAdmin); } catch (error) { secretErrors.edgeReserved = error.message; }
@@ -3781,6 +3783,7 @@ try {
         !featureControlContract.secretErrors.securityReserved.includes('reserved [REDACTED]') ||
         !featureControlContract.secretErrors.securityOversized.includes('8192 UTF-8 bytes') ||
         !featureControlContract.secretErrors.edgeWhitespace.includes('whitespace or control') ||
+        !featureControlContract.secretErrors.edgeNonASCII.includes('printable ASCII characters') ||
         !featureControlContract.secretErrors.edgeOversized.includes('8192 UTF-8 bytes') ||
         !featureControlContract.secretErrors.edgeReserved.includes('reserved [REDACTED]') ||
         featureControlContract.preservedSecret !== '[REDACTED]') {

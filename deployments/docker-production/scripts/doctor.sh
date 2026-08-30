@@ -75,24 +75,7 @@ json_valid() {
 }
 secret_value_ok() {
   local f=$1 label=$2
-  protected_cat "$f" | python3 -c '
-import sys, unicodedata
-label = sys.argv[1]
-raw = sys.stdin.buffer.read()
-try:
-    value = raw.decode("utf-8")
-except UnicodeDecodeError:
-    raise SystemExit(f"{label} secret must be valid UTF-8")
-token = value.strip()
-if not token:
-    raise SystemExit(f"{label} secret is empty after whitespace normalization")
-if token == "[REDACTED]":
-    raise SystemExit(f"{label} secret cannot use the reserved [REDACTED] secret marker")
-if len(token.encode("utf-8")) > 8192:
-    raise SystemExit(f"{label} secret cannot exceed 8192 UTF-8 bytes")
-if any(ch.isspace() or unicodedata.category(ch) == "Cc" for ch in token):
-    raise SystemExit(f"{label} secret cannot contain embedded whitespace or control characters")
-' "$label"
+  protected_cat "$f" | python3 "$script_dir/check-admin-secret.py" --label "$label"
 }
 
 secret_ok() {

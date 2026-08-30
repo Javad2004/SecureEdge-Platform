@@ -151,8 +151,10 @@ manually supplied tokens containing embedded whitespace or control characters
 are rejected by application configuration validation. The literal `[REDACTED]`
 value is reserved for Control Plane secret-preservation responses and is rejected
 as a deployable credential. `doctor.sh` validates staged Secret-file contents against
-the same contract before Compose is started, reading the credential through standard input
-rather than process arguments and without echoing the credential itself.
+the same contract before Compose is started, including the exact whitespace normalization
+used by Go `strings.TrimSpace`; this prevents preflight from accepting C0 control characters
+that the application would reject at startup. The credential is read through standard input
+rather than process arguments and is never echoed by the validator.
 
 ### SecurityEdge-only special requirement
 

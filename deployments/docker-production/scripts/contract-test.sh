@@ -47,6 +47,7 @@ core=(
   "$prod_dir/compose.securityedge.yml"
   "$prod_dir/compose.platform.yml"
   "$script_dir/bootstrap.sh"
+  "$script_dir/check-admin-secret.py"
   "$script_dir/doctor.sh"
   "$script_dir/validate.sh"
 )
@@ -102,15 +103,50 @@ grep -q 'EDGEPROXY_UID and SECURITYEDGE_UID must be different' "$script_dir/doct
 grep -q 'EDGEPROXY_GID and SECURITYEDGE_GID must be different' "$script_dir/doctor.sh"
 grep -q 'already assigned to a host account' "$script_dir/doctor.sh"
 grep -q 'already assigned to a host group' "$script_dir/doctor.sh"
-grep -q 'secret cannot use the reserved \[REDACTED\] secret marker' "$script_dir/doctor.sh"
-grep -q 'secret cannot contain embedded whitespace or control characters' "$script_dir/doctor.sh"
-grep -q 'secret cannot exceed 8192 UTF-8 bytes' "$script_dir/doctor.sh"
-grep -q 'secret must be valid UTF-8' "$script_dir/doctor.sh"
-grep -Fq 'protected_cat "$f" | python3 -c' "$script_dir/doctor.sh"
-if grep -Fq 'python3 - "$label" "$value"' "$script_dir/doctor.sh"; then
+secret_checker="$script_dir/check-admin-secret.py"
+grep -Fq 'protected_cat "$f" | python3 "$script_dir/check-admin-secret.py" --label "$label"' "$script_dir/doctor.sh"
+grep -q 'secret cannot use the reserved \[REDACTED\] secret marker' "$secret_checker"
+grep -q 'secret cannot contain embedded whitespace or control characters' "$secret_checker"
+grep -q 'secret cannot exceed 8192 UTF-8 bytes' "$secret_checker"
+grep -q 'secret must be valid UTF-8' "$secret_checker"
+grep -q 'Go strings.TrimSpace uses unicode.IsSpace' "$secret_checker"
+if grep -Eq 'check-admin-secret[.]py.*\$value|python3 - "\$label" "\$value"' "$script_dir/doctor.sh"; then
   echo "doctor.sh must not expose secret values through process arguments" >&2
   exit 1
 fi
+
+# The Doctor validator must normalize exactly like Go strings.TrimSpace. Python
+# str.strip() additionally strips U+001C..U+001F, which would let preflight
+# accept a secret that the application rejects as a control character.
+printf 'valid-token' | python3 "$secret_checker" --label TEST
+printf '\302\240valid-token\302\240' | python3 "$secret_checker" --label TEST
+printf '\034valid-token\034' | python3 "$secret_checker" --label TEST >/dev/null 2>&1 && {
+  echo 'production secret guardrail accepted U+001C at a credential boundary' >&2
+  exit 1
+}
+printf '[REDACTED]' | python3 "$secret_checker" --label TEST >/dev/null 2>&1 && {
+  echo 'production secret guardrail accepted the reserved marker' >&2
+  exit 1
+}
+printf 'bad token' | python3 "$secret_checker" --label TEST >/dev/null 2>&1 && {
+  echo 'production secret guardrail accepted embedded whitespace' >&2
+  exit 1
+}
+python3 - <<'PYSECRET' | python3 "$secret_checker" --label TEST
+import sys
+sys.stdout.write("a" * 8192)
+PYSECRET
+python3 - <<'PYSECRET' | python3 "$secret_checker" --label TEST >/dev/null 2>&1 && {
+import sys
+sys.stdout.write("a" * 8193)
+PYSECRET
+  echo 'production secret guardrail accepted an oversized credential' >&2
+  exit 1
+}
+printf '\377' | python3 "$secret_checker" --label TEST >/dev/null 2>&1 && {
+  echo 'production secret guardrail accepted invalid UTF-8' >&2
+  exit 1
+}
 grep -q 'Full Platform Docker network is IPv4-only' "$script_dir/doctor.sh"
 grep -q 'must be a DNS hostname, not an IP literal' "$script_dir/doctor.sh"
 # Full platform must not expose EdgeProxy data plane.

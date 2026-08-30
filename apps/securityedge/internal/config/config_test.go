@@ -353,6 +353,42 @@ func TestApplyEnvironmentOverridesDoesNotRequireFileMutation(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsBearerTokenWhitespaceOrControlCharacters(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config, string)
+		field  string
+	}{
+		{name: "SecurityEdge Admin", mutate: func(cfg *Config, token string) { cfg.Admin.AuthToken = token }, field: "admin.auth_token"},
+		{name: "EdgeProxy Admin client", mutate: func(cfg *Config, token string) { cfg.EdgeProxy.AdminToken = token }, field: "edgeproxy.admin_token"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, token := range []string{"bad token", "bad\ttoken", "bad\ntoken", "bad\u00a0token", "bad\x7ftoken"} {
+				cfg := Default()
+				cfg.Server.Mode = "embedded"
+				cfg.EdgeProxy.ConfigPath = "edge.json"
+				tt.mutate(&cfg, token)
+				if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tt.field+" cannot contain whitespace or control characters") {
+					t.Fatalf("expected unusable Bearer token %q for %s to be rejected, got %v", token, tt.field, err)
+				}
+			}
+		})
+	}
+
+	cfg := Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Admin.AuthToken = "  security-token_123.~+/=  "
+	cfg.EdgeProxy.AdminToken = "  edge-token_123.~+/=  "
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected normalized single-field Bearer credentials to validate: %v", err)
+	}
+	if cfg.Admin.AuthToken != "security-token_123.~+/=" || cfg.EdgeProxy.AdminToken != "edge-token_123.~+/=" {
+		t.Fatalf("expected surrounding token whitespace to be normalized: admin=%q edge=%q", cfg.Admin.AuthToken, cfg.EdgeProxy.AdminToken)
+	}
+}
+
 func TestValidateRejectsAdminURLQuery(t *testing.T) {
 	cfg := Default()
 	cfg.EdgeProxy.AdminURL = "http://127.0.0.1:9090?token=unsafe"

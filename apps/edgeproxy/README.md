@@ -407,7 +407,7 @@ The in-memory Admin log ring accepts a configured capacity from `1` through `100
 
 ## Admin credential
 
-`EDGEPROXY_ADMIN_TOKEN` always takes precedence over the JSON credential. Use the same strong value in `apps/edgeproxy/.env` and `apps/securityedge/.env`; SecurityEdge uses it only for authenticated backend calls to the EdgeProxy Admin API.
+`EDGEPROXY_ADMIN_TOKEN` always takes precedence over the JSON credential. Use the same strong value in `apps/edgeproxy/.env` and `apps/securityedge/.env`; SecurityEdge uses it only for authenticated backend calls to the EdgeProxy Admin API. Admin credentials are single `Authorization: Bearer <token>` values: surrounding whitespace is normalized, while embedded whitespace or control characters are rejected during configuration validation because the HTTP authentication parser cannot represent them as one Bearer credential.
 
 ## Scripts
 

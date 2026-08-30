@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -478,12 +479,18 @@ func (c *Config) Validate() error {
 	c.Server.TLS.KeyFile = strings.TrimSpace(c.Server.TLS.KeyFile)
 	c.Admin.ListenAddr = strings.TrimSpace(c.Admin.ListenAddr)
 	c.Admin.AuthToken = strings.TrimSpace(c.Admin.AuthToken)
+	if c.Admin.AuthToken != "" && !validBearerCredential(c.Admin.AuthToken) {
+		errs = append(errs, errors.New("admin.auth_token cannot contain whitespace or control characters"))
+	}
 	c.Admin.LogStore.FilePath = strings.TrimSpace(c.Admin.LogStore.FilePath)
 	c.Admin.TelemetryHistory.FilePath = strings.TrimSpace(c.Admin.TelemetryHistory.FilePath)
 	c.Admin.Connectivity.DNS.Server = strings.TrimSpace(c.Admin.Connectivity.DNS.Server)
 	c.EdgeProxy.ConfigPath = strings.TrimSpace(c.EdgeProxy.ConfigPath)
 	c.EdgeProxy.AdminURL = strings.TrimSpace(c.EdgeProxy.AdminURL)
 	c.EdgeProxy.AdminToken = strings.TrimSpace(c.EdgeProxy.AdminToken)
+	if c.EdgeProxy.AdminToken != "" && !validBearerCredential(c.EdgeProxy.AdminToken) {
+		errs = append(errs, errors.New("edgeproxy.admin_token cannot contain whitespace or control characters"))
+	}
 	if c.Server.Mode != "gateway" && c.Server.Mode != "embedded" {
 		errs = append(errs, errors.New("server.mode must be gateway or embedded"))
 	}
@@ -1032,6 +1039,12 @@ func reservedClientIPSourceHeader(value string) bool {
 	default:
 		return false
 	}
+}
+
+func validBearerCredential(value string) bool {
+	return strings.IndexFunc(value, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) < 0
 }
 
 func validHTTPToken(value string) bool {

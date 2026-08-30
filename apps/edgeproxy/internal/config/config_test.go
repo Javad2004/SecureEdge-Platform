@@ -254,6 +254,35 @@ func TestValidateRequiresTokenForNonLoopbackAdmin(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsBearerTokenWhitespaceOrControlCharacters(t *testing.T) {
+	for _, token := range []string{
+		"bad token",
+		"bad\ttoken",
+		"bad\ntoken",
+		"bad\u00a0token",
+		"bad\x7ftoken",
+	} {
+		t.Run(fmt.Sprintf("%q", token), func(t *testing.T) {
+			cfg := Default()
+			cfg.Admin.AuthToken = token
+			cfg.Routes = []RouteConfig{validRouteForValidation()}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "admin.auth_token cannot contain whitespace or control characters") {
+				t.Fatalf("expected unusable Bearer token %q to be rejected, got %v", token, err)
+			}
+		})
+	}
+
+	cfg := Default()
+	cfg.Admin.AuthToken = "  valid-token_123.~+/=  "
+	cfg.Routes = []RouteConfig{validRouteForValidation()}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected normalized single-field Bearer credential to validate: %v", err)
+	}
+	if cfg.Admin.AuthToken != "valid-token_123.~+/=" {
+		t.Fatalf("expected surrounding whitespace to be normalized, got %q", cfg.Admin.AuthToken)
+	}
+}
+
 func TestLoadAdminTokenEnvironmentOverride(t *testing.T) {
 	cfg := Default()
 	cfg.Admin.AuthToken = "file-token"

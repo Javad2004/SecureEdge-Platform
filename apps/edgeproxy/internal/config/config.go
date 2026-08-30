@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -369,6 +370,9 @@ func (c *Config) Validate() error {
 	c.Server.TLS.KeyFile = strings.TrimSpace(c.Server.TLS.KeyFile)
 	c.Admin.ListenAddr = strings.TrimSpace(c.Admin.ListenAddr)
 	c.Admin.AuthToken = strings.TrimSpace(c.Admin.AuthToken)
+	if c.Admin.AuthToken != "" && !validBearerCredential(c.Admin.AuthToken) {
+		errs = append(errs, errors.New("admin.auth_token cannot contain whitespace or control characters"))
+	}
 	if strings.TrimSpace(c.Server.ListenAddr) == "" {
 		errs = append(errs, errors.New("server.listen_addr is required"))
 	} else if err := validateHostPort("server.listen_addr", c.Server.ListenAddr, true); err != nil {
@@ -953,6 +957,12 @@ func reservedClientIPSourceHeader(value string) bool {
 	default:
 		return false
 	}
+}
+
+func validBearerCredential(value string) bool {
+	return strings.IndexFunc(value, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) < 0
 }
 
 func validHTTPToken(value string) bool {

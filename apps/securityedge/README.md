@@ -286,7 +286,7 @@ SecurityEdge dashboard token   value of SECURITYEDGE_ADMIN_TOKEN
 EdgeProxy Admin API token      shared EDGEPROXY_ADMIN_TOKEN value
 ```
 
-The dashboard token is entered by the operator. The EdgeProxy token is used only by the SecurityEdge backend and is not exposed to browser JavaScript.
+The dashboard token is entered by the operator. The EdgeProxy token is used only by the SecurityEdge backend and is not exposed to browser JavaScript. Both credentials must be single `Authorization: Bearer <token>` values: surrounding whitespace is normalized, but embedded whitespace or control characters are rejected during validation so a configuration cannot pass startup checks with a credential that the HTTP Bearer parser can never authenticate.
 
 ## Expected listener exposure
 

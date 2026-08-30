@@ -144,7 +144,10 @@ bash ./scripts/bootstrap.sh platform
 `bootstrap.sh` is idempotent. It never overwrites existing state, secrets, TLS
 or CA files. Fresh EdgeProxy/full-platform modes generate a cryptographically
 random EdgeProxy Admin token; fresh SecurityEdge/full-platform modes generate a
-SecurityEdge Admin token.
+SecurityEdge Admin token. Admin credentials are used as single HTTP Bearer-token
+fields; bootstrap-generated values already satisfy this contract, while imported
+or manually supplied tokens containing embedded whitespace or control characters
+are rejected by application configuration validation.
 
 ### SecurityEdge-only special requirement
 

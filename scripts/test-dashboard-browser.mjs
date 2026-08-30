@@ -3688,6 +3688,26 @@ try {
         edgeLogCapacity.value = '0'; edgeLogEnabled.checked = true; syncSystemFeatureControls(edgeAdmin, true);
         const edgeLogOn = {capacityDisabled:edgeLogCapacity.disabled,capacity:edgeLogCapacity.value};
 
+        const securitySecret = securityAdmin.elements.namedItem('auth_token');
+        const edgeDependencyForm = document.getElementById('system-security-edgeproxy-form');
+        const edgeDependencySecret = edgeDependencyForm.elements.namedItem('admin_token');
+        const edgeAdminSecret = edgeAdmin.elements.namedItem('auth_token');
+        const secretErrors = {};
+        securitySecret.value = 'bad token';
+        try { validateSystemSecretFields(securityAdmin); } catch (error) { secretErrors.securityWhitespace = error.message; }
+        securitySecret.value = '[REDACTED]';
+        try { validateSystemSecretFields(securityAdmin); } catch (error) { secretErrors.securityReserved = error.message; }
+        securitySecret.value = 'a'.repeat(8193);
+        try { validateSystemSecretFields(securityAdmin); } catch (error) { secretErrors.securityOversized = error.message; }
+        edgeDependencySecret.value = 'bad\ttoken';
+        try { validateSystemSecretFields(edgeDependencyForm); } catch (error) { secretErrors.edgeWhitespace = error.message; }
+        edgeDependencySecret.value = 'é'.repeat(4097);
+        try { validateSystemSecretFields(edgeDependencyForm); } catch (error) { secretErrors.edgeOversized = error.message; }
+        edgeAdminSecret.value = '[REDACTED]';
+        try { validateSystemSecretFields(edgeAdmin); } catch (error) { secretErrors.edgeReserved = error.message; }
+        securitySecret.value = '   ';
+        const preservedSecret = systemFormPayload(securityAdmin, {...state.securityConfig.admin,auth_token:'[REDACTED]'}).auth_token;
+
         let invalidStatus = '';
         try { statusCodes('200, nope', 'Fixture statuses', false); } catch (error) { invalidStatus = error.message; }
         let oversizedOrigin = '';
@@ -3713,6 +3733,7 @@ try {
         try { goDurationMilliseconds('5 seconds', 'Fixture duration'); } catch (error) { invalidDuration = error.message; }
         return {
           cacheDisabled,cacheEnabledState,securityTLSOff,securityTLSOn,embedded,adminOff,adminOnFeaturesOff,securityLogPersistenceOff,securityLogPersistenceOn,connectivityOn,dnsOn,historyOn,edgeLogOff,edgeLogOn,
+          secretErrors,preservedSecret,
           validStatuses:statusCodes('200, 404, 200', 'Fixture statuses', false),invalidStatus,oversizedOrigin,oversizedRoute,duplicateRoute,relationshipErrors,invalidDuration,
           parsedDuration:goDurationMilliseconds('1h30m500ms', 'Fixture duration'),
           routeHeaderMin:document.getElementById('route-max-response-header').min,
@@ -3755,6 +3776,15 @@ try {
     }
     if (!featureControlContract.edgeLogOff.capacityDisabled || featureControlContract.edgeLogOn.capacityDisabled || featureControlContract.edgeLogOn.capacity !== '5000') {
       throw new Error(`EdgeProxy Admin log-store controls do not follow the enabled contract: ${JSON.stringify(featureControlContract)}`);
+    }
+    if (!featureControlContract.secretErrors.securityWhitespace.includes('whitespace or control') ||
+        !featureControlContract.secretErrors.securityReserved.includes('reserved [REDACTED]') ||
+        !featureControlContract.secretErrors.securityOversized.includes('8192 UTF-8 bytes') ||
+        !featureControlContract.secretErrors.edgeWhitespace.includes('whitespace or control') ||
+        !featureControlContract.secretErrors.edgeOversized.includes('8192 UTF-8 bytes') ||
+        !featureControlContract.secretErrors.edgeReserved.includes('reserved [REDACTED]') ||
+        featureControlContract.preservedSecret !== '[REDACTED]') {
+      throw new Error(`Structured secret validation does not match the backend Bearer-token contract: ${JSON.stringify(featureControlContract)}`);
     }
     if (JSON.stringify(featureControlContract.validStatuses) !== JSON.stringify([200,404]) || !featureControlContract.invalidStatus.includes('100 to 599') ||
         !featureControlContract.oversizedOrigin.includes('256 UTF-8 bytes') || !featureControlContract.oversizedRoute.includes('256 UTF-8 bytes') ||

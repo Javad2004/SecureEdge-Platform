@@ -273,6 +273,30 @@ func TestValidateRejectsBearerTokenWhitespaceOrControlCharacters(t *testing.T) {
 	}
 
 	cfg := Default()
+	cfg.Admin.AuthToken = "[REDACTED]"
+	cfg.Routes = []RouteConfig{validRouteForValidation()}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "reserved [REDACTED] secret marker") {
+		t.Fatalf("expected reserved redaction marker to be rejected, got %v", err)
+	}
+
+	cfg = Default()
+	cfg.Admin.AuthToken = strings.Repeat("a", maxBearerCredentialBytes+1)
+	cfg.Routes = []RouteConfig{validRouteForValidation()}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "admin.auth_token cannot exceed 8192 UTF-8 bytes") {
+		t.Fatalf("expected oversized Bearer credential to be rejected, got %v", err)
+	}
+
+	cfg = Default()
+	cfg.Admin.AuthToken = "  " + strings.Repeat("a", maxBearerCredentialBytes) + "  "
+	cfg.Routes = []RouteConfig{validRouteForValidation()}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected maximum-size normalized Bearer credential to validate: %v", err)
+	}
+	if len(cfg.Admin.AuthToken) != maxBearerCredentialBytes {
+		t.Fatalf("expected maximum-size credential after normalization, got %d bytes", len(cfg.Admin.AuthToken))
+	}
+
+	cfg = Default()
 	cfg.Admin.AuthToken = "  valid-token_123.~+/=  "
 	cfg.Routes = []RouteConfig{validRouteForValidation()}
 	if err := cfg.Validate(); err != nil {

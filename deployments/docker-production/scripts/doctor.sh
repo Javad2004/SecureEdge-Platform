@@ -73,6 +73,28 @@ protected_cat() {
 json_valid() {
   protected_cat "$1" | python3 -m json.tool >/dev/null
 }
+secret_value_ok() {
+  local f=$1 label=$2
+  protected_cat "$f" | python3 -c '
+import sys, unicodedata
+label = sys.argv[1]
+raw = sys.stdin.buffer.read()
+try:
+    value = raw.decode("utf-8")
+except UnicodeDecodeError:
+    raise SystemExit(f"{label} secret must be valid UTF-8")
+token = value.strip()
+if not token:
+    raise SystemExit(f"{label} secret is empty after whitespace normalization")
+if token == "[REDACTED]":
+    raise SystemExit(f"{label} secret cannot use the reserved [REDACTED] secret marker")
+if len(token.encode("utf-8")) > 8192:
+    raise SystemExit(f"{label} secret cannot exceed 8192 UTF-8 bytes")
+if any(ch.isspace() or unicodedata.category(ch) == "Cc" for ch in token):
+    raise SystemExit(f"{label} secret cannot contain embedded whitespace or control characters")
+' "$label"
+}
+
 secret_ok() {
   local f=$1 expected_gid=$2 label=$3
   require_file "$f" || return 1
@@ -80,6 +102,7 @@ secret_ok() {
     echo "$label secret is empty: $f" >&2
     return 1
   fi
+  secret_value_ok "$f" "$label" || return 1
   local metadata owner group mode_bits
   if metadata=$(stat -c '%u %g %a' "$f" 2>/dev/null); then
     :

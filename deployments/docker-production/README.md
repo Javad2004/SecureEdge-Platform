@@ -145,9 +145,14 @@ bash ./scripts/bootstrap.sh platform
 or CA files. Fresh EdgeProxy/full-platform modes generate a cryptographically
 random EdgeProxy Admin token; fresh SecurityEdge/full-platform modes generate a
 SecurityEdge Admin token. Admin credentials are used as single HTTP Bearer-token
-fields; bootstrap-generated values already satisfy this contract, while imported
-or manually supplied tokens containing embedded whitespace or control characters
-are rejected by application configuration validation.
+fields with a maximum normalized size of 8192 UTF-8 bytes; bootstrap-generated
+values already satisfy this contract, while oversized imported credentials or
+manually supplied tokens containing embedded whitespace or control characters
+are rejected by application configuration validation. The literal `[REDACTED]`
+value is reserved for Control Plane secret-preservation responses and is rejected
+as a deployable credential. `doctor.sh` validates staged Secret-file contents against
+the same contract before Compose is started, reading the credential through standard input
+rather than process arguments and without echoing the credential itself.
 
 ### SecurityEdge-only special requirement
 

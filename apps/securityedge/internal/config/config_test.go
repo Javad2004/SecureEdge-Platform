@@ -376,6 +376,27 @@ func TestValidateRejectsBearerTokenWhitespaceOrControlCharacters(t *testing.T) {
 		})
 	}
 
+	for _, tt := range tests {
+		t.Run(tt.name+" reserved marker", func(t *testing.T) {
+			cfg := Default()
+			cfg.Server.Mode = "embedded"
+			cfg.EdgeProxy.ConfigPath = "edge.json"
+			tt.mutate(&cfg, "[REDACTED]")
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tt.field+" cannot use the reserved [REDACTED] secret marker") {
+				t.Fatalf("expected reserved redaction marker for %s to be rejected, got %v", tt.field, err)
+			}
+		})
+		t.Run(tt.name+" oversized", func(t *testing.T) {
+			cfg := Default()
+			cfg.Server.Mode = "embedded"
+			cfg.EdgeProxy.ConfigPath = "edge.json"
+			tt.mutate(&cfg, strings.Repeat("a", maxBearerCredentialBytes+1))
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tt.field+" cannot exceed 8192 UTF-8 bytes") {
+				t.Fatalf("expected oversized Bearer credential for %s to be rejected, got %v", tt.field, err)
+			}
+		})
+	}
+
 	cfg := Default()
 	cfg.Server.Mode = "embedded"
 	cfg.EdgeProxy.ConfigPath = "edge.json"
@@ -386,6 +407,15 @@ func TestValidateRejectsBearerTokenWhitespaceOrControlCharacters(t *testing.T) {
 	}
 	if cfg.Admin.AuthToken != "security-token_123.~+/=" || cfg.EdgeProxy.AdminToken != "edge-token_123.~+/=" {
 		t.Fatalf("expected surrounding token whitespace to be normalized: admin=%q edge=%q", cfg.Admin.AuthToken, cfg.EdgeProxy.AdminToken)
+	}
+
+	cfg = Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Admin.AuthToken = strings.Repeat("a", maxBearerCredentialBytes)
+	cfg.EdgeProxy.AdminToken = strings.Repeat("b", maxBearerCredentialBytes)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected maximum-size Bearer credentials to validate: %v", err)
 	}
 }
 

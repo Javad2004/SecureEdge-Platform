@@ -102,6 +102,14 @@ grep -q 'EDGEPROXY_UID and SECURITYEDGE_UID must be different' "$script_dir/doct
 grep -q 'EDGEPROXY_GID and SECURITYEDGE_GID must be different' "$script_dir/doctor.sh"
 grep -q 'already assigned to a host account' "$script_dir/doctor.sh"
 grep -q 'already assigned to a host group' "$script_dir/doctor.sh"
+grep -q 'secret cannot use the reserved \[REDACTED\] secret marker' "$script_dir/doctor.sh"
+grep -q 'secret cannot contain embedded whitespace or control characters' "$script_dir/doctor.sh"
+grep -q 'secret cannot exceed 8192 UTF-8 bytes' "$script_dir/doctor.sh"
+grep -Fq 'protected_cat "$f" | python3 -c' "$script_dir/doctor.sh"
+if grep -Fq 'python3 - "$label" "$value"' "$script_dir/doctor.sh"; then
+  echo "doctor.sh must not expose secret values through process arguments" >&2
+  exit 1
+fi
 grep -q 'Full Platform Docker network is IPv4-only' "$script_dir/doctor.sh"
 grep -q 'must be a DNS hostname, not an IP literal' "$script_dir/doctor.sh"
 # Full platform must not expose EdgeProxy data plane.

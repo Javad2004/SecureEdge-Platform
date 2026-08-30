@@ -146,6 +146,22 @@ function validateLogStoreRelationships(store, label) {
   if (maxPage > capacity) throw new Error(`${label} maximum page size cannot exceed memory capacity.`);
 }
 
+function validateBearerSecretField(form, name, label) {
+  const field = namedField(form, name);
+  if (!field) return;
+  const token = String(field.value ?? '').trim();
+  if (!token) return;
+  if (token === '[REDACTED]') throw new Error(`${label} cannot use the reserved [REDACTED] secret marker.`);
+  if (utf8Bytes(token) > 8192) throw new Error(`${label} cannot exceed 8192 UTF-8 bytes.`);
+  if (/[\p{White_Space}\p{Cc}]/u.test(token)) throw new Error(`${label} cannot contain whitespace or control characters.`);
+}
+
+function validateSystemSecretFields(form) {
+  const key = form?.dataset?.systemForm;
+  if (key === 'security-admin' || key === 'edge-admin') validateBearerSecretField(form, 'auth_token', 'Admin Bearer token');
+  if (key === 'security-edgeproxy') validateBearerSecretField(form, 'admin_token', 'EdgeProxy Admin Bearer token');
+}
+
 function validateSystemRelationships(form, payload) {
   const key = form?.dataset?.systemForm;
   if (key === 'security-server' && Number(payload.max_concurrent_per_client) > Number(payload.max_concurrent_requests)) {
@@ -1917,7 +1933,7 @@ function systemFormPayload(form, source) {
   const payload = {};
   form.querySelectorAll('[name]').forEach(field => {
     let value;
-    if (field.dataset.secret === 'true' && !field.value) {
+    if (field.dataset.secret === 'true' && !String(field.value ?? '').trim()) {
       value = nestedValue(source, field.name) ?? '';
     } else if (field.type === 'checkbox') {
       value = field.checked;
@@ -1956,6 +1972,7 @@ async function saveSystemForm(event) {
   const result = form.querySelector('[data-system-result]');
   const button = form.querySelector('button[type="submit"]');
   try {
+    validateSystemSecretFields(form);
     const payload = systemFormPayload(form, definition.source() || {});
     validateSystemRelationships(form, payload);
     button.disabled = true;

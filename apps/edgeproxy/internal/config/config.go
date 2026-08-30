@@ -370,8 +370,10 @@ func (c *Config) Validate() error {
 	c.Server.TLS.KeyFile = strings.TrimSpace(c.Server.TLS.KeyFile)
 	c.Admin.ListenAddr = strings.TrimSpace(c.Admin.ListenAddr)
 	c.Admin.AuthToken = strings.TrimSpace(c.Admin.AuthToken)
-	if c.Admin.AuthToken != "" && !validBearerCredential(c.Admin.AuthToken) {
-		errs = append(errs, errors.New("admin.auth_token cannot contain whitespace or control characters"))
+	if c.Admin.AuthToken != "" {
+		if err := validateBearerCredential("admin.auth_token", c.Admin.AuthToken); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if strings.TrimSpace(c.Server.ListenAddr) == "" {
 		errs = append(errs, errors.New("server.listen_addr is required"))
@@ -959,10 +961,21 @@ func reservedClientIPSourceHeader(value string) bool {
 	}
 }
 
-func validBearerCredential(value string) bool {
-	return strings.IndexFunc(value, func(r rune) bool {
+const maxBearerCredentialBytes = 8 << 10
+
+func validateBearerCredential(field, value string) error {
+	if value == "[REDACTED]" {
+		return fmt.Errorf("%s cannot use the reserved [REDACTED] secret marker", field)
+	}
+	if len(value) > maxBearerCredentialBytes {
+		return fmt.Errorf("%s cannot exceed %d UTF-8 bytes", field, maxBearerCredentialBytes)
+	}
+	if strings.IndexFunc(value, func(r rune) bool {
 		return unicode.IsSpace(r) || unicode.IsControl(r)
-	}) < 0
+	}) >= 0 {
+		return fmt.Errorf("%s cannot contain whitespace or control characters", field)
+	}
+	return nil
 }
 
 func validHTTPToken(value string) bool {

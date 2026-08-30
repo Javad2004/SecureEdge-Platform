@@ -18,7 +18,10 @@
 **/*.test
 **/*.out
 **/*.tmp
+**/*.tmp-*
+**/.securityedge-write-probe-*
 **/*.bak
+**/*.bak-*
 **/coverage.out
 **/coverage.html
 **/*.coverprofile

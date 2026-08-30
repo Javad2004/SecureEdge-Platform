@@ -14,7 +14,9 @@ logs/
 *.test
 *.out
 *.tmp
+**/*.tmp-*
 *.bak
+**/*.bak-*
 coverage.out
 coverage.html
 *.coverprofile

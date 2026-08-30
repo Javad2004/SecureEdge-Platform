@@ -8,7 +8,10 @@
 *.exe
 *.log
 *.tmp
+*.tmp-*
+.securityedge-write-probe-*
 *.bak
+*.bak-*
 coverage.out
 .DS_Store
 .vscode/

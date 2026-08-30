@@ -546,19 +546,29 @@ func TestRestoreSecurityFallbackLeavesPreviousPathUntouchedAfterConfigPathSwitch
 
 func TestEdgeProxyWatchReadyRequiresAppliedRevision(t *testing.T) {
 	tests := []struct {
-		name string
-		raw  string
-		want bool
+		name    string
+		raw     string
+		want    bool
+		wantErr bool
 	}{
 		{name: "hot applied", raw: `{"revision":4,"applied_revision":4,"restart_scheduled":false}`, want: true},
 		{name: "restart pending", raw: `{"revision":5,"applied_revision":4,"restart_scheduled":true}`, want: false},
 		{name: "candidate persisted but not applied", raw: `{"revision":5,"applied_revision":4,"restart_scheduled":false}`, want: false},
 		{name: "failed replacement rolled back", raw: `{"revision":5,"applied_revision":4,"restart_scheduled":false,"last_source":"restart_rollback"}`, want: true},
 		{name: "applied ahead", raw: `{"revision":5,"applied_revision":6,"restart_scheduled":false}`, want: true},
+		{name: "missing revision metadata", raw: `{}`, wantErr: true},
+		{name: "missing applied revision", raw: `{"revision":5}`, wantErr: true},
+		{name: "rollback without revision metadata", raw: `{"last_source":"restart_rollback"}`, wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := edgeProxyWatchReady(json.RawMessage(tc.raw))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected malformed watch payload to fail closed")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -441,6 +441,13 @@ func edgeProxyWatchReady(raw json.RawMessage) (bool, error) {
 	if err := json.Unmarshal(raw, &watch); err != nil {
 		return false, fmt.Errorf("decode EdgeProxy config watch status: %w", err)
 	}
+	// Revisions are initialized to one by EdgeProxy and remain strictly
+	// positive. Reject syntactically valid but incomplete/stale payloads instead
+	// of allowing JSON zero values to satisfy 0 >= 0 and falsely activate a
+	// route table that EdgeProxy has not confirmed as applied.
+	if watch.Revision == 0 || watch.AppliedRevision == 0 {
+		return false, errors.New("EdgeProxy config watch status is missing revision metadata")
+	}
 	if watch.RestartScheduled {
 		return false, nil
 	}

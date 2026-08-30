@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"reflect"
+	goruntime "runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -86,7 +88,194 @@ func prepareRuntime(configPath string) (preparedRuntime, error) {
 	return prepareRuntimeConfig(configPath, cfg)
 }
 
+func validatePersistentPathIsolation(configPath string, cfg config.Config) error {
+	type managedPath struct {
+		field string
+		path  string
+	}
+
+	securityConfigPath := configPath
+	edgeConfigPath := resolveEdgeConfigPath(configPath, cfg.EdgeProxy.ConfigPath)
+	configFiles := []managedPath{
+		{field: "SecurityEdge configuration", path: securityConfigPath},
+		{field: "EdgeProxy route configuration", path: edgeConfigPath},
+	}
+	protected := []managedPath{
+		configFiles[0],
+		{field: "SecurityEdge configuration staging file", path: securityConfigPath + ".bak"},
+		configFiles[1],
+		{field: "EdgeProxy route configuration staging file", path: edgeConfigPath + ".bak"},
+	}
+	for _, configFile := range configFiles {
+		backups, err := existingConfigBackupPaths(configFile.path)
+		if err != nil {
+			return fmt.Errorf("discover %s backups: %w", configFile.field, err)
+		}
+		for _, backup := range backups {
+			protected = append(protected, managedPath{field: configFile.field + " retained backup", path: backup})
+		}
+	}
+	if cfg.Server.TLS.Enabled {
+		protected = append(protected,
+			managedPath{field: "server.tls.cert_file", path: cfg.Server.TLS.CertFile},
+			managedPath{field: "server.tls.key_file", path: cfg.Server.TLS.KeyFile},
+		)
+	}
+
+	writers := make([]managedPath, 0, cfg.Admin.LogStore.MaxBackups+3)
+	if logPath := strings.TrimSpace(cfg.Admin.LogStore.FilePath); logPath != "" {
+		writers = append(writers, managedPath{field: "admin.log_store.file_path", path: logPath})
+		for i := 1; i <= cfg.Admin.LogStore.MaxBackups; i++ {
+			writers = append(writers, managedPath{field: fmt.Sprintf("admin.log_store rotation .%d", i), path: fmt.Sprintf("%s.%d", logPath, i)})
+		}
+	}
+	if cfg.Admin.TelemetryHistory.Enabled {
+		if historyPath := strings.TrimSpace(cfg.Admin.TelemetryHistory.FilePath); historyPath != "" {
+			writers = append(writers,
+				managedPath{field: "admin.telemetry_history.file_path", path: historyPath},
+				managedPath{field: "admin.telemetry_history staging/recovery file", path: historyPath + ".bak"},
+			)
+		}
+	}
+
+	for _, writer := range writers {
+		for _, configFile := range configFiles {
+			inBackupNamespace, err := managedPathHasPrefix(writer.path, configFile.path+".bak-")
+			if err != nil {
+				return fmt.Errorf("compare %s with %s retained-backup namespace: %w", writer.field, configFile.field, err)
+			}
+			if inBackupNamespace {
+				return fmt.Errorf("%s must not overlap %s retained-backup namespace", writer.field, configFile.field)
+			}
+		}
+		for _, target := range protected {
+			if strings.TrimSpace(target.path) == "" {
+				continue
+			}
+			same, err := managedPathsCollide(writer.path, target.path)
+			if err != nil {
+				return fmt.Errorf("compare %s with %s: %w", writer.field, target.field, err)
+			}
+			if same {
+				return fmt.Errorf("%s must not overlap %s", writer.field, target.field)
+			}
+		}
+	}
+	for i := 0; i < len(writers); i++ {
+		for j := i + 1; j < len(writers); j++ {
+			same, err := managedPathsCollide(writers[i].path, writers[j].path)
+			if err != nil {
+				return fmt.Errorf("compare %s with %s: %w", writers[i].field, writers[j].field, err)
+			}
+			if same {
+				return fmt.Errorf("%s must not overlap %s", writers[i].field, writers[j].field)
+			}
+		}
+	}
+	return nil
+}
+
+func existingConfigBackupPaths(path string) ([]string, error) {
+	dir := filepath.Dir(path)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	prefix := filepath.Base(path) + ".bak-"
+	backups := make([]string, 0)
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), prefix) {
+			backups = append(backups, filepath.Join(dir, entry.Name()))
+		}
+	}
+	return backups, nil
+}
+
+func managedPathHasPrefix(path, prefix string) (bool, error) {
+	candidate, err := canonicalManagedPath(path)
+	if err != nil {
+		return false, err
+	}
+	canonicalPrefix, err := canonicalManagedPath(prefix)
+	if err != nil {
+		return false, err
+	}
+	return strings.HasPrefix(candidate, canonicalPrefix), nil
+}
+
+func managedPathsCollide(left, right string) (bool, error) {
+	leftPath, err := canonicalManagedPath(left)
+	if err != nil {
+		return false, err
+	}
+	rightPath, err := canonicalManagedPath(right)
+	if err != nil {
+		return false, err
+	}
+	if leftPath == rightPath {
+		return true, nil
+	}
+	leftInfo, leftErr := os.Stat(leftPath)
+	rightInfo, rightErr := os.Stat(rightPath)
+	if leftErr == nil && rightErr == nil && os.SameFile(leftInfo, rightInfo) {
+		return true, nil
+	}
+	if leftErr != nil && !errors.Is(leftErr, os.ErrNotExist) {
+		return false, leftErr
+	}
+	if rightErr != nil && !errors.Is(rightErr, os.ErrNotExist) {
+		return false, rightErr
+	}
+	return false, nil
+}
+
+func canonicalManagedPath(path string) (string, error) {
+	abs, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", err
+	}
+	resolved := abs
+	if candidate, err := filepath.EvalSymlinks(abs); err == nil {
+		resolved = candidate
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	} else {
+		// Resolve the nearest existing parent so a not-yet-created persistence
+		// file cannot bypass collision checks through a symlinked directory.
+		current := abs
+		var suffix []string
+		for {
+			parent := filepath.Dir(current)
+			if current == parent {
+				break
+			}
+			suffix = append([]string{filepath.Base(current)}, suffix...)
+			current = parent
+			candidate, parentErr := filepath.EvalSymlinks(current)
+			if parentErr == nil {
+				parts := append([]string{candidate}, suffix...)
+				resolved = filepath.Join(parts...)
+				break
+			}
+			if !errors.Is(parentErr, os.ErrNotExist) {
+				return "", parentErr
+			}
+		}
+	}
+	resolved = filepath.Clean(resolved)
+	if goruntime.GOOS == "windows" {
+		resolved = strings.ToLower(resolved)
+	}
+	return resolved, nil
+}
+
 func prepareRuntimeConfig(configPath string, cfg config.Config) (preparedRuntime, error) {
+	if err := validatePersistentPathIsolation(configPath, cfg); err != nil {
+		return preparedRuntime{}, err
+	}
 	table, err := routes.Load(resolveEdgeConfigPath(configPath, cfg.EdgeProxy.ConfigPath))
 	if err != nil {
 		return preparedRuntime{}, err

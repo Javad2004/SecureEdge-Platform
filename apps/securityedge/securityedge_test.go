@@ -377,6 +377,157 @@ func TestPolicyUpdateDoesNotPersistWhenReloadPreparationFails(t *testing.T) {
 	}
 }
 
+func TestNewRejectsPersistentAdminPathsThatOverlapManagedFiles(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*config.Config, string)
+	}{
+		{name: "security log overlaps security config", mutate: func(cfg *config.Config, cfgPath string) { cfg.Admin.LogStore.FilePath = cfgPath }},
+		{name: "telemetry history overlaps security config", mutate: func(cfg *config.Config, cfgPath string) {
+			cfg.Admin.TelemetryHistory.Enabled = true
+			cfg.Admin.TelemetryHistory.FilePath = cfgPath
+		}},
+		{name: "security log overlaps EdgeProxy config", mutate: func(cfg *config.Config, _ string) { cfg.Admin.LogStore.FilePath = edgePath }},
+		{name: "telemetry history overlaps EdgeProxy config", mutate: func(cfg *config.Config, _ string) {
+			cfg.Admin.TelemetryHistory.Enabled = true
+			cfg.Admin.TelemetryHistory.FilePath = edgePath
+		}},
+		{name: "security log overlaps SecurityEdge retained-backup namespace", mutate: func(cfg *config.Config, cfgPath string) {
+			cfg.Admin.LogStore.FilePath = cfgPath + ".bak-operator"
+		}},
+		{name: "telemetry history overlaps EdgeProxy retained-backup namespace", mutate: func(cfg *config.Config, _ string) {
+			cfg.Admin.TelemetryHistory.Enabled = true
+			cfg.Admin.TelemetryHistory.FilePath = edgePath + ".bak-operator"
+		}},
+		{name: "log and telemetry history overlap", mutate: func(cfg *config.Config, _ string) {
+			path := filepath.Join(dir, "shared.data")
+			cfg.Admin.LogStore.FilePath = path
+			cfg.Admin.TelemetryHistory.Enabled = true
+			cfg.Admin.TelemetryHistory.FilePath = path
+		}},
+		{name: "log rotation overlaps telemetry history", mutate: func(cfg *config.Config, _ string) {
+			path := filepath.Join(dir, "events.ndjson")
+			cfg.Admin.LogStore.FilePath = path
+			cfg.Admin.LogStore.MaxBackups = 2
+			cfg.Admin.TelemetryHistory.Enabled = true
+			cfg.Admin.TelemetryHistory.FilePath = path + ".1"
+		}},
+		{name: "log overlaps telemetry recovery file", mutate: func(cfg *config.Config, _ string) {
+			path := filepath.Join(dir, "history.json")
+			cfg.Admin.LogStore.FilePath = path + ".bak"
+			cfg.Admin.TelemetryHistory.Enabled = true
+			cfg.Admin.TelemetryHistory.FilePath = path
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Server.Mode = "embedded"
+			cfg.EdgeProxy.ConfigPath = "edge.json"
+			cfgPath := filepath.Join(dir, strings.ReplaceAll(tc.name, " ", "-")+".json")
+			tc.mutate(&cfg, cfgPath)
+			if err := config.Save(cfgPath, cfg); err != nil {
+				t.Fatal(err)
+			}
+			runtime, err := New(cfgPath, nil)
+			if runtime != nil {
+				runtime.Close()
+			}
+			if err == nil {
+				t.Fatal("unsafe managed-file overlap was accepted")
+			}
+		})
+	}
+}
+
+func TestPersistentAdminPathIsolationDetectsAliases(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "managed.json")
+	if err := os.WriteFile(target, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(dir, "managed-alias.json")
+	if err := os.Link(target, alias); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Admin.LogStore.FilePath = alias
+	if err := validatePersistentPathIsolation(target, cfg); err == nil {
+		t.Fatal("hard-link alias of the SecurityEdge config was accepted as a log path")
+	}
+}
+
+func TestPersistentAdminPathIsolationDetectsRetainedBackupAliases(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "security.json")
+	backupPath := configPath + ".bak-20260830T000000.000000000Z"
+	if err := os.WriteFile(backupPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(dir, "backup-hardlink-alias.json")
+	if err := os.Link(backupPath, alias); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = filepath.Join(dir, "edge.json")
+	cfg.Admin.LogStore.FilePath = alias
+	if err := validatePersistentPathIsolation(configPath, cfg); err == nil {
+		t.Fatal("hard-link alias of a retained SecurityEdge config backup was accepted as a log path")
+	}
+}
+
+func TestPersistentAdminPathIsolationResolvesSymlinkedParentForNewFiles(t *testing.T) {
+	dir := t.TempDir()
+	realDir := filepath.Join(dir, "real")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	aliasDir := filepath.Join(dir, "alias")
+	if err := os.Symlink(realDir, aliasDir); err != nil {
+		t.Skipf("directory symlinks unavailable: %v", err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = filepath.Join(dir, "edge.json")
+	cfg.Admin.LogStore.FilePath = filepath.Join(realDir, "shared.data")
+	cfg.Admin.TelemetryHistory.Enabled = true
+	cfg.Admin.TelemetryHistory.FilePath = filepath.Join(aliasDir, "shared.data")
+	if err := validatePersistentPathIsolation(filepath.Join(dir, "security.json"), cfg); err == nil {
+		t.Fatal("not-yet-created persistence files through a symlinked parent were accepted as distinct")
+	}
+}
+
+func TestPersistentAdminPathIsolationProtectsTLSMaterial(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.Server.Mode = "gateway"
+	cfg.Server.TLS.Enabled = true
+	cfg.Server.TLS.CertFile = filepath.Join(dir, "fullchain.pem")
+	cfg.Server.TLS.KeyFile = filepath.Join(dir, "privkey.pem")
+	cfg.EdgeProxy.ConfigPath = filepath.Join(dir, "edge.json")
+	cfg.Admin.LogStore.FilePath = cfg.Server.TLS.CertFile
+	if err := validatePersistentPathIsolation(filepath.Join(dir, "security.json"), cfg); err == nil {
+		t.Fatal("security log path overlapping the TLS certificate was accepted")
+	}
+
+	cfg.Admin.LogStore.FilePath = filepath.Join(dir, "events.ndjson")
+	cfg.Admin.TelemetryHistory.Enabled = true
+	cfg.Admin.TelemetryHistory.FilePath = cfg.Server.TLS.KeyFile
+	if err := validatePersistentPathIsolation(filepath.Join(dir, "security.json"), cfg); err == nil {
+		t.Fatal("telemetry history path overlapping the TLS private key was accepted")
+	}
+}
+
 func TestCloneConfigDoesNotShareNestedSlices(t *testing.T) {
 	original := config.Default()
 	original.Admin.Connectivity.DNS.Names = []string{"project.test"}

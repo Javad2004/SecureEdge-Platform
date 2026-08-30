@@ -143,6 +143,21 @@ grep -Fqx '*.py[cod]' "$repo_root/.gitignore"
 grep -Fqx '**/__pycache__/' "$repo_root/.dockerignore"
 grep -Fqx '**/*.py[cod]' "$repo_root/.dockerignore"
 
+# Atomic configuration persistence retains timestamped rollback files using the
+# suffix .bak-<UTC timestamp>. These copies can contain Admin credentials and
+# must never become Git candidates or Docker build-context input.
+grep -Fqx '*.bak-*' "$repo_root/.gitignore"
+grep -Fqx '**/*.bak-*' "$repo_root/.dockerignore"
+grep -Fqx '**/*.bak-*' "$repo_root/apps/edgeproxy/.dockerignore"
+grep -Fqx '*.bak-*' "$repo_root/apps/securityedge/.gitignore"
+grep -Fqx '*.tmp-*' "$repo_root/.gitignore"
+grep -Fqx '**/*.tmp-*' "$repo_root/.dockerignore"
+grep -Fqx '**/*.tmp-*' "$repo_root/apps/edgeproxy/.dockerignore"
+grep -Fqx '*.tmp-*' "$repo_root/apps/securityedge/.gitignore"
+grep -Fqx '.securityedge-write-probe-*' "$repo_root/.gitignore"
+grep -Fqx '**/.securityedge-write-probe-*' "$repo_root/.dockerignore"
+grep -Fqx '.securityedge-write-probe-*' "$repo_root/apps/securityedge/.gitignore"
+
 # Doctor output must reflect Compose render failures accurately rather than
 # printing a misleading OK line before the final preflight failure.
 grep -Fq 'if (cd "$prod_dir" && docker compose --env-file .env -f "$compose" config -q); then' "$script_dir/doctor.sh"

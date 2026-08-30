@@ -988,6 +988,37 @@ func TestReloadEdgeRoutesHotSwapsOnlySharedRouteTable(t *testing.T) {
 	}
 }
 
+func TestReloadEdgeRoutesRejectsNonCanonicalPrefixWithoutReplacingTable(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"first","hosts":["first.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"second","hosts":["second.test"],"path_prefix":"/api//"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ReloadEdgeRoutes(); err == nil || !strings.Contains(err.Error(), "must be canonical and must not contain dot-segments or repeated slashes") {
+		t.Fatalf("expected non-canonical shared Route prefix reload to fail, got %v", err)
+	}
+	routes := runtime.Routes()
+	if len(routes) != 1 || routes[0].Name != "first" {
+		t.Fatalf("failed non-canonical Route-table reload replaced the last-known-good table: %#v", routes)
+	}
+}
+
 func TestReloadEdgeRoutesRejectsInvalidUTF8WithoutReplacingTable(t *testing.T) {
 	dir := t.TempDir()
 	edgePath := filepath.Join(dir, "edge.json")

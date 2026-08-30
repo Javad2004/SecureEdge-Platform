@@ -2,6 +2,8 @@ package routes
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -47,7 +49,7 @@ func TestLoadNormalizesTrailingSlashAndRejectsNonCanonicalPrefix(t *testing.T) {
 		t.Fatalf("normalized prefix=%q, want /api", got)
 	}
 
-	for _, prefix := range []string{"/api/../admin", "/api//admin", "/api%2Fadmin", "/api?debug=1"} {
+	for _, prefix := range []string{"/api/../admin", "/api//admin", "/api//", "/api%2Fadmin", "/api?debug=1"} {
 		path := t.TempDir() + "/invalid.json"
 		payload := `{"routes":[{"name":"api","hosts":["app.example.com"],"path_prefix":"` + prefix + `"}]}`
 		if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
@@ -57,6 +59,72 @@ func TestLoadNormalizesTrailingSlashAndRejectsNonCanonicalPrefix(t *testing.T) {
 			t.Fatalf("expected prefix %q to be rejected", prefix)
 		}
 	}
+}
+
+func TestLoadRejectsSharedSelectorLimitsMatchingEdgeProxy(t *testing.T) {
+	t.Run("route name bytes", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			ok   bool
+		}{
+			{name: strings.Repeat("a", maxRouteNameBytes), ok: true},
+			{name: strings.Repeat("a", maxRouteNameBytes+1), ok: false},
+			{name: strings.Repeat("é", maxRouteNameBytes/2), ok: true},
+			{name: strings.Repeat("é", maxRouteNameBytes/2+1), ok: false},
+		} {
+			configPath := filepath.Join(t.TempDir(), "edge.json")
+			payload, err := json.Marshal(EdgeProxyConfig{Routes: []Route{{Name: tc.name, Hosts: []string{"project.test"}, PathPrefix: "/"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(configPath, payload, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err = Load(configPath)
+			if tc.ok && err != nil {
+				t.Fatalf("expected %d-byte route name to be accepted, got %v", len(tc.name), err)
+			}
+			if !tc.ok && (err == nil || !strings.Contains(err.Error(), "cannot exceed 256 bytes")) {
+				t.Fatalf("expected %d-byte route name to be rejected, got %v", len(tc.name), err)
+			}
+		}
+	})
+
+	t.Run("hosts per route", func(t *testing.T) {
+		hosts := make([]string, maxHostsPerRoute+1)
+		for i := range hosts {
+			hosts[i] = fmt.Sprintf("h%d.project.test", i)
+		}
+		configPath := filepath.Join(t.TempDir(), "edge.json")
+		payload, err := json.Marshal(EdgeProxyConfig{Routes: []Route{{Name: "demo", Hosts: hosts, PathPrefix: "/"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(configPath, payload, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "cannot contain more than 256 hosts") {
+			t.Fatalf("expected oversized host collection to be rejected, got %v", err)
+		}
+	})
+
+	t.Run("route count", func(t *testing.T) {
+		routes := make([]Route, maxEdgeProxyRoutes+1)
+		for i := range routes {
+			routes[i] = Route{Name: fmt.Sprintf("route-%d", i), Hosts: []string{fmt.Sprintf("h%d.project.test", i)}, PathPrefix: "/"}
+		}
+		configPath := filepath.Join(t.TempDir(), "edge.json")
+		payload, err := json.Marshal(EdgeProxyConfig{Routes: routes})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(configPath, payload, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "cannot contain more than 2048 routes") {
+			t.Fatalf("expected oversized route collection to be rejected, got %v", err)
+		}
+	})
 }
 
 func TestLoadRejectsInvalidHostPatterns(t *testing.T) {

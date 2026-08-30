@@ -195,10 +195,15 @@ from `templates/`. The templates are syntactically valid but intentionally use
 `.example.invalid` hosts. `doctor.sh` refuses to deploy them unchanged.
 
 At minimum update the EdgeProxy route hosts and real Origin URL. Keep production
-Origins HTTPS unless an explicit documented exception is required. Preflight
-rejects placeholder/local Origin names (including canonicalized trailing-dot
-forms), missing Origin hostnames, loopback/unspecified/multicast IPs, malformed
-ports, and insecure TLS verification.
+Origins HTTPS unless an explicit documented exception is required. For literal
+Origin IPs, preflight accepts globally routable addresses or deployment-usable
+private/VPN space: RFC1918 IPv4, CGNAT/Tailscale `100.64.0.0/10`, and IPv6 ULA
+`fc00::/7`. It rejects documentation, benchmarking and other non-routable
+special-use literals even when the local Python runtime classifies them as
+non-global/private. Preflight also rejects placeholder/local Origin names
+(including canonicalized trailing-dot forms), missing Origin hostnames,
+loopback/unspecified/multicast/link-local IPs, malformed ports, and insecure TLS
+verification.
 
 For SecurityEdge-only also set in `.env`:
 
@@ -209,10 +214,14 @@ SECURITYEDGE_EXTERNAL_EDGEPROXY_ADMIN_URL=http://...
 
 EdgeProxy Admin does not provide native TLS. A remote Admin URL therefore must
 travel only over a trusted private/VPN/Tailscale path, never the public Internet.
-`doctor.sh` enforces this baseline: an IP literal must be non-global, while a
-hostname must resolve during preflight and every resolved address must remain
-private/VPN-scoped. Loopback, unspecified, multicast, reserved and globally
-routable Admin endpoints are rejected.
+`doctor.sh` enforces this baseline against explicit deployment-usable address
+space rather than Python's broader `is_private`/`not is_global` classification:
+RFC1918 IPv4, CGNAT/Tailscale `100.64.0.0/10`, and IPv6 ULA `fc00::/7`. An IP
+literal must belong to one of those ranges. A hostname must resolve during
+preflight and every resolved address must belong to one of those same
+private/VPN ranges. Loopback, unspecified, multicast, link-local, globally
+routable, documentation, benchmarking, reserved and other special-use Admin
+endpoints are rejected.
 
 ## 3. TLS and CA material
 

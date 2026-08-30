@@ -11,6 +11,22 @@ import sys
 from urllib.parse import urlparse
 
 
+PRIVATE_VPN_NETWORKS = tuple(
+    ipaddress.ip_network(raw)
+    for raw in (
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "100.64.0.0/10",
+        "fc00::/7",
+    )
+)
+
+
+def is_private_vpn_address(address) -> bool:
+    return any(address in network for network in PRIVATE_VPN_NETWORKS if address.version == network.version)
+
+
 def parse_bool(value: str) -> bool:
     normalized = value.strip().lower()
     if normalized == "true":
@@ -71,6 +87,13 @@ def invalid_origin_address(raw: str) -> str | None:
         return f"multicast address {ip}"
     if ip.is_link_local:
         return f"link-local address {ip}"
+    # A literal Origin address must either be globally routable or belong to a
+    # deployment-usable private/VPN range. Python 3.13 intentionally reports
+    # documentation and benchmarking networks as non-global/private; accepting
+    # those here would make production preflight approve an endpoint that cannot
+    # be a real Origin.
+    if not ip.is_global and not is_private_vpn_address(ip):
+        return f"non-routable special-use address {ip}"
     return None
 
 

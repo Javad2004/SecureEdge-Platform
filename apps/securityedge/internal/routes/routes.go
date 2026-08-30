@@ -17,6 +17,9 @@ import (
 
 const (
 	maxEdgeProxyConfigBytes    int64 = 4 << 20
+	maxEdgeProxyRoutes               = 2_048
+	maxHostsPerRoute                 = 256
+	maxRouteNameBytes                = 256
 	reservedUnmatchedRouteName       = "__unmatched__"
 )
 
@@ -75,6 +78,9 @@ func Load(path string) (*Table, error) {
 	if len(cfg.Routes) == 0 {
 		return nil, fmt.Errorf("edgeproxy config has no routes")
 	}
+	if len(cfg.Routes) > maxEdgeProxyRoutes {
+		return nil, fmt.Errorf("edgeproxy config cannot contain more than %d routes", maxEdgeProxyRoutes)
+	}
 	seenNames := map[string]bool{}
 	selectors := map[string]string{}
 	for i := range cfg.Routes {
@@ -86,6 +92,12 @@ func Load(path string) (*Table, error) {
 		cfg.Routes[i].PathPrefix = normalizedPrefix
 		if cfg.Routes[i].Name == "" || len(cfg.Routes[i].Hosts) == 0 {
 			return nil, fmt.Errorf("edgeproxy route %d is incomplete", i)
+		}
+		if len(cfg.Routes[i].Name) > maxRouteNameBytes {
+			return nil, fmt.Errorf("edgeproxy route name %q cannot exceed %d bytes", cfg.Routes[i].Name, maxRouteNameBytes)
+		}
+		if len(cfg.Routes[i].Hosts) > maxHostsPerRoute {
+			return nil, fmt.Errorf("edgeproxy route %q cannot contain more than %d hosts", cfg.Routes[i].Name, maxHostsPerRoute)
 		}
 		if strings.EqualFold(cfg.Routes[i].Name, reservedUnmatchedRouteName) {
 			return nil, fmt.Errorf("edgeproxy route name %q is reserved for internal unmatched-request telemetry", cfg.Routes[i].Name)
@@ -276,14 +288,24 @@ func normalizePathPrefix(raw string) (string, error) {
 	if decoded != value {
 		return "", fmt.Errorf("must not contain percent-encoded path bytes")
 	}
-	value = strings.TrimRight(value, "/")
-	if value == "" {
-		value = "/"
-	}
-	if path.Clean(value) != value {
+
+	// Mirror EdgeProxy's normalizeAbsolutePath + normalizePathPrefix contract
+	// exactly. A single canonical trailing slash is accepted and normalized away,
+	// but repeated trailing slashes such as /api// must be rejected rather than
+	// silently collapsed to /api. Otherwise SecurityEdge can activate a selector
+	// from a shared Route table that EdgeProxy itself refuses to load.
+	trailingSlash := strings.HasSuffix(value, "/")
+	cleaned := path.Clean(value)
+	if cleaned != value && !(trailingSlash && cleaned+"/" == value) {
 		return "", fmt.Errorf("must be canonical and must not contain dot-segments or repeated slashes")
 	}
-	return value, nil
+	if trailingSlash && cleaned != "/" {
+		cleaned += "/"
+	}
+	if cleaned != "/" {
+		cleaned = strings.TrimSuffix(cleaned, "/")
+	}
+	return cleaned, nil
 }
 
 func canonicalRequestPath(value string) string {

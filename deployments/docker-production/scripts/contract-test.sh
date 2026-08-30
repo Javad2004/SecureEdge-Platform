@@ -248,21 +248,29 @@ grep -q 'cp -aL "$src/." "$dst/"' "$script_dir/import-systemd.sh"
 checker="$script_dir/check-edgeproxy-profile.py"
 valid_profile='{"routes":[{"name":"prod","hosts":["app.prod.secureedge"],"upstreams":[{"url":"https://origin.prod.secureedge:443","insecure_skip_verify":false}]}]}'
 printf '%s\n' "$valid_profile" | python3 "$checker" --require-https true --allow-insecure false --require-real-hosts true --reject-loopback true
+for private_origin in '10.123.45.67' '100.64.0.10' '[fd7a:115c:a1e0::2]'; do
+  # Fixed contract literals contain no JSON metacharacters. Avoid a Python
+  # encoder per case so this regression matrix stays lightweight in CI.
+  private_profile=$(printf '{"routes":[{"name":"prod","hosts":["app.prod.secureedge"],"upstreams":[{"url":"https://%s:443","insecure_skip_verify":false}]}]}' "$private_origin")
+  printf '%s\n' "$private_profile" | python3 "$checker" --require-https true --allow-insecure false --require-real-hosts true --reject-loopback true
+done
 for bad_origin in \
   'https://origin.example.invalid:443' \
   'https://foo.localhost:443' \
   'https://localhost.:443' \
   'https://0.0.0.0:443' \
   'https://169.254.10.20:443' \
+  'https://192.0.2.1:443' \
+  'https://198.51.100.1:443' \
+  'https://203.0.113.1:443' \
+  'https://198.18.0.1:443' \
+  'https://[2001:db8::1]:443' \
   'https://origin.prod.secureedge.internal:0' \
   'https://origin.prod.secureedge.internal:' \
   'https://bad host:443' \
   'https:///missing-host'; do
-  bad_profile=$(python3 - "$bad_origin" <<'PYBAD'
-import json, sys
-print(json.dumps({"routes":[{"name":"prod","hosts":["app.prod.secureedge"],"upstreams":[{"url":sys.argv[1],"insecure_skip_verify":False}]}]}))
-PYBAD
-)
+  # bad_origin values above are fixed literals without JSON quotes or escapes.
+  bad_profile=$(printf '{"routes":[{"name":"prod","hosts":["app.prod.secureedge"],"upstreams":[{"url":"%s","insecure_skip_verify":false}]}]}' "$bad_origin")
   if printf '%s\n' "$bad_profile" | python3 "$checker" --require-https true --allow-insecure false --require-real-hosts true --reject-loopback true >/dev/null 2>&1; then
     echo "production Origin guardrail accepted invalid endpoint: $bad_origin" >&2
     exit 1
@@ -274,6 +282,8 @@ done
 endpoint_checker="$script_dir/check-production-endpoint.py"
 python3 "$endpoint_checker" --key DATA --value 'https://edge.prod.secureedge.internal:8443' --required-scheme https --scope any
 python3 "$endpoint_checker" --key ADMIN --value 'http://10.123.45.68:9090' --required-scheme http --scope private
+python3 "$endpoint_checker" --key ADMIN --value 'http://100.64.0.10:9090' --required-scheme http --scope private
+python3 "$endpoint_checker" --key ADMIN --value 'http://[fd7a:115c:a1e0::1]:9090' --required-scheme http --scope private
 for bad_endpoint in \
   'https://bad_host:8443' \
   'https://edge.prod.secureedge.internal:0' \
@@ -285,6 +295,12 @@ for bad_endpoint in \
   'https://edge.example.invalid:8443'; do
   if python3 "$endpoint_checker" --key DATA --value "$bad_endpoint" --required-scheme https --scope any >/dev/null 2>&1; then
     echo "production external-endpoint guardrail accepted invalid endpoint: $bad_endpoint" >&2
+    exit 1
+  fi
+done
+for bad_admin_ip in '192.0.2.1' '198.51.100.1' '203.0.113.1' '198.18.0.1' '[2001:db8::1]'; do
+  if python3 "$endpoint_checker" --key ADMIN --value "http://${bad_admin_ip}:9090" --required-scheme http --scope private >/dev/null 2>&1; then
+    echo "production external Admin guardrail accepted non-routable special-use endpoint: $bad_admin_ip" >&2
     exit 1
   fi
 done

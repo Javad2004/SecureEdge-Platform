@@ -28,6 +28,23 @@ PLACEHOLDER_SUFFIXES = (
     ".example.org",
 )
 
+# Admin HTTP is intentionally limited to address space that can represent a
+# private/VPN transport. Do not equate Python's ``is_private``/``not is_global``
+# with that contract: recent Python releases classify documentation and
+# benchmarking ranges as non-global/private even though they are not usable
+# private deployment space. RFC1918, CGNAT/Tailscale IPv4, and IPv6 ULA cover
+# the supported LAN/cloud/VPN topologies.
+PRIVATE_VPN_NETWORKS = tuple(
+    ipaddress.ip_network(raw)
+    for raw in (
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "100.64.0.0/10",
+        "fc00::/7",
+    )
+)
+
 
 def canonical_dns_host(raw: str) -> str:
     host = raw.strip().lower().rstrip(".")
@@ -69,8 +86,12 @@ def reject_nonroutable_ip(key: str, address) -> None:
         raise ValueError(f"{key} points at a link-local address: {address}")
 
 
+def is_private_vpn_address(address) -> bool:
+    return any(address in network for network in PRIVATE_VPN_NETWORKS if address.version == network.version)
+
+
 def unsafe_private_admin(address) -> bool:
-    return address.is_global or address.is_reserved
+    return not is_private_vpn_address(address)
 
 
 def parse_args() -> argparse.Namespace:

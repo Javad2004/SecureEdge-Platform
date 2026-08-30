@@ -299,6 +299,8 @@ The dashboard token is entered by the operator. The EdgeProxy token is used only
 
 The Origin should permit its application port only from the gateway host. Untrusted clients should not connect directly to EdgeProxy, either Admin API, or the Origin port.
 
+SecurityEdge treats the referenced EdgeProxy configuration as the authoritative shared Route table and applies the same file-level encoding boundary as EdgeProxy itself: the complete JSON document must be valid UTF-8 before decoding. This prevents Go's JSON decoder from silently replacing malformed bytes with `U+FFFD` and avoids a split-brain state where SecurityEdge accepts a Route table that EdgeProxy rejects.
+
 SecurityEdge connects to the configured EdgeProxy data plane directly and does not inherit ambient `HTTP_PROXY` or `HTTPS_PROXY` settings. This prevents internal application traffic from being redirected through an unrelated host-level proxy. An `https://` EdgeProxy data-plane URL is supported for split-host deployments; the outbound transport uses normal certificate verification and explicitly requires TLS 1.2 or newer. `edgeproxy.admin_url` is a required runtime dependency because SecurityEdge always constructs the authenticated EdgeProxy Admin/BFF client; static configuration validation therefore rejects a missing Admin URL before startup. The EdgeProxy Admin client follows the same TLS 1.2+ minimum when its configured Admin URL uses HTTPS.
 
 ## Dashboard behavior

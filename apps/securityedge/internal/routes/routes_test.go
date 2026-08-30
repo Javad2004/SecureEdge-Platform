@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"bytes"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -142,6 +143,23 @@ func TestLoadRejectsCaseInsensitiveDuplicateRouteNames(t *testing.T) {
 	}
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "case-insensitive") {
 		t.Fatalf("expected case-insensitive duplicate error, got %v", err)
+	}
+}
+
+func TestLoadRejectsInvalidUTF8BeforeJSONDecoding(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "edge.json")
+	payload := []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/","upstreams":[{"url":"http://origin.test"}]}]}`)
+	needle := []byte("origin.test")
+	index := bytes.Index(payload, needle)
+	if index < 0 {
+		t.Fatal("test fixture upstream URL not found")
+	}
+	payload[index] = 0xff
+	if err := os.WriteFile(configPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "edgeproxy config must be valid UTF-8") {
+		t.Fatalf("expected malformed shared EdgeProxy config to fail UTF-8 validation, got %v", err)
 	}
 }
 

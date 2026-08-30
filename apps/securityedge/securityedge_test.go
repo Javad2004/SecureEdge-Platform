@@ -57,6 +57,31 @@ func TestCheckedInConfigurationsValidate(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidUTF8SharedEdgeProxyConfig(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	payload := []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/","upstreams":[{"url":"http://origin.test"}]}]}`)
+	marker := []byte("origin.test")
+	index := bytes.Index(payload, marker)
+	if index < 0 {
+		t.Fatal("test fixture upstream URL not found")
+	}
+	payload[index] = 0xff
+	if err := os.WriteFile(edgePath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = edgePath
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(cfgPath); err == nil || !strings.Contains(err.Error(), "edgeproxy config must be valid UTF-8") {
+		t.Fatalf("expected SecurityEdge validation to reject malformed shared EdgeProxy config, got %v", err)
+	}
+}
+
 func TestValidateDoesNotCreatePersistentLogFiles(t *testing.T) {
 	dir := t.TempDir()
 	edgePath := filepath.Join(dir, "edge.json")
@@ -960,6 +985,44 @@ func TestReloadEdgeRoutesHotSwapsOnlySharedRouteTable(t *testing.T) {
 	current := runtime.Config()
 	if current.Server.ListenAddr != original.Server.ListenAddr || current.Admin.ListenAddr != original.Admin.ListenAddr {
 		t.Fatalf("shared route reload changed SecurityEdge process configuration: before=%#v after=%#v", original.Server, current.Server)
+	}
+}
+
+func TestReloadEdgeRoutesRejectsInvalidUTF8WithoutReplacingTable(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"first","hosts":["first.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	malformed := []byte(`{"routes":[{"name":"second","hosts":["second.test"],"path_prefix":"/api","upstreams":[{"url":"http://origin.test"}]}]}`)
+	marker := []byte("origin.test")
+	index := bytes.Index(malformed, marker)
+	if index < 0 {
+		t.Fatal("test fixture upstream URL not found")
+	}
+	malformed[index] = 0xff
+	if err := os.WriteFile(edgePath, malformed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ReloadEdgeRoutes(); err == nil || !strings.Contains(err.Error(), "edgeproxy config must be valid UTF-8") {
+		t.Fatalf("expected malformed shared Route table reload to fail, got %v", err)
+	}
+	routes := runtime.Routes()
+	if len(routes) != 1 || routes[0].Name != "first" {
+		t.Fatalf("failed shared Route-table reload replaced the last-known-good table: %#v", routes)
 	}
 }
 

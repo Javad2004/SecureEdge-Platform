@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -52,6 +53,13 @@ func Load(path string) (*Table, error) {
 	}
 	if int64(len(data)) > maxEdgeProxyConfigBytes {
 		return nil, fmt.Errorf("edgeproxy config exceeds the %d-byte safety limit", maxEdgeProxyConfigBytes)
+	}
+	// EdgeProxy rejects its authoritative configuration before JSON decoding when
+	// any byte sequence is not valid UTF-8. Mirror that boundary here: encoding/json
+	// otherwise replaces malformed string bytes with U+FFFD, which could let
+	// SecurityEdge accept a shared Route table that EdgeProxy itself refuses.
+	if !utf8.Valid(data) {
+		return nil, errors.New("edgeproxy config must be valid UTF-8")
 	}
 	var cfg EdgeProxyConfig
 	decoder := json.NewDecoder(bytes.NewReader(data))

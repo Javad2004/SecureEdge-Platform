@@ -26,7 +26,7 @@ func (r *Runtime) validateRestartCandidate(configPath string, current, next conf
 		}
 	}
 
-	prepared, err := prepareRuntimeConfig(configPath, next)
+	prepared, err := prepareRuntimeConfig(configPath, next, r.protectedPaths...)
 	if err != nil {
 		errs = append(errs, err)
 	} else if prepared.edge != nil {

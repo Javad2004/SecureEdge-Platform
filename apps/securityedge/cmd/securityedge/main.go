@@ -83,7 +83,7 @@ func run() int {
 		logger.Info("environment file loaded", "path", loadedEnv)
 	}
 	if *validate {
-		if err := securityedge.Validate(configPath); err != nil {
+		if err := securityedge.Validate(configPath, loadedEnv); err != nil {
 			logger.Error("configuration failed", "error", err)
 			return 1
 		}
@@ -175,7 +175,7 @@ func runManaged(configPath, envPath string, logger *slog.Logger, allowEnvironmen
 }
 
 func startSecurityGeneration(configPath, envPath string, previousWatch securityedge.WatchStatus, logger *slog.Logger) (*securityGeneration, error) {
-	runtime, err := securityedge.New(configPath, logger)
+	runtime, err := securityedge.New(configPath, logger, envPath)
 	if err != nil {
 		return nil, err
 	}

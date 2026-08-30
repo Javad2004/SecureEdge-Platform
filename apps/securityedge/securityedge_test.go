@@ -1,6 +1,7 @@
 package securityedge
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -444,6 +445,124 @@ func TestNewRejectsPersistentAdminPathsThatOverlapManagedFiles(t *testing.T) {
 				t.Fatal("unsafe managed-file overlap was accepted")
 			}
 		})
+	}
+}
+
+func TestValidateAndNewRejectPersistenceOverlapWithManagedEnvironmentFile(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(dir, "runtime.env")
+	envContents := []byte("SECURITYEDGE_ADMIN_TOKEN=test-token\n")
+	if err := os.WriteFile(envPath, envContents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = edgePath
+	cfg.Admin.LogStore.FilePath = envPath
+	cfg.Admin.TelemetryHistory.Enabled = false
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Validate(cfgPath, envPath); err == nil {
+		t.Fatal("validation accepted a security log path overlapping the managed environment file")
+	}
+	if runtime, err := New(cfgPath, nil, envPath); err == nil {
+		runtime.Close()
+		t.Fatal("runtime accepted a security log path overlapping the managed environment file")
+	}
+	if got, err := os.ReadFile(envPath); err != nil {
+		t.Fatal(err)
+	} else if !bytes.Equal(got, envContents) {
+		t.Fatalf("rejected persistence overlap modified the managed environment file: %q", got)
+	}
+
+	cfg.Admin.LogStore.FilePath = filepath.Join(dir, "events.ndjson")
+	cfg.Admin.TelemetryHistory.Enabled = true
+	cfg.Admin.TelemetryHistory.FilePath = envPath
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(cfgPath, envPath); err == nil {
+		t.Fatal("validation accepted telemetry history overlapping the managed environment file")
+	}
+}
+
+func TestValidateRejectsManagedEnvironmentFileInConfigBackupNamespace(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = edgePath
+	cfg.Admin.LogStore.FilePath = filepath.Join(dir, "events.ndjson")
+	cfg.Admin.TelemetryHistory.Enabled = false
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, envPath := range []string{
+		cfgPath + ".bak",
+		cfgPath + ".bak-operator",
+		edgePath + ".bak",
+		edgePath + ".bak-operator",
+	} {
+		if err := os.WriteFile(envPath, []byte("SECURITYEDGE_ADMIN_TOKEN=test-token\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := Validate(cfgPath, envPath); err == nil {
+			t.Fatalf("validation accepted managed environment path in reserved config namespace: %s", envPath)
+		}
+	}
+}
+
+func TestReplaceConfigRejectsPersistenceOverlapWithManagedEnvironmentFile(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(dir, "runtime.env")
+	if err := os.WriteFile(envPath, []byte("SECURITYEDGE_ADMIN_TOKEN=test-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = edgePath
+	cfg.Admin.LogStore.FilePath = filepath.Join(dir, "events.ndjson")
+	cfg.Admin.TelemetryHistory.Enabled = false
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime, err := New(cfgPath, nil, envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	candidate := runtime.Config()
+	candidate.Admin.LogStore.FilePath = envPath
+	if err := runtime.ReplaceConfig(candidate); err == nil {
+		t.Fatal("Control Plane accepted a persistent log path overlapping the managed environment file")
+	}
+	saved, err := config.LoadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Admin.LogStore.FilePath == envPath {
+		t.Fatal("rejected managed-environment overlap was persisted")
 	}
 }
 

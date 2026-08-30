@@ -32,8 +32,9 @@ import (
 )
 
 type Runtime struct {
-	configPath string
-	logger     *slog.Logger
+	configPath     string
+	protectedPaths []string
+	logger         *slog.Logger
 	// configMu serializes complete load/validate/persist/apply transactions.
 	// Without it, concurrent reloads and policy edits can lose updates or leave
 	// the persisted file and live runtime on different revisions.
@@ -75,20 +76,20 @@ type preparedRuntime struct {
 // Validate checks the complete SecurityEdge configuration, including the
 // referenced EdgeProxy route table, without creating log files or starting
 // runtime background workers.
-func Validate(configPath string) error {
-	_, err := prepareRuntime(configPath)
+func Validate(configPath string, protectedPaths ...string) error {
+	_, err := prepareRuntime(configPath, protectedPaths...)
 	return err
 }
 
-func prepareRuntime(configPath string) (preparedRuntime, error) {
+func prepareRuntime(configPath string, protectedPaths ...string) (preparedRuntime, error) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return preparedRuntime{}, err
 	}
-	return prepareRuntimeConfig(configPath, cfg)
+	return prepareRuntimeConfig(configPath, cfg, protectedPaths...)
 }
 
-func validatePersistentPathIsolation(configPath string, cfg config.Config) error {
+func validatePersistentPathIsolation(configPath string, cfg config.Config, protectedPaths ...string) error {
 	type managedPath struct {
 		field string
 		path  string
@@ -105,6 +106,38 @@ func validatePersistentPathIsolation(configPath string, cfg config.Config) error
 		{field: "SecurityEdge configuration staging file", path: securityConfigPath + ".bak"},
 		configFiles[1],
 		{field: "EdgeProxy route configuration staging file", path: edgeConfigPath + ".bak"},
+	}
+	for i, path := range protectedPaths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		field := "managed environment file"
+		if i > 0 {
+			field = fmt.Sprintf("managed environment file %d", i+1)
+		}
+		for _, configFile := range configFiles {
+			for _, target := range []managedPath{
+				configFile,
+				{field: configFile.field + " staging file", path: configFile.path + ".bak"},
+			} {
+				same, err := managedPathsCollide(path, target.path)
+				if err != nil {
+					return fmt.Errorf("compare %s with %s: %w", field, target.field, err)
+				}
+				if same {
+					return fmt.Errorf("%s must not overlap %s", field, target.field)
+				}
+			}
+			inBackupNamespace, err := managedPathHasPrefix(path, configFile.path+".bak-")
+			if err != nil {
+				return fmt.Errorf("compare %s with %s retained-backup namespace: %w", field, configFile.field, err)
+			}
+			if inBackupNamespace {
+				return fmt.Errorf("%s must not overlap %s retained-backup namespace", field, configFile.field)
+			}
+		}
+		protected = append(protected, managedPath{field: field, path: path})
 	}
 	for _, configFile := range configFiles {
 		backups, err := existingConfigBackupPaths(configFile.path)
@@ -272,8 +305,8 @@ func canonicalManagedPath(path string) (string, error) {
 	return resolved, nil
 }
 
-func prepareRuntimeConfig(configPath string, cfg config.Config) (preparedRuntime, error) {
-	if err := validatePersistentPathIsolation(configPath, cfg); err != nil {
+func prepareRuntimeConfig(configPath string, cfg config.Config, protectedPaths ...string) (preparedRuntime, error) {
+	if err := validatePersistentPathIsolation(configPath, cfg, protectedPaths...); err != nil {
 		return preparedRuntime{}, err
 	}
 	table, err := routes.Load(resolveEdgeConfigPath(configPath, cfg.EdgeProxy.ConfigPath))
@@ -298,7 +331,7 @@ func prepareRuntimeConfig(configPath string, cfg config.Config) (preparedRuntime
 	return preparedRuntime{cfg: cfg, table: table, edge: edge, inspector: inspector, clients: clients}, nil
 }
 
-func New(configPath string, logger *slog.Logger) (*Runtime, error) {
+func New(configPath string, logger *slog.Logger, protectedPaths ...string) (*Runtime, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -317,7 +350,7 @@ func New(configPath string, logger *slog.Logger) (*Runtime, error) {
 	if err := runtimeCfg.Validate(); err != nil {
 		return nil, err
 	}
-	prepared, err := prepareRuntimeConfig(configPath, runtimeCfg)
+	prepared, err := prepareRuntimeConfig(configPath, runtimeCfg, protectedPaths...)
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +359,7 @@ func New(configPath string, logger *slog.Logger) (*Runtime, error) {
 		return nil, err
 	}
 	return &Runtime{
-		configPath: configPath, logger: logger, cfg: prepared.cfg, table: prepared.table, edge: prepared.edge,
+		configPath: configPath, protectedPaths: append([]string(nil), protectedPaths...), logger: logger, cfg: prepared.cfg, table: prepared.table, edge: prepared.edge,
 		registry: metrics.New(), logs: logs, traffic: traffic.New(traffic.DefaultCapacity, traffic.DefaultWindow), inspector: prepared.inspector,
 		limiter: ratelimit.New(prepared.cfg.DefaultPolicy.RateLimit.CleanupInterval.Duration, prepared.cfg.DefaultPolicy.RateLimit.IdleTTL.Duration),
 		bans:    ratelimit.NewBanManager(), admission: admission.New(), clients: prepared.clients, healthyFileCfg: cloneConfig(fileCfg),

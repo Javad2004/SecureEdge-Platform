@@ -1,6 +1,6 @@
 diff -ruN '--exclude=.git' a/cmd/edgeproxy/main.go b/cmd/edgeproxy/main.go
---- a/cmd/edgeproxy/main.go	2026-08-06 12:09:56.000000000 +0000
-+++ b/cmd/edgeproxy/main.go	2026-08-06 12:48:34.731075465 +0000
+--- a/cmd/edgeproxy/main.go	2026-08-30 01:24:31.000000000 +0000
++++ b/cmd/edgeproxy/main.go	2026-08-30 03:27:16.847945056 +0000
 @@ -11,6 +11,7 @@
  	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
  	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/envfile"
@@ -17,17 +17,36 @@ diff -ruN '--exclude=.git' a/cmd/edgeproxy/main.go b/cmd/edgeproxy/main.go
  	_, configEnvironmentPreexisting := os.LookupEnv("EDGEPROXY_CONFIG")
  	var err error
  	if !*noEnv {
-@@ -45,6 +47,29 @@
+@@ -35,6 +37,12 @@
+ 			fmt.Fprintln(os.Stderr, err)
+ 			os.Exit(1)
+ 		}
++		if loadedEnv != "" {
++			if err := os.Setenv("EDGEPROXY_ENV_FILE", loadedEnv); err != nil {
++				fmt.Fprintln(os.Stderr, "set EDGEPROXY_ENV_FILE:", err)
++				os.Exit(1)
++			}
++		}
+ 	}
+ 	configPath := resolveConfigPath(
+ 		*configFlag,
+@@ -45,6 +53,35 @@
  		"apps/edgeproxy/configs/edgeproxy.json",
  	)
  
 +	if !*noEnv {
 +		_, securityConfigEnvironmentPreexisting := os.LookupEnv("SECURITYEDGE_CONFIG")
 +		explicitSecurityEnv := strings.TrimSpace(os.Getenv("SECURITYEDGE_ENV_FILE"))
-+		loadedSecurityEnv, err = envfile.Load(explicitSecurityEnv, "apps/securityedge/.env", "../securityedge/.env")
++		loadedSecurityEnv, err = securityedge.LoadEnvironmentFile(explicitSecurityEnv, "apps/securityedge/.env", "../securityedge/.env")
 +		if err != nil {
 +			fmt.Fprintln(os.Stderr, err)
 +			os.Exit(1)
++		}
++		if loadedSecurityEnv != "" {
++			if err := os.Setenv("SECURITYEDGE_ENV_FILE", loadedSecurityEnv); err != nil {
++				fmt.Fprintln(os.Stderr, "set SECURITYEDGE_ENV_FILE:", err)
++				os.Exit(1)
++			}
 +		}
 +		securityConfigPath := resolveConfigPath(
 +			"",
@@ -47,7 +66,7 @@ diff -ruN '--exclude=.git' a/cmd/edgeproxy/main.go b/cmd/edgeproxy/main.go
  	var handler slog.Handler
  	if *prettyLogs {
  		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
-@@ -55,6 +80,9 @@
+@@ -55,6 +92,9 @@
  	if loadedEnv != "" {
  		logger.Info("environment file loaded", "path", loadedEnv)
  	}
@@ -57,12 +76,12 @@ diff -ruN '--exclude=.git' a/cmd/edgeproxy/main.go b/cmd/edgeproxy/main.go
  
  	cfg, err := config.Load(configPath)
  	if err != nil {
-@@ -62,6 +90,12 @@
+@@ -62,6 +102,12 @@
  		os.Exit(1)
  	}
  	if *validateOnly {
 +		if securityConfigPath != "" {
-+			if err := securityedge.Validate(securityConfigPath); err != nil {
++			if err := securityedge.Validate(securityConfigPath, loadedSecurityEnv, loadedEnv, cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile); err != nil {
 +				logger.Error("security configuration error", "error", err)
 +				os.Exit(1)
 +			}
@@ -70,9 +89,95 @@ diff -ruN '--exclude=.git' a/cmd/edgeproxy/main.go b/cmd/edgeproxy/main.go
  		fmt.Println("configuration is valid")
  		return
  	}
+diff -ruN '--exclude=.git' a/cmd/edgeproxy/main_test.go b/cmd/edgeproxy/main_test.go
+--- a/cmd/edgeproxy/main_test.go	2026-08-30 01:24:31.000000000 +0000
++++ b/cmd/edgeproxy/main_test.go	2026-08-30 03:27:17.064707866 +0000
+@@ -4,6 +4,9 @@
+ 	"os"
+ 	"path/filepath"
+ 	"testing"
++
++	edgeenv "github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/envfile"
++	securityedge "github.com/Javad2004/SecureEdge-Platform/apps/securityedge"
+ )
+ 
+ func TestResolveConfigPathUsesCLIThenDotenvThenExistingDefault(t *testing.T) {
+@@ -38,3 +41,72 @@
+ 		t.Fatalf("got %q", got)
+ 	}
+ }
++
++func TestEmbeddedSecurityEnvironmentUsesIndependentManagedState(t *testing.T) {
++	edgeKey := "EDGEPROXY_EMBEDDED_ENV_ISOLATION_TEST"
++	securityKey := "SECURITYEDGE_EMBEDDED_ENV_ISOLATION_TEST"
++
++	type oldValue struct {
++		value string
++		set   bool
++	}
++	old := map[string]oldValue{}
++	for _, key := range []string{edgeKey, securityKey} {
++		value, set := os.LookupEnv(key)
++		old[key] = oldValue{value: value, set: set}
++		if err := os.Unsetenv(key); err != nil {
++			t.Fatal(err)
++		}
++	}
++	defer func() {
++		for key, previous := range old {
++			if previous.set {
++				_ = os.Setenv(key, previous.value)
++			} else {
++				_ = os.Unsetenv(key)
++			}
++		}
++	}()
++
++	edgeSnapshot := edgeenv.SnapshotManagedEnvironment()
++	defer func() {
++		if err := edgeenv.RestoreManagedEnvironment(edgeSnapshot); err != nil {
++			t.Errorf("restore EdgeProxy managed environment: %v", err)
++		}
++	}()
++
++	dir := t.TempDir()
++	edgePath := filepath.Join(dir, "edge.env")
++	securityPath := filepath.Join(dir, "security.env")
++	if err := os.WriteFile(edgePath, []byte(edgeKey+"=edge-one\n"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(securityPath, []byte(securityKey+"=security-one\n"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := edgeenv.Load(edgePath); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := securityedge.LoadEnvironmentFile(securityPath); err != nil {
++		t.Fatal(err)
++	}
++	if got := os.Getenv(edgeKey); got != "edge-one" {
++		t.Fatalf("EdgeProxy dotenv value=%q, want edge-one", got)
++	}
++	if got := os.Getenv(securityKey); got != "security-one" {
++		t.Fatalf("SecurityEdge dotenv value=%q, want security-one", got)
++	}
++
++	if err := os.WriteFile(edgePath, []byte(edgeKey+"=edge-two\n"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	if err := edgeenv.Reload(edgePath); err != nil {
++		t.Fatal(err)
++	}
++	if got := os.Getenv(edgeKey); got != "edge-two" {
++		t.Fatalf("reloaded EdgeProxy dotenv value=%q, want edge-two", got)
++	}
++	if got := os.Getenv(securityKey); got != "security-one" {
++		t.Fatalf("EdgeProxy dotenv reload changed SecurityEdge-owned value: %q", got)
++	}
++}
 diff -ruN '--exclude=.git' a/go.mod b/go.mod
---- a/go.mod	2026-08-06 12:48:34.730037199 +0000
-+++ b/go.mod	2026-08-06 12:48:34.731152530 +0000
+--- a/go.mod	2026-08-30 01:24:31.000000000 +0000
++++ b/go.mod	2026-08-30 03:27:16.390802137 +0000
 @@ -1,3 +1,7 @@
  module github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy
  
@@ -82,8 +187,8 @@ diff -ruN '--exclude=.git' a/go.mod b/go.mod
 +
 +replace github.com/Javad2004/SecureEdge-Platform/apps/securityedge => ../securityedge
 diff -ruN '--exclude=.git' a/internal/server/run.go b/internal/server/run.go
---- a/internal/server/run.go	2026-08-06 12:42:07.590139773 +0000
-+++ b/internal/server/run.go	2026-08-06 12:48:34.731255623 +0000
+--- a/internal/server/run.go	2026-08-30 01:24:31.000000000 +0000
++++ b/internal/server/run.go	2026-08-30 03:27:16.390845951 +0000
 @@ -10,6 +10,7 @@
  	"net/http"
  	"os"
@@ -139,7 +244,7 @@ diff -ruN '--exclude=.git' a/internal/server/run.go b/internal/server/run.go
 +	mainHandler := http.Handler(handler)
 +	gen := &generation{cfg: cfg, handler: handler, errCh: make(chan error, 3)}
 +	if securityConfigPath := strings.TrimSpace(os.Getenv("SECURITYEDGE_CONFIG")); securityConfigPath != "" {
-+		gen.securityRuntime, err = securityedge.New(securityConfigPath, logger)
++		gen.securityRuntime, err = securityedge.New(securityConfigPath, logger, strings.TrimSpace(os.Getenv("SECURITYEDGE_ENV_FILE")), strings.TrimSpace(os.Getenv("EDGEPROXY_ENV_FILE")), cfg.Server.TLS.CertFile, cfg.Server.TLS.KeyFile)
 +		if err != nil {
 +			handler.Close()
 +			return nil, fmt.Errorf("initialize embedded SecurityEdge: %w", err)

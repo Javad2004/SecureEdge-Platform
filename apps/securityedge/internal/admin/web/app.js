@@ -274,22 +274,21 @@ function syncSystemFeatureControls(form, restoreDefaults = false) {
     const enabled = namedField(form, 'enabled')?.checked === true;
     const general = [
       'listen_addr','auth_token','poll_timeout','max_request_body_bytes','auth_failures_per_minute','auth_lockout_duration',
-      'log_store.capacity','log_store.default_page_size','log_store.max_page_size','log_store.file_path','log_store.max_file_bytes','log_store.max_backups',
-      'connectivity.enabled','telemetry_history.enabled'
+      'log_store.default_page_size','log_store.max_page_size','connectivity.enabled','telemetry_history.enabled'
     ];
     setNamedFieldsDisabled(form, general, !enabled);
     ['listen_addr','poll_timeout','auth_lockout_duration'].forEach(name => setNamedRequired(form, name, enabled));
+    if (restoreDefaults) setNamedDefault(form, 'log_store.capacity', '10000', value => Number(value) <= 0);
     if (enabled && restoreDefaults) {
       setNamedDefault(form, 'listen_addr', '127.0.0.1:9191');
       setNamedDefault(form, 'poll_timeout', '5s');
       setNamedDefault(form, 'max_request_body_bytes', '1048576', value => Number(value) <= 0);
       setNamedDefault(form, 'auth_failures_per_minute', '10', value => Number(value) <= 0);
       setNamedDefault(form, 'auth_lockout_duration', '5m');
-      setNamedDefault(form, 'log_store.capacity', '10000', value => Number(value) <= 0);
       setNamedDefault(form, 'log_store.default_page_size', '100', value => Number(value) <= 0);
       setNamedDefault(form, 'log_store.max_page_size', '500', value => Number(value) <= 0);
     }
-    const persistentLog = enabled && String(namedField(form, 'log_store.file_path')?.value || '').trim() !== '';
+    const persistentLog = String(namedField(form, 'log_store.file_path')?.value || '').trim() !== '';
     const persistentLogFields = ['log_store.max_file_bytes','log_store.max_backups'];
     setNamedFieldsDisabled(form, persistentLogFields, !persistentLog);
     if (persistentLog && restoreDefaults) {

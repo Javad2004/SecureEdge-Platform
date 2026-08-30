@@ -148,11 +148,15 @@ func validatePersistentPathIsolation(configPath string, cfg config.Config, prote
 			protected = append(protected, managedPath{field: configFile.field + " retained backup", path: backup})
 		}
 	}
-	if cfg.Server.TLS.Enabled {
-		protected = append(protected,
-			managedPath{field: "server.tls.cert_file", path: cfg.Server.TLS.CertFile},
-			managedPath{field: "server.tls.key_file", path: cfg.Server.TLS.KeyFile},
-		)
+	// Configured TLS material remains a managed asset even while TLS is
+	// temporarily disabled. An active persistence writer must never be allowed
+	// to consume a pre-provisioned certificate/key path and corrupt it before a
+	// later TLS activation. Empty dormant fields are ignored.
+	if certPath := strings.TrimSpace(cfg.Server.TLS.CertFile); certPath != "" {
+		protected = append(protected, managedPath{field: "server.tls.cert_file", path: certPath})
+	}
+	if keyPath := strings.TrimSpace(cfg.Server.TLS.KeyFile); keyPath != "" {
+		protected = append(protected, managedPath{field: "server.tls.key_file", path: keyPath})
 	}
 
 	writers := make([]managedPath, 0, cfg.Admin.LogStore.MaxBackups+3)
@@ -162,12 +166,19 @@ func validatePersistentPathIsolation(configPath string, cfg config.Config, prote
 			writers = append(writers, managedPath{field: fmt.Sprintf("admin.log_store rotation .%d", i), path: fmt.Sprintf("%s.%d", logPath, i)})
 		}
 	}
-	if cfg.Admin.TelemetryHistory.Enabled {
-		if historyPath := strings.TrimSpace(cfg.Admin.TelemetryHistory.FilePath); historyPath != "" {
-			writers = append(writers,
-				managedPath{field: "admin.telemetry_history.file_path", path: historyPath},
-				managedPath{field: "admin.telemetry_history staging/recovery file", path: historyPath + ".bak"},
-			)
+	if historyPath := strings.TrimSpace(cfg.Admin.TelemetryHistory.FilePath); historyPath != "" {
+		historyPaths := []managedPath{
+			{field: "admin.telemetry_history.file_path", path: historyPath},
+			{field: "admin.telemetry_history staging/recovery file", path: historyPath + ".bak"},
+		}
+		if cfg.Admin.TelemetryHistory.Enabled {
+			writers = append(writers, historyPaths...)
+		} else {
+			// A disabled history file can contain retained operational data and may
+			// be re-enabled later. Reserve its active/recovery paths so the always-
+			// available security-event store cannot repurpose or corrupt them while
+			// history collection is paused.
+			protected = append(protected, historyPaths...)
 		}
 	}
 

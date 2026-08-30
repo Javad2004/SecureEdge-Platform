@@ -550,6 +550,20 @@ func (c *Config) Validate() error {
 	if err := validateTransport(c.Server.UpstreamTransport); err != nil {
 		errs = append(errs, err)
 	}
+	// The security-event store is process-wide and is constructed even when the
+	// Admin listener is disabled. Enforce its allocation and persistence bounds
+	// unconditionally so disabling Admin cannot bypass runtime resource limits.
+	if c.Admin.LogStore.Capacity <= 0 || c.Admin.LogStore.Capacity > maxAdminLogStoreCapacity {
+		errs = append(errs, fmt.Errorf("admin.log_store.capacity must be between 1 and %d", maxAdminLogStoreCapacity))
+	}
+	if c.Admin.LogStore.FilePath != "" {
+		if c.Admin.LogStore.MaxFileBytes <= 0 || c.Admin.LogStore.MaxFileBytes > maxAdminLogFileBytes {
+			errs = append(errs, fmt.Errorf("admin.log_store.max_file_bytes must be between 1 and %d when file logging is enabled", maxAdminLogFileBytes))
+		}
+		if c.Admin.LogStore.MaxBackups < 0 || c.Admin.LogStore.MaxBackups > maxAdminLogBackups {
+			errs = append(errs, fmt.Errorf("admin.log_store.max_backups must be between 0 and %d when file logging is enabled", maxAdminLogBackups))
+		}
+	}
 	if c.Admin.Enabled {
 		if c.Server.Mode == "gateway" && listenerEndpointsOverlap(c.Server.ListenAddr, c.Admin.ListenAddr) {
 			errs = append(errs, fmt.Errorf("server.listen_addr %q and admin.listen_addr %q overlap", c.Server.ListenAddr, c.Admin.ListenAddr))
@@ -561,22 +575,11 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(c.Admin.AuthToken) == "" && !isLoopback(host) {
 			errs = append(errs, errors.New("admin.auth_token is required when admin is not loopback"))
 		}
-		if c.Admin.LogStore.Capacity <= 0 || c.Admin.LogStore.Capacity > maxAdminLogStoreCapacity {
-			errs = append(errs, fmt.Errorf("admin.log_store.capacity must be between 1 and %d", maxAdminLogStoreCapacity))
-		}
 		if c.Admin.LogStore.DefaultPageSize <= 0 || c.Admin.LogStore.MaxPageSize <= 0 {
 			errs = append(errs, errors.New("admin.log_store page sizes must be positive"))
 		}
 		if c.Admin.LogStore.DefaultPageSize > c.Admin.LogStore.MaxPageSize || c.Admin.LogStore.MaxPageSize > c.Admin.LogStore.Capacity {
 			errs = append(errs, errors.New("admin.log_store requires default_page_size <= max_page_size <= capacity"))
-		}
-		if c.Admin.LogStore.FilePath != "" {
-			if c.Admin.LogStore.MaxFileBytes <= 0 || c.Admin.LogStore.MaxFileBytes > maxAdminLogFileBytes {
-				errs = append(errs, fmt.Errorf("admin.log_store.max_file_bytes must be between 1 and %d when file logging is enabled", maxAdminLogFileBytes))
-			}
-			if c.Admin.LogStore.MaxBackups < 0 || c.Admin.LogStore.MaxBackups > maxAdminLogBackups {
-				errs = append(errs, fmt.Errorf("admin.log_store.max_backups must be between 0 and %d when file logging is enabled", maxAdminLogBackups))
-			}
 		}
 		if c.Admin.TelemetryHistory.Enabled {
 			if c.Admin.TelemetryHistory.Capacity < 2 || c.Admin.TelemetryHistory.Capacity > 10000 {

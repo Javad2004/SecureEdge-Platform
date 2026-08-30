@@ -701,6 +701,49 @@ func TestTelemetryHistoryValidation(t *testing.T) {
 	}
 }
 
+func TestLogStoreRuntimeLimitsValidatedWhenAdminDisabled(t *testing.T) {
+	tests := []struct {
+		name       string
+		mutate     func(*Config)
+		wantDetail string
+	}{
+		{
+			name: "capacity",
+			mutate: func(cfg *Config) {
+				cfg.Admin.LogStore.Capacity = maxAdminLogStoreCapacity + 1
+			},
+			wantDetail: "admin.log_store.capacity",
+		},
+		{
+			name: "persistent file size",
+			mutate: func(cfg *Config) {
+				cfg.Admin.LogStore.FilePath = "security.ndjson"
+				cfg.Admin.LogStore.MaxFileBytes = maxAdminLogFileBytes + 1
+			},
+			wantDetail: "admin.log_store.max_file_bytes",
+		},
+		{
+			name: "persistent backups",
+			mutate: func(cfg *Config) {
+				cfg.Admin.LogStore.FilePath = "security.ndjson"
+				cfg.Admin.LogStore.MaxBackups = maxAdminLogBackups + 1
+			},
+			wantDetail: "admin.log_store.max_backups",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Admin.Enabled = false
+			cfg.EdgeProxy.ConfigPath = "edge.json"
+			tt.mutate(&cfg)
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tt.wantDetail) {
+				t.Fatalf("expected disabled-Admin runtime log-store validation for %s, got %v", tt.wantDetail, err)
+			}
+		})
+	}
+}
+
 func TestValidateRejectsResourceExhaustionLimits(t *testing.T) {
 	tests := []struct {
 		name       string

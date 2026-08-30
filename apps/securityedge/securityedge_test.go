@@ -628,22 +628,80 @@ func TestPersistentAdminPathIsolationResolvesSymlinkedParentForNewFiles(t *testi
 
 func TestPersistentAdminPathIsolationProtectsTLSMaterial(t *testing.T) {
 	dir := t.TempDir()
-	cfg := config.Default()
-	cfg.Server.Mode = "gateway"
-	cfg.Server.TLS.Enabled = true
-	cfg.Server.TLS.CertFile = filepath.Join(dir, "fullchain.pem")
-	cfg.Server.TLS.KeyFile = filepath.Join(dir, "privkey.pem")
-	cfg.EdgeProxy.ConfigPath = filepath.Join(dir, "edge.json")
-	cfg.Admin.LogStore.FilePath = cfg.Server.TLS.CertFile
-	if err := validatePersistentPathIsolation(filepath.Join(dir, "security.json"), cfg); err == nil {
-		t.Fatal("security log path overlapping the TLS certificate was accepted")
+	for _, tlsEnabled := range []bool{false, true} {
+		cfg := config.Default()
+		cfg.Server.Mode = "gateway"
+		cfg.Server.TLS.Enabled = tlsEnabled
+		cfg.Server.TLS.CertFile = filepath.Join(dir, "fullchain.pem")
+		cfg.Server.TLS.KeyFile = filepath.Join(dir, "privkey.pem")
+		cfg.EdgeProxy.ConfigPath = filepath.Join(dir, "edge.json")
+		cfg.Admin.LogStore.FilePath = cfg.Server.TLS.CertFile
+		if err := validatePersistentPathIsolation(filepath.Join(dir, "security.json"), cfg); err == nil {
+			t.Fatalf("security log path overlapping the TLS certificate was accepted with tls.enabled=%v", tlsEnabled)
+		}
+
+		cfg.Admin.LogStore.FilePath = filepath.Join(dir, "events.ndjson")
+		cfg.Admin.TelemetryHistory.Enabled = true
+		cfg.Admin.TelemetryHistory.FilePath = cfg.Server.TLS.KeyFile
+		if err := validatePersistentPathIsolation(filepath.Join(dir, "security.json"), cfg); err == nil {
+			t.Fatalf("telemetry history path overlapping the TLS private key was accepted with tls.enabled=%v", tlsEnabled)
+		}
+	}
+}
+
+func TestValidateAndNewRejectPersistenceOverlapWithDisabledTLSMaterialWithoutMutation(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	certPath := filepath.Join(dir, "future-cert.pem")
+	certContents := []byte("pre-provisioned-certificate-placeholder")
+	if err := os.WriteFile(certPath, certContents, 0o600); err != nil {
+		t.Fatal(err)
 	}
 
-	cfg.Admin.LogStore.FilePath = filepath.Join(dir, "events.ndjson")
-	cfg.Admin.TelemetryHistory.Enabled = true
-	cfg.Admin.TelemetryHistory.FilePath = cfg.Server.TLS.KeyFile
-	if err := validatePersistentPathIsolation(filepath.Join(dir, "security.json"), cfg); err == nil {
-		t.Fatal("telemetry history path overlapping the TLS private key was accepted")
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.Server.TLS.Enabled = false
+	cfg.Server.TLS.CertFile = certPath
+	cfg.Server.TLS.KeyFile = filepath.Join(dir, "future-key.pem")
+	cfg.EdgeProxy.ConfigPath = edgePath
+	cfg.Admin.LogStore.FilePath = certPath
+	cfg.Admin.TelemetryHistory.Enabled = false
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Validate(cfgPath); err == nil {
+		t.Fatal("validation accepted a security log path overlapping configured TLS material while TLS was disabled")
+	}
+	if runtime, err := New(cfgPath, nil); err == nil {
+		runtime.Close()
+		t.Fatal("runtime accepted a security log path overlapping configured TLS material while TLS was disabled")
+	}
+	if got, err := os.ReadFile(certPath); err != nil {
+		t.Fatal(err)
+	} else if !bytes.Equal(got, certContents) {
+		t.Fatalf("rejected disabled-TLS overlap modified certificate material: %q", got)
+	}
+}
+
+func TestPersistentAdminPathIsolationReservesDisabledTelemetryHistory(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = filepath.Join(dir, "edge.json")
+	cfg.Admin.TelemetryHistory.Enabled = false
+	cfg.Admin.TelemetryHistory.FilePath = filepath.Join(dir, "retained-history.json")
+
+	for _, logPath := range []string{cfg.Admin.TelemetryHistory.FilePath, cfg.Admin.TelemetryHistory.FilePath + ".bak"} {
+		candidate := cloneConfig(cfg)
+		candidate.Admin.LogStore.FilePath = logPath
+		if err := validatePersistentPathIsolation(filepath.Join(dir, "security.json"), candidate); err == nil {
+			t.Fatalf("security log path %q overlapping disabled telemetry-history storage was accepted", logPath)
+		}
 	}
 }
 
@@ -902,6 +960,54 @@ func TestReloadEdgeRoutesHotSwapsOnlySharedRouteTable(t *testing.T) {
 	current := runtime.Config()
 	if current.Server.ListenAddr != original.Server.ListenAddr || current.Admin.ListenAddr != original.Admin.ListenAddr {
 		t.Fatalf("shared route reload changed SecurityEdge process configuration: before=%#v after=%#v", original.Server, current.Server)
+	}
+}
+
+func TestRestartPreflightRejectedCandidateDoesNotMutateLogDestination(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(dir, "security.ndjson")
+	original := []byte(`{"sequence":1,"action":"ALLOW"}`)
+	if err := os.WriteFile(logPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Admin.LogStore.FilePath = logPath
+	next := cfg
+	next.Server.Mode = "gateway"
+	next.Server.ListenAddr = occupied.Addr().String()
+
+	err = (&Runtime{}).validateRestartCandidate(filepath.Join(dir, "security.json"), cfg, next)
+	if err == nil {
+		t.Fatal("expected occupied listener to reject restart candidate")
+	}
+	after, readErr := os.ReadFile(logPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(after, original) {
+		t.Fatalf("rejected restart preflight mutated security log: before=%q after=%q", original, after)
+	}
+
+	missingLogPath := filepath.Join(dir, "future-security.ndjson")
+	next.Admin.LogStore.FilePath = missingLogPath
+	if err := (&Runtime{}).validateRestartCandidate(filepath.Join(dir, "security.json"), cfg, next); err == nil {
+		t.Fatal("expected occupied listener to reject restart candidate with missing log destination")
+	}
+	if _, statErr := os.Stat(missingLogPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("rejected restart preflight created log destination: %v", statErr)
 	}
 }
 

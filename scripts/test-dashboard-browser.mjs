@@ -3654,11 +3654,18 @@ try {
         const dnsNames = securityAdmin.elements.namedItem('connectivity.dns.names');
         const historyEnabled = securityAdmin.elements.namedItem('telemetry_history.enabled');
         const historyCapacity = securityAdmin.elements.namedItem('telemetry_history.capacity');
+        const securityLogCapacity = securityAdmin.elements.namedItem('log_store.capacity');
+        const securityLogDefaultPage = securityAdmin.elements.namedItem('log_store.default_page_size');
+        const securityLogMaxPage = securityAdmin.elements.namedItem('log_store.max_page_size');
         const securityLogPath = securityAdmin.elements.namedItem('log_store.file_path');
         const securityLogMaxBytes = securityAdmin.elements.namedItem('log_store.max_file_bytes');
         const securityLogMaxBackups = securityAdmin.elements.namedItem('log_store.max_backups');
         adminEnabled.checked = false; syncSystemFeatureControls(securityAdmin, false);
-        const adminOff = {listenDisabled:securityAdmin.elements.listen_addr.disabled,connectivityDisabled:connectivityEnabled.disabled,historyDisabled:historyEnabled.disabled};
+        const adminOff = {
+          listenDisabled:securityAdmin.elements.listen_addr.disabled,connectivityDisabled:connectivityEnabled.disabled,historyDisabled:historyEnabled.disabled,
+          logCapacityDisabled:securityLogCapacity.disabled,logPathDisabled:securityLogPath.disabled,logMaxBytesDisabled:securityLogMaxBytes.disabled,
+          logMaxBackupsDisabled:securityLogMaxBackups.disabled,logDefaultPageDisabled:securityLogDefaultPage.disabled,logMaxPageDisabled:securityLogMaxPage.disabled
+        };
         adminEnabled.checked = true; connectivityEnabled.checked = false; historyEnabled.checked = false; syncSystemFeatureControls(securityAdmin, true);
         const adminOnFeaturesOff = {listenDisabled:securityAdmin.elements.listen_addr.disabled,checkDisabled:checkInterval.disabled,dnsToggleDisabled:dnsEnabled.disabled,historyCapacityDisabled:historyCapacity.disabled};
         securityLogPath.value = ''; securityLogMaxBytes.value = '0'; securityLogMaxBackups.value = '0'; syncSystemFeatureControls(securityAdmin, false);
@@ -3731,6 +3738,8 @@ try {
       throw new Error(`SecurityEdge gateway/TLS structured controls do not match backend feature dependencies: ${JSON.stringify(featureControlContract)}`);
     }
     if (!featureControlContract.adminOff.listenDisabled || !featureControlContract.adminOff.connectivityDisabled || !featureControlContract.adminOff.historyDisabled ||
+        featureControlContract.adminOff.logCapacityDisabled || featureControlContract.adminOff.logPathDisabled || featureControlContract.adminOff.logMaxBytesDisabled ||
+        featureControlContract.adminOff.logMaxBackupsDisabled || !featureControlContract.adminOff.logDefaultPageDisabled || !featureControlContract.adminOff.logMaxPageDisabled ||
         featureControlContract.adminOnFeaturesOff.listenDisabled || !featureControlContract.adminOnFeaturesOff.checkDisabled || !featureControlContract.adminOnFeaturesOff.dnsToggleDisabled ||
         !featureControlContract.adminOnFeaturesOff.historyCapacityDisabled || featureControlContract.connectivityOn.checkDisabled ||
         featureControlContract.connectivityOn.checkInterval !== '5s' || featureControlContract.connectivityOn.dnsToggleDisabled ||

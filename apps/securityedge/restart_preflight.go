@@ -7,9 +7,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
-	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/securitylog"
 )
 
 // validateRestartCandidate prepares every dependency and probes newly claimed
@@ -52,13 +52,12 @@ func (r *Runtime) validateRestartCandidate(configPath string, current, next conf
 	}
 
 	// Runtime.New always reopens the security log store, even when the Admin
-	// listener is disabled, so every restart candidate must prove that the
-	// configured store can be reopened safely.
-	store, storeErr := securitylog.NewWithConfig(next.Admin.LogStore)
-	if storeErr != nil {
-		errs = append(errs, fmt.Errorf("prepare admin.log_store: %w", storeErr))
-	} else if closeErr := store.Close(); closeErr != nil {
-		errs = append(errs, fmt.Errorf("close admin.log_store preflight: %w", closeErr))
+	// listener is disabled. Probe the destination without constructing a Store:
+	// NewWithConfig restores entries and normalizes the trailing newline, so using
+	// it during preflight would mutate (or create) persistent data even when an
+	// unrelated listener/TLS/dependency check later rejects the candidate.
+	if err := probeSecurityLogDestination(next.Admin.LogStore.FilePath); err != nil {
+		errs = append(errs, fmt.Errorf("prepare admin.log_store: %w", err))
 	}
 	// The Admin generation recreates the bounded history store on every
 	// restart. Probe the destination on every enabled candidate rather than
@@ -87,6 +86,34 @@ func probeSecurityListener(field, address string) error {
 	}
 	if err := listener.Close(); err != nil {
 		return fmt.Errorf("close %s preflight listener: %w", field, err)
+	}
+	return nil
+}
+
+func probeSecurityLogDestination(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	if err := probeWritableDirectory("admin.log_store.file_path", path); err != nil {
+		return err
+	}
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat admin.log_store.file_path: %w", err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("admin.log_store.file_path is a directory")
+	}
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_APPEND, 0)
+	if err != nil {
+		return fmt.Errorf("admin.log_store.file_path cannot be reopened: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close admin.log_store.file_path preflight: %w", err)
 	}
 	return nil
 }

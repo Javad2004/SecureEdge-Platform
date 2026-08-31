@@ -298,13 +298,13 @@ func normalizeEntry(e Entry) Entry {
 	e.Message = trim(e.Message, 2048)
 	e.RequestID = trim(e.RequestID, 256)
 	e.ClientIP = trim(e.ClientIP, 256)
-	e.Method = strings.ToUpper(trim(e.Method, 32))
+	e.Method = trim(strings.ToUpper(e.Method), 32)
 	e.Host = trim(e.Host, 512)
 	e.Path = trim(e.Path, 2048)
 	e.PathFingerprint = trim(e.PathFingerprint, 128)
 	e.Route = trim(e.Route, 256)
-	e.Action = strings.ToUpper(trim(e.Action, 32))
-	e.Reason = strings.ToLower(trim(e.Reason, 128))
+	e.Action = trim(strings.ToUpper(e.Action), 32)
+	e.Reason = trim(strings.ToLower(e.Reason), 128)
 	e.UserAgentFingerprint = trim(e.UserAgentFingerprint, 128)
 	e.Error = trim(e.Error, 2048)
 	e.RuleIDs = uniqueUpper(e.RuleIDs, maxEntryRuleIDs, 128)
@@ -320,9 +320,9 @@ func normalizeMatches(matches []waf.Match) []waf.Match {
 	}
 	out := make([]waf.Match, 0, len(matches))
 	for _, match := range matches {
-		match.RuleID = strings.ToUpper(trim(match.RuleID, 128))
+		match.RuleID = trim(strings.ToUpper(match.RuleID), 128)
 		match.RuleName = trim(match.RuleName, 256)
-		match.Category = strings.ToLower(trim(match.Category, 128))
+		match.Category = trim(strings.ToLower(match.Category), 128)
 		match.Target = trim(match.Target, 128)
 		match.Location = trim(match.Location, 512)
 		match.Fingerprint = trim(match.Fingerprint, 128)
@@ -724,7 +724,7 @@ func uniqueStrings(v []string, maxCount, maxLength int, normalize func(string) s
 	set := make(map[string]struct{}, len(v))
 	out := make([]string, 0, len(v))
 	for _, raw := range v {
-		value := normalize(trim(raw, maxLength))
+		value := trim(normalize(raw), maxLength)
 		if value == "" {
 			continue
 		}

@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/waf"
 )
 
 func TestRingAndFilter(t *testing.T) {
@@ -41,8 +43,17 @@ func TestExportBatchPaginatesWithinBound(t *testing.T) {
 func TestStorePreservesValidUTF8WhenBoundingTextFields(t *testing.T) {
 	s := New(2)
 	entry := s.Append(Entry{
-		Host:  strings.Repeat("€", 171), // 513 bytes; the 512-byte bound falls inside the final rune.
-		Error: "ok" + string([]byte{0xff}) + "error",
+		Host:    strings.Repeat("€", 171), // 513 bytes; the 512-byte bound falls inside the final rune.
+		Error:   "ok" + string([]byte{0xff}) + "error",
+		Method:  strings.Repeat("ȿ", 16), // 32 bytes before ToUpper, 48 bytes after ToUpper.
+		Action:  strings.Repeat("ȿ", 16),
+		Reason:  strings.Repeat("Ⱥ", 64), // 128 bytes before ToLower, 192 bytes after ToLower.
+		RuleIDs: []string{strings.Repeat("ȿ", 64)},
+		Tags:    []string{strings.Repeat("Ⱥ", 32)},
+		Matches: []waf.Match{{
+			RuleID:   strings.Repeat("ȿ", 64),
+			Category: strings.Repeat("Ⱥ", 64),
+		}},
 	})
 	if !utf8.ValidString(entry.Host) {
 		t.Fatalf("bounded host is not valid UTF-8: %q", entry.Host)
@@ -55,5 +66,24 @@ func TestStorePreservesValidUTF8WhenBoundingTextFields(t *testing.T) {
 	}
 	if !utf8.ValidString(entry.Error) || strings.ContainsRune(entry.Error, utf8.RuneError) == false {
 		t.Fatalf("invalid UTF-8 error text was not normalized safely: %q", entry.Error)
+	}
+	checks := []struct {
+		name  string
+		value string
+		want  string
+		limit int
+	}{
+		{name: "method", value: entry.Method, want: strings.Repeat("Ȿ", 10), limit: 32},
+		{name: "action", value: entry.Action, want: strings.Repeat("Ȿ", 10), limit: 32},
+		{name: "reason", value: entry.Reason, want: strings.Repeat("ⱥ", 42), limit: 128},
+		{name: "rule id", value: entry.RuleIDs[0], want: strings.Repeat("Ȿ", 42), limit: 128},
+		{name: "tag", value: entry.Tags[0], want: strings.Repeat("ⱥ", 21), limit: 64},
+		{name: "match rule id", value: entry.Matches[0].RuleID, want: strings.Repeat("Ȿ", 42), limit: 128},
+		{name: "match category", value: entry.Matches[0].Category, want: strings.Repeat("ⱥ", 42), limit: 128},
+	}
+	for _, check := range checks {
+		if !utf8.ValidString(check.value) || len(check.value) > check.limit || check.value != check.want {
+			t.Fatalf("case-normalized %s escaped its %d-byte bound or changed normalization: %q (%d bytes)", check.name, check.limit, check.value, len(check.value))
+		}
 	}
 }

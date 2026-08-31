@@ -67,8 +67,10 @@ func TestQueryFiltersExactClientIP(t *testing.T) {
 func TestStorePreservesValidUTF8WhenBoundingTextFields(t *testing.T) {
 	store := New(2)
 	entry := store.Append(Entry{
-		Host:      strings.Repeat("€", 171), // 513 bytes; the 512-byte bound falls inside the final rune.
-		UserAgent: "ok" + string([]byte{0xff}) + "agent",
+		Host:        strings.Repeat("€", 171), // 513 bytes; the 512-byte bound falls inside the final rune.
+		UserAgent:   "ok" + string([]byte{0xff}) + "agent",
+		Method:      strings.Repeat("ȿ", 16), // 32 bytes before ToUpper, 48 bytes after ToUpper.
+		CacheStatus: strings.Repeat("ȿ", 16),
 	})
 	if !utf8.ValidString(entry.Host) {
 		t.Fatalf("bounded host is not valid UTF-8: %q", entry.Host)
@@ -81,5 +83,11 @@ func TestStorePreservesValidUTF8WhenBoundingTextFields(t *testing.T) {
 	}
 	if !utf8.ValidString(entry.UserAgent) || strings.ContainsRune(entry.UserAgent, utf8.RuneError) == false {
 		t.Fatalf("invalid UTF-8 user agent was not normalized safely: %q", entry.UserAgent)
+	}
+	if !utf8.ValidString(entry.Method) || len(entry.Method) > 32 || entry.Method != strings.Repeat("Ȿ", 10) {
+		t.Fatalf("case-normalized method escaped its 32-byte bound: %q (%d bytes)", entry.Method, len(entry.Method))
+	}
+	if !utf8.ValidString(entry.CacheStatus) || len(entry.CacheStatus) > 32 || entry.CacheStatus != strings.Repeat("Ȿ", 10) {
+		t.Fatalf("case-normalized cache status escaped its 32-byte bound: %q (%d bytes)", entry.CacheStatus, len(entry.CacheStatus))
 	}
 }

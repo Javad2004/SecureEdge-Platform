@@ -101,6 +101,29 @@ func TestReadJSONResponseAcceptsBodyAtExactLimit(t *testing.T) {
 	}
 }
 
+func TestClientRejectsInvalidUTF8JSONResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		payload := []byte(`{"status":"bad`)
+		payload = append(payload, 0xff)
+		payload = append(payload, []byte(`value"}`)...)
+		_, _ = w.Write(payload)
+	}))
+	defer server.Close()
+
+	client, err := New(server.URL, "", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, status, err := client.JSON(context.Background(), http.MethodGet, "/healthz", nil, nil)
+	if status != http.StatusOK || err == nil || !strings.Contains(err.Error(), "invalid UTF-8 JSON response") {
+		t.Fatalf("status=%d raw=%q error=%v", status, raw, err)
+	}
+	if raw != nil {
+		t.Fatalf("invalid UTF-8 response escaped dependency boundary: %q", raw)
+	}
+}
+
 func TestClientReturnsValidJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer control-token" {

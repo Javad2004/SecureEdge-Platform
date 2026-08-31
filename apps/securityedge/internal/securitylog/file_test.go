@@ -36,6 +36,37 @@ func TestPersistentLogRotates(t *testing.T) {
 	}
 }
 
+func TestPersistentLogSkipsInvalidUTF8Records(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.ndjson")
+	invalid := []byte(`{"sequence":1,"event":"bad","route":"route`)
+	invalid = append(invalid, 0xff)
+	invalid = append(invalid, []byte(`name"}`)...)
+	valid, err := json.Marshal(Entry{Sequence: 2, Event: "good", Route: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := append(append(append([]byte{}, invalid...), '\n'), valid...)
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewWithConfig(config.LogStoreConfig{Capacity: 10, FilePath: path, MaxFileBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	stats := store.Stats()
+	if stats.FileErrors != 1 {
+		t.Fatalf("file_errors=%d, want 1 invalid UTF-8 record", stats.FileErrors)
+	}
+	result := store.Query(Filter{Limit: 10})
+	if len(result.Entries) != 1 || result.Entries[0].Event != "good" || result.Entries[0].Route != "demo" {
+		t.Fatalf("invalid UTF-8 record was restored or valid record was lost: %#v", result.Entries)
+	}
+}
+
 func TestClearRemovesPersistentLogAndBackups(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "events.ndjson")
 	s, err := NewWithConfig(config.LogStoreConfig{Capacity: 10, FilePath: path, MaxFileBytes: 220, MaxBackups: 2})

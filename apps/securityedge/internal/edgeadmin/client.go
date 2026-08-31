@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type Client struct {
@@ -74,6 +75,9 @@ func (c *Client) JSON(ctx context.Context, method, path string, query url.Values
 	data, err := readJSONResponse(resp.Body, resp.ContentLength, maxResponseBytes)
 	if err != nil {
 		return nil, resp.StatusCode, err
+	}
+	if !utf8.Valid(data) {
+		return nil, resp.StatusCode, fmt.Errorf("edgeproxy returned invalid UTF-8 JSON response")
 	}
 	if !json.Valid(data) {
 		return nil, resp.StatusCode, fmt.Errorf("edgeproxy returned non-JSON response")

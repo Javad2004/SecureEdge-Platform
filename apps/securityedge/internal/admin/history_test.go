@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -305,6 +306,62 @@ func TestTelemetryHistoryDoesNotRestoreInvalidStagingFile(t *testing.T) {
 	}
 	if _, err := os.Stat(path + ".bak"); err != nil {
 		t.Fatalf("invalid staging file should remain for diagnosis: %v", err)
+	}
+}
+
+func TestTelemetryHistoryRejectsInvalidUTF8WithoutNormalizingLabels(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.json")
+	data := []byte(`{"schema_version":"1.5","samples":[{"generated_at":"2026-08-30T00:00:00Z","security":{"requests":1},"edgeproxy":{},"routes":{"bad`)
+	data = append(data, 0xff)
+	data = append(data, []byte(`name":{"requests":1}}}]}`)...)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{Duration: time.Second}, FilePath: path,
+	})
+	snapshot := store.snapshot(10)
+	if !strings.Contains(snapshot.LastError, "telemetry history must be valid UTF-8") {
+		t.Fatalf("invalid UTF-8 history was not rejected: %#v", snapshot)
+	}
+	if len(snapshot.Samples) != 0 {
+		t.Fatalf("invalid UTF-8 history was replacement-normalized into live telemetry: %#v", snapshot.Samples)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatal("rejected telemetry history was modified")
+	}
+}
+
+func TestTelemetryHistoryDoesNotRestoreInvalidUTF8StagingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.json")
+	data := []byte(`{"schema_version":"1.5","samples":[{"generated_at":"2026-08-30T00:00:00Z","security":{"requests":1},"edgeproxy":{},"routes":{"bad`)
+	data = append(data, 0xff)
+	data = append(data, []byte(`name":{"requests":1}}}]}`)...)
+	if err := os.WriteFile(path+".bak", data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTelemetryHistoryStore(config.TelemetryHistoryConfig{
+		Enabled: true, Capacity: 10, SampleInterval: config.Duration{Duration: time.Second}, FilePath: path,
+	})
+	snapshot := store.snapshot(10)
+	if !strings.Contains(snapshot.LastError, "telemetry history must be valid UTF-8") {
+		t.Fatalf("invalid UTF-8 staged history was not rejected: %#v", snapshot)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("invalid UTF-8 staging file was restored as active history: %v", err)
+	}
+	got, err := os.ReadFile(path + ".bak")
+	if err != nil {
+		t.Fatalf("invalid UTF-8 staging file should remain for diagnosis: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatal("rejected staged telemetry history was modified")
 	}
 }
 

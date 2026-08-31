@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/waf"
@@ -164,7 +165,9 @@ func (s *Store) restorePersistentEntries() {
 				s.fileErrors++
 			} else if trimmed := bytes.TrimSpace(line); len(trimmed) > 0 {
 				var entry Entry
-				if err := json.Unmarshal(trimmed, &entry); err != nil {
+				if !utf8.Valid(trimmed) {
+					s.fileErrors++
+				} else if err := json.Unmarshal(trimmed, &entry); err != nil {
 					s.fileErrors++
 				} else {
 					entry = normalizeEntry(entry)

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/metrics"
@@ -411,6 +412,9 @@ func (s *telemetryHistoryStore) load() error {
 	}
 	if err != nil {
 		return err
+	}
+	if !utf8.Valid(data) {
+		return errors.New("telemetry history must be valid UTF-8")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()

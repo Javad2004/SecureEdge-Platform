@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -392,10 +393,20 @@ func statusClass(status int) string {
 }
 
 func truncate(value string, maxLength int) string {
+	if !utf8.ValidString(value) {
+		value = strings.ToValidUTF8(value, "�")
+	}
+	if maxLength <= 0 {
+		return ""
+	}
 	if len(value) <= maxLength {
 		return value
 	}
-	return value[:maxLength]
+	end := maxLength
+	for end > 0 && !utf8.RuneStart(value[end]) {
+		end--
+	}
+	return value[:end]
 }
 
 func min(a, b int) int {

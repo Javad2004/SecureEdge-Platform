@@ -1,8 +1,10 @@
 package accesslog
 
 import (
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestStoreIsBoundedAndNewestFirst(t *testing.T) {
@@ -59,5 +61,25 @@ func TestQueryFiltersExactClientIP(t *testing.T) {
 	}
 	if result.AppliedFilters["client_ip"] != "203.0.113.10" {
 		t.Fatalf("client IP filter missing from applied filters: %#v", result.AppliedFilters)
+	}
+}
+
+func TestStorePreservesValidUTF8WhenBoundingTextFields(t *testing.T) {
+	store := New(2)
+	entry := store.Append(Entry{
+		Host:      strings.Repeat("€", 171), // 513 bytes; the 512-byte bound falls inside the final rune.
+		UserAgent: "ok" + string([]byte{0xff}) + "agent",
+	})
+	if !utf8.ValidString(entry.Host) {
+		t.Fatalf("bounded host is not valid UTF-8: %q", entry.Host)
+	}
+	if len(entry.Host) > 512 {
+		t.Fatalf("bounded host length=%d, want <=512 bytes", len(entry.Host))
+	}
+	if entry.Host != strings.Repeat("€", 170) {
+		t.Fatalf("bounded host split a rune or changed valid prefix: %q", entry.Host)
+	}
+	if !utf8.ValidString(entry.UserAgent) || strings.ContainsRune(entry.UserAgent, utf8.RuneError) == false {
+		t.Fatalf("invalid UTF-8 user agent was not normalized safely: %q", entry.UserAgent)
 	}
 }

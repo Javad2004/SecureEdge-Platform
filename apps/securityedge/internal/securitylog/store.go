@@ -747,10 +747,20 @@ func containsFold(v []string, x string) bool {
 }
 func trim(v string, n int) string {
 	v = strings.TrimSpace(v)
-	if len(v) > n {
-		return v[:n]
+	if !utf8.ValidString(v) {
+		v = strings.ToValidUTF8(v, "�")
 	}
-	return v
+	if n <= 0 {
+		return ""
+	}
+	if len(v) <= n {
+		return v
+	}
+	end := n
+	for end > 0 && !utf8.RuneStart(v[end]) {
+		end--
+	}
+	return v[:end]
 }
 func safeCSVCell(value string) string {
 	trimmed := strings.TrimLeft(value, " \t\r\n")

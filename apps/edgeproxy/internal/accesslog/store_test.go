@@ -91,3 +91,45 @@ func TestStorePreservesValidUTF8WhenBoundingTextFields(t *testing.T) {
 		t.Fatalf("case-normalized cache status escaped its 32-byte bound: %q (%d bytes)", entry.CacheStatus, len(entry.CacheStatus))
 	}
 }
+
+func TestStoreBoundsAndCanonicalizesEntryMetadata(t *testing.T) {
+	store := New(2)
+	tags := make([]string, 40)
+	for i := range tags {
+		tags[i] = string(rune('!'+i)) + strings.Repeat("x", 80)
+	}
+
+	before := time.Now().UTC().Add(-time.Second)
+	entry := store.Append(Entry{
+		Timestamp:   "not-an-rfc3339-timestamp" + strings.Repeat("x", 256),
+		Level:       strings.Repeat("ȿ", 16), // Upper-casing expands each rune from 2 to 3 bytes.
+		Status:      200,
+		StatusClass: strings.Repeat("bogus", 100),
+		Tags:        tags,
+	})
+	after := time.Now().UTC().Add(time.Second)
+
+	parsedTimestamp, err := time.Parse(time.RFC3339Nano, entry.Timestamp)
+	if err != nil || parsedTimestamp.Before(before) || parsedTimestamp.After(after) || len(entry.Timestamp) > 64 {
+		t.Fatalf("timestamp was not normalized to a bounded RFC3339 value: %q (%v)", entry.Timestamp, err)
+	}
+	if !utf8.ValidString(entry.Level) || len(entry.Level) > 16 || entry.Level != strings.Repeat("Ȿ", 5) {
+		t.Fatalf("level escaped its normalized 16-byte bound: %q (%d bytes)", entry.Level, len(entry.Level))
+	}
+	if entry.StatusClass != "2xx" {
+		t.Fatalf("status class was not derived from status: %q", entry.StatusClass)
+	}
+	if len(entry.Tags) != maxEntryTags {
+		t.Fatalf("tag count=%d, want %d", len(entry.Tags), maxEntryTags)
+	}
+	for _, tag := range entry.Tags {
+		if !utf8.ValidString(tag) || len(tag) > 64 {
+			t.Fatalf("bounded tag is invalid: %q (%d bytes)", tag, len(tag))
+		}
+	}
+
+	result := store.Query(Filter{Since: before, Until: after, Limit: 10})
+	if len(result.Entries) != 1 || result.Entries[0].Sequence != entry.Sequence {
+		t.Fatalf("normalized timestamp did not remain queryable: %#v", result.Entries)
+	}
+}

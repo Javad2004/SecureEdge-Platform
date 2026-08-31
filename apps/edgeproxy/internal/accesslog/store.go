@@ -10,6 +10,7 @@ import (
 
 const (
 	defaultMaxTextLength = 2048
+	maxEntryTags         = 32
 )
 
 // Entry is a structured operational event retained by the in-memory log store.
@@ -217,10 +218,11 @@ func (s *Store) Stats() Stats {
 }
 
 func normalize(entry Entry) Entry {
-	if entry.Timestamp == "" {
+	entry.Timestamp = truncate(strings.TrimSpace(entry.Timestamp), 64)
+	if _, err := time.Parse(time.RFC3339Nano, entry.Timestamp); err != nil {
 		entry.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
 	}
-	entry.Level = strings.ToUpper(strings.TrimSpace(entry.Level))
+	entry.Level = truncate(strings.ToUpper(strings.TrimSpace(entry.Level)), 16)
 	if entry.Level == "" {
 		entry.Level = "INFO"
 	}
@@ -237,13 +239,11 @@ func normalize(entry Entry) Entry {
 	entry.Upstream = truncate(strings.TrimSpace(entry.Upstream), defaultMaxTextLength)
 	entry.Error = truncate(strings.TrimSpace(entry.Error), defaultMaxTextLength)
 	entry.UserAgent = truncate(strings.TrimSpace(entry.UserAgent), 512)
-	if entry.StatusClass == "" {
-		status := entry.Status
-		if status == 0 {
-			status = entry.UpstreamStatus
-		}
-		entry.StatusClass = statusClass(status)
+	status := entry.Status
+	if status == 0 {
+		status = entry.UpstreamStatus
 	}
+	entry.StatusClass = statusClass(status)
 	if entry.DurationMS < 0 {
 		entry.DurationMS = 0
 	}
@@ -251,6 +251,9 @@ func normalize(entry Entry) Entry {
 		entry.UpstreamDurationMS = 0
 	}
 	if len(entry.Tags) > 0 {
+		if len(entry.Tags) > maxEntryTags {
+			entry.Tags = entry.Tags[:maxEntryTags]
+		}
 		tags := make([]string, 0, len(entry.Tags))
 		seen := make(map[string]struct{}, len(entry.Tags))
 		for _, raw := range entry.Tags {

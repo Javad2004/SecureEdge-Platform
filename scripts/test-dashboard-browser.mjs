@@ -3715,9 +3715,13 @@ try {
         let oversizedOrigin = '';
         try { validateOriginCandidate({upstreams:[]}, {name:'é'.repeat(129),url:'http://127.0.0.1:9000',weight:1,priority:1,insecure_skip_verify:false}); }
         catch (error) { oversizedOrigin = error.message; }
-        let oversizedRoute = '', duplicateRoute = '';
+        let oversizedRoute = '', duplicateRoute = '', dotRoute = '', dotdotRoute = '', dotOrigin = '', dotdotOrigin = '';
         try { validateRouteNameCandidate('é'.repeat(129)); } catch (error) { oversizedRoute = error.message; }
         try { validateRouteNameCandidate(routeName); } catch (error) { duplicateRoute = error.message; }
+        try { validateRouteNameCandidate('.'); } catch (error) { dotRoute = error.message; }
+        try { validateRouteNameCandidate('..'); } catch (error) { dotdotRoute = error.message; }
+        try { validateOriginCandidate({upstreams:[]}, {name:'.',url:'http://127.0.0.1:9000',weight:1,priority:1,insecure_skip_verify:false}); } catch (error) { dotOrigin = error.message; }
+        try { validateOriginCandidate({upstreams:[]}, {name:'..',url:'http://127.0.0.1:9000',weight:1,priority:1,insecure_skip_verify:false}); } catch (error) { dotdotOrigin = error.message; }
         const relationshipErrors = {};
         try { validateCacheRelationships({enabled:true,max_bytes:4*1048576,max_object_bytes:8*1048576,default_ttl:'30s',stale_if_error:'2m'}, 'Fixture cache'); }
         catch (error) { relationshipErrors.cache = error.message; }
@@ -3736,7 +3740,7 @@ try {
         return {
           cacheDisabled,cacheEnabledState,securityTLSOff,securityTLSOn,embedded,adminOff,adminOnFeaturesOff,securityLogPersistenceOff,securityLogPersistenceOn,connectivityOn,dnsOn,historyOn,edgeLogOff,edgeLogOn,
           secretErrors,preservedSecret,
-          validStatuses:statusCodes('200, 404, 200', 'Fixture statuses', false),invalidStatus,oversizedOrigin,oversizedRoute,duplicateRoute,relationshipErrors,invalidDuration,
+          validStatuses:statusCodes('200, 404, 200', 'Fixture statuses', false),invalidStatus,oversizedOrigin,oversizedRoute,duplicateRoute,dotRoute,dotdotRoute,dotOrigin,dotdotOrigin,relationshipErrors,invalidDuration,
           parsedDuration:goDurationMilliseconds('1h30m500ms', 'Fixture duration'),
           routeHeaderMin:document.getElementById('route-max-response-header').min,
           utf8Length:utf8Bytes('é'.repeat(129))
@@ -3791,7 +3795,10 @@ try {
     }
     if (JSON.stringify(featureControlContract.validStatuses) !== JSON.stringify([200,404]) || !featureControlContract.invalidStatus.includes('100 to 599') ||
         !featureControlContract.oversizedOrigin.includes('256 UTF-8 bytes') || !featureControlContract.oversizedRoute.includes('256 UTF-8 bytes') ||
-        !featureControlContract.duplicateRoute.includes('already exists') || featureControlContract.utf8Length !== 258 || featureControlContract.routeHeaderMin !== '1') {
+        !featureControlContract.duplicateRoute.includes('already exists') ||
+        !featureControlContract.dotRoute.includes('Admin API path segment') || !featureControlContract.dotdotRoute.includes('Admin API path segment') ||
+        !featureControlContract.dotOrigin.includes('Admin API path segment') || !featureControlContract.dotdotOrigin.includes('Admin API path segment') ||
+        featureControlContract.utf8Length !== 258 || featureControlContract.routeHeaderMin !== '1') {
       throw new Error(`Client-side validation is not aligned with backend status/name/header limits: ${JSON.stringify(featureControlContract)}`);
     }
     if (!featureControlContract.relationshipErrors.cache.includes('cannot exceed') ||

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -1016,6 +1017,38 @@ func TestReloadEdgeRoutesRejectsNonCanonicalPrefixWithoutReplacingTable(t *testi
 	routes := runtime.Routes()
 	if len(routes) != 1 || routes[0].Name != "first" {
 		t.Fatalf("failed non-canonical Route-table reload replaced the last-known-good table: %#v", routes)
+	}
+}
+
+func TestReloadEdgeRoutesRejectsAdminPathDotSegmentWithoutReplacingTable(t *testing.T) {
+	dir := t.TempDir()
+	edgePath := filepath.Join(dir, "edge.json")
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":"demo-app","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = edgePath
+	cfgPath := filepath.Join(dir, "security.json")
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	before := runtime.Routes()
+	if err := os.WriteFile(edgePath, []byte(`{"routes":[{"name":".","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ReloadEdgeRoutes(); err == nil || !strings.Contains(err.Error(), "Admin API path segment") {
+		t.Fatalf("expected dot-segment shared Route-table reload to fail, got %v", err)
+	}
+	after := runtime.Routes()
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("failed dot-segment Route-table reload replaced the last-known-good table: before=%#v after=%#v", before, after)
 	}
 }
 

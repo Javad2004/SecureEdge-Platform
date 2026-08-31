@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/admission"
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
@@ -779,6 +780,9 @@ func (s *Server) decodeJSON(r *http.Request, v any) error {
 	}
 	if int64(len(data)) > maxBody {
 		return fmt.Errorf("%w: request body exceeds %d bytes", errAdminRequestBodyTooLarge, maxBody)
+	}
+	if !utf8.Valid(data) {
+		return errors.New("request body must be valid UTF-8")
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()

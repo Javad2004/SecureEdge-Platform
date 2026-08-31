@@ -93,6 +93,9 @@ func Load(path string) (*Table, error) {
 		if cfg.Routes[i].Name == "" || len(cfg.Routes[i].Hosts) == 0 {
 			return nil, fmt.Errorf("edgeproxy route %d is incomplete", i)
 		}
+		if isAdminPathDotSegment(cfg.Routes[i].Name) {
+			return nil, fmt.Errorf("edgeproxy route name %q cannot be used as an Admin API path segment", cfg.Routes[i].Name)
+		}
 		if len(cfg.Routes[i].Name) > maxRouteNameBytes {
 			return nil, fmt.Errorf("edgeproxy route name %q cannot exceed %d bytes", cfg.Routes[i].Name, maxRouteNameBytes)
 		}
@@ -130,6 +133,10 @@ func Load(path string) (*Table, error) {
 		}
 	}
 	return &Table{routes: cfg.Routes}, nil
+}
+
+func isAdminPathDotSegment(name string) bool {
+	return name == "." || name == ".."
 }
 
 func (t *Table) Match(req *http.Request) (Route, bool) {

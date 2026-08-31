@@ -86,7 +86,9 @@ func healthyConfig(t *testing.T, dataPlane *httptest.Server) config.Config {
 	cfg.Server.UpstreamProxyURL = dataPlane.URL
 	cfg.Admin.Connectivity.Enabled = true
 	cfg.Admin.Connectivity.CheckInterval = config.Duration{Duration: time.Second}
-	cfg.Admin.Connectivity.Timeout = config.Duration{Duration: 500 * time.Millisecond}
+	// Keep healthy fixture probes comfortably above Race Detector scheduling
+	// overhead. Timeout-specific tests override this value explicitly.
+	cfg.Admin.Connectivity.Timeout = config.Duration{Duration: 2 * time.Second}
 	cfg.Admin.Connectivity.StaleAfter = config.Duration{Duration: 3 * time.Second}
 	cfg.Admin.Connectivity.HistoryCapacity = 10
 	cfg.Admin.Connectivity.DNS.Enabled = false

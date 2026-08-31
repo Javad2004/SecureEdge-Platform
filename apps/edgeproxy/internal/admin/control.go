@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/config"
 	"github.com/Javad2004/SecureEdge-Platform/apps/edgeproxy/internal/control"
@@ -255,6 +256,9 @@ func decodeControlJSON(r *http.Request, target any) error {
 	}
 	if int64(len(data)) > maxControlBodyBytes {
 		return fmt.Errorf("request body exceeds %d bytes", maxControlBodyBytes)
+	}
+	if !utf8.Valid(data) {
+		return errors.New("request body must be valid UTF-8")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()

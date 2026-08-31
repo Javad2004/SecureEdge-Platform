@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Javad2004/SecureEdge-Platform/apps/securityedge/internal/config"
 )
@@ -296,6 +297,10 @@ func (s *Server) readForwardBody(w http.ResponseWriter, r *http.Request) (json.R
 	}
 	if int64(len(data)) > s.cfg.MaxRequestBodyBytes {
 		writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "request body exceeds the configured admin limit")
+		return nil, false
+	}
+	if !utf8.Valid(data) {
+		writeError(w, http.StatusBadRequest, "invalid_body", "request body must be valid UTF-8")
 		return nil, false
 	}
 	if len(bytes.TrimSpace(data)) == 0 || !json.Valid(data) {

@@ -363,6 +363,29 @@ func TestValidateNormalizesWhitespaceUsedAtRuntime(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsAdminPathDotSegmentNames(t *testing.T) {
+	for _, name := range []string{".", ".."} {
+		t.Run("route "+name, func(t *testing.T) {
+			cfg := Default()
+			route := validRouteForValidation()
+			route.Name = name
+			cfg.Routes = []RouteConfig{route}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "Admin API path segments") {
+				t.Fatalf("expected route name %q to be rejected as an Admin API dot segment, got %v", name, err)
+			}
+		})
+		t.Run("origin "+name, func(t *testing.T) {
+			cfg := Default()
+			route := validRouteForValidation()
+			route.Upstreams[0].Name = name
+			cfg.Routes = []RouteConfig{route}
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "Admin API path segments") {
+				t.Fatalf("expected Origin name %q to be rejected as an Admin API dot segment, got %v", name, err)
+			}
+		})
+	}
+}
+
 func TestValidateRejectsReservedUnmatchedRouteName(t *testing.T) {
 	cfg := Default()
 	route := validRouteForValidation()

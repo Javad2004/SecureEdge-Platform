@@ -193,6 +193,21 @@ func TestLoadRejectsDuplicateHostPathSelector(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsAdminPathDotSegmentRouteNames(t *testing.T) {
+	for _, name := range []string{".", ".."} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "edge.json")
+			payload := `{"routes":[{"name":"` + name + `","hosts":["project.test"],"path_prefix":"/"}]}`
+			if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "Admin API path segment") {
+				t.Fatalf("expected shared Route name %q to be rejected as an Admin API dot segment, got %v", name, err)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsReservedUnmatchedRouteName(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "edge.json")
 	if err := os.WriteFile(file, []byte(`{"routes":[{"name":"__UNMATCHED__","hosts":["project.test"],"path_prefix":"/"}]}`), 0o600); err != nil {

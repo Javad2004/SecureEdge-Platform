@@ -402,6 +402,7 @@ function syncPolicyFeatureControls(form, restoreDefaults = false) {
 function validateRouteNameCandidate(value, originalName = '') {
   const name = String(value || '').trim();
   if (!name) throw new Error('Route name is required.');
+  if (name === '.' || name === '..') throw new Error('Route name cannot be . or .. because it is used as an Admin API path segment.');
   if (utf8Bytes(name) > 256) throw new Error('Route name cannot exceed 256 UTF-8 bytes.');
   if (name.toLowerCase() === '__unmatched__') throw new Error('Route name __unmatched__ is reserved for internal telemetry.');
   const existing = findConfigRoute(name);
@@ -415,6 +416,7 @@ function validateOriginCandidate(route, candidate, originalName = '') {
   const name = String(candidate.name || '').trim();
   const rawURL = String(candidate.url || '').trim();
   if (!name) throw new Error('Origin name is required.');
+  if (name === '.' || name === '..') throw new Error('Origin name cannot be . or .. because it is used as an Admin API path segment.');
   if (utf8Bytes(name) > 256) throw new Error('Origin name cannot exceed 256 UTF-8 bytes.');
   if (!rawURL) throw new Error('Origin URL is required.');
   let parsed;

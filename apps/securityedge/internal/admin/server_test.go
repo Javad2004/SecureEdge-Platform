@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -633,6 +634,48 @@ func TestPolicyUpdateRejectsOversizedAdminBodyWith413(t *testing.T) {
 	}
 	if payload.Error.Code != "body_too_large" {
 		t.Fatalf("error code=%q, want body_too_large", payload.Error.Code)
+	}
+}
+
+func TestAdminRejectsInvalidUTF8JSONBeforeMutationOrForwarding(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.Mode = "embedded"
+	cfg.EdgeProxy.ConfigPath = "edge.json"
+	cfg.Admin.AuthToken = "secret-token"
+	inspector, err := waf.NewInspector(nil, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &fakeRuntime{cfg: cfg}
+	server, err := New(cfg.Admin, runtime, metrics.New(), securitylog.New(100), traffic.New(100, time.Minute), inspector)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	invalid := []byte(`{"enabled":true}`)
+	invalid[2] = 0xff
+	for _, tc := range []struct {
+		name, path string
+	}{
+		{name: "SecurityEdge policy", path: "/api/v1/policies/default"},
+		{name: "EdgeProxy BFF", path: "/api/v1/edgeproxy/routes/demo-app/cache"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPut, tc.path, bytes.NewReader(invalid))
+			req.Header.Set("Authorization", "Bearer secret-token")
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			server.HTTPServer().Handler.ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("invalid UTF-8 status=%d body=%s", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), "request body must be valid UTF-8") {
+				t.Fatalf("invalid UTF-8 response=%s", rr.Body.String())
+			}
+		})
+	}
+	if method, path := runtime.lastEdgeRequest(); method != "" || path != "" {
+		t.Fatalf("invalid UTF-8 BFF request reached EdgeProxy runtime as %s %s", method, path)
 	}
 }
 

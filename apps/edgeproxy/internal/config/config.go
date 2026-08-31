@@ -466,6 +466,8 @@ func (c *Config) Validate() error {
 		r.Name = strings.TrimSpace(r.Name)
 		if r.Name == "" {
 			errs = append(errs, fmt.Errorf("routes[%d].name is required", i))
+		} else if isAdminPathDotSegment(r.Name) {
+			errs = append(errs, fmt.Errorf("routes[%d].name cannot be %q because route names are Admin API path segments", i, r.Name))
 		} else if len(r.Name) > 256 {
 			errs = append(errs, fmt.Errorf("routes[%d].name cannot exceed 256 bytes", i))
 		} else if strings.EqualFold(r.Name, reservedUnmatchedRouteName) {
@@ -555,6 +557,9 @@ func (c *Config) Validate() error {
 			}
 			if r.Upstreams[j].Name == "" {
 				r.Upstreams[j].Name = fmt.Sprintf("origin-%d", j+1)
+			}
+			if isAdminPathDotSegment(r.Upstreams[j].Name) {
+				errs = append(errs, fmt.Errorf("route %q upstream[%d] name cannot be %q because Origin names are Admin API path segments", r.Name, j, r.Upstreams[j].Name))
 			}
 			if len(r.Upstreams[j].Name) > 256 {
 				errs = append(errs, fmt.Errorf("route %q upstream[%d] name cannot exceed 256 bytes", r.Name, j))
@@ -715,6 +720,10 @@ func (c *Config) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func isAdminPathDotSegment(name string) bool {
+	return name == "." || name == ".."
 }
 
 func validationLimit(length, maximum int) int {

@@ -137,6 +137,34 @@ func TestControlPlaneCRUDAndRestartAcceptance(t *testing.T) {
 	}
 }
 
+func TestControlPlaneRejectsInvalidUTF8JSONWithoutMutation(t *testing.T) {
+	server, manager, _ := newControlPlaneTestServer(t)
+	before := manager.Config()
+	payload := []byte(`{"name":"bad-name","url":"http://127.0.0.1:19002","weight":1,"priority":1,"insecure_skip_verify":false}`)
+	marker := []byte("bad-name")
+	idx := bytes.Index(payload, marker)
+	if idx < 0 {
+		t.Fatal("fixture marker not found")
+	}
+	payload[idx+3] = 0xff
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/routes/demo-app/origins", bytes.NewReader(payload))
+	req.Header.Set("Authorization", "Bearer test-token")
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.HTTPServer().Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("invalid UTF-8 status=%d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "request body must be valid UTF-8") {
+		t.Fatalf("invalid UTF-8 response=%s", rr.Body.String())
+	}
+	after := manager.Config()
+	if len(after.Routes) != len(before.Routes) || len(after.Routes[0].Upstreams) != len(before.Routes[0].Upstreams) {
+		t.Fatalf("rejected invalid UTF-8 mutation changed config: before=%#v after=%#v", before.Routes, after.Routes)
+	}
+}
+
 func TestControlPlaneRejectsUnknownJSONFields(t *testing.T) {
 	server, _, _ := newControlPlaneTestServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/routes", bytes.NewBufferString(`{"name":"bad","unexpected":true}`))
